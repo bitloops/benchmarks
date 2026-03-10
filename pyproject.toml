@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitloops-benchmarks"
+version = "0.1.0"
+description = "Agent-focused benchmarking harness for SWE-bench and future suites."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+hf = ["datasets>=2.20.0"]
+
+[project.scripts]
+benchkit = "benchkit.swebench.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

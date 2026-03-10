@@ -1,0 +1,5 @@
+# One SWE-bench instance_id per line.
+# Copy this file to tokio_task_ids.txt and keep only 2-3 task IDs for Phase 1.
+# Example:
+# tokio-rs__tokio-12345
+# tokio-rs__tokio-67890

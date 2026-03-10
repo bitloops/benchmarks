@@ -1,0 +1,36 @@
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/swebench_multilingual.dev.jsonl"
+split = "dev"
+language = "rust"
+condition = "baseline"
+include_repos = []
+include_instance_ids = []
+max_instances = 20
+attempts = 3
+timeout_seconds = 900
+output_root = "runs"
+prepare_workspace = false
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+workspace_timeout_seconds = 600
+
+[agent]
+id = "claude_code"
+command = ["python3", "scripts/agents/mock_agent.py"]
+extra_args = []
+
+[model]
+provider = "anthropic"
+name = "claude-opus-4-6"
+temperature = 0.0
+max_tokens = 32000
+
+[evaluation]
+enabled = false
+python_bin = "python3"
+dataset_name = "SWE-bench/SWE-bench_Multilingual"
+split = "dev"
+max_workers = 4
+timeout_seconds = 7200
+# result_json_path_template = "{attempt_dir}/eval_results.json"

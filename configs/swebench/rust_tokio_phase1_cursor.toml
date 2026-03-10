@@ -1,0 +1,42 @@
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/swebench_multilingual.test.tokio.jsonl"
+split = "test"
+language = ""
+condition = "baseline"
+include_repos = ["tokio-rs/tokio"]
+include_instance_ids = []
+instance_ids_file = "tokio_task_ids.txt"
+max_instances = 2
+attempts = 1
+timeout_seconds = 1200
+output_root = "runs"
+prepare_workspace = true
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+workspace_timeout_seconds = 600
+
+[agent]
+id = "cursor"
+command = ["python3", "scripts/agents/cursor_wrapper.py"]
+extra_args = []
+
+[model]
+provider = "anthropic"
+name = "opus-4-6"
+temperature = 0.0
+max_tokens = 32000
+
+[model_map.cursor]
+"opus-4-6" = "opus-4.6"
+
+[evaluation]
+enabled = true
+python_bin = "python3"
+# swebench_repo = "/absolute/path/to/SWE-bench"
+dataset_name = "SWE-bench/SWE-bench_Multilingual"
+split = "test"
+max_workers = 4
+timeout_seconds = 7200
+command_template = []
+extra_args = []

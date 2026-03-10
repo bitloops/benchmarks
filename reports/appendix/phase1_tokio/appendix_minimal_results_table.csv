@@ -1,0 +1,3 @@
+agent,condition,benchmark,language,tasks,solved,solve_rate,median_runtime_sec,median_tool_calls,median_file_reads,median_search_actions,median_cost
+claude_code,baseline,swebench_multilingual,tokio-rs,2,1,0.5,156.29149999999998,,,,
+cursor,baseline,swebench_multilingual,tokio-rs,2,1,0.5,153.5455,,,,
