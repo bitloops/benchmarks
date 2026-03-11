@@ -24,6 +24,7 @@ include_repos = ["tokio-rs/tokio"]
 include_instance_ids = ["tokio__a"]
 instance_ids_file = "{instance_ids_file.name}"
 attempts = 2
+max_workers = 3
 timeout_seconds = 60
 prepare_workspace = true
 repo_url_template = "https://github.com/{{repo}}.git"
@@ -54,6 +55,7 @@ timeout_seconds = 3600
             self.assertEqual(cfg.language, "rust")
             self.assertEqual(cfg.condition, "baseline")
             self.assertEqual(cfg.attempts, 2)
+            self.assertEqual(cfg.max_workers, 3)
             self.assertEqual(cfg.agent.id, "noop")
             self.assertEqual(cfg.model.name, "opus-4-6")
             self.assertEqual(cfg.include_repos, ["tokio-rs/tokio"])

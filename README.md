@@ -49,10 +49,23 @@ docker info
 ./scripts/swebench/phase1_tokio_run.sh
 ```
 
+By default, Phase 1 now runs Claude and Cursor baselines in parallel and runs up to
+2 tasks concurrently per baseline (`RUN_MAX_WORKERS=2`).
+
 If needed, you can force the script to use a specific interpreter:
 
 ```bash
 PYTHON_BIN=python ./scripts/swebench/phase1_tokio_run.sh
+```
+
+Tuning parallelism:
+
+```bash
+# Disable parallel Claude/Cursor baseline runs
+RUN_AGENTS_IN_PARALLEL=0 ./scripts/swebench/phase1_tokio_run.sh
+
+# Keep agents parallel, but change per-run task concurrency
+RUN_MAX_WORKERS=3 ./scripts/swebench/phase1_tokio_run.sh
 ```
 
 ## Quick Start
@@ -121,6 +134,7 @@ prepare_workspace = true
 repo_url_template = "https://github.com/{repo}.git"
 git_bin = "git"
 workspace_timeout_seconds = 600
+max_workers = 2
 ```
 
 Generate appendix files from one or more completed runs:

@@ -32,6 +32,7 @@ class RunConfig:
     include_instance_ids: list[str]
     max_instances: int | None
     attempts: int
+    max_workers: int
     timeout_seconds: int
     output_root: Path
     prepare_workspace: bool
@@ -96,6 +97,7 @@ def load_run_config(config_path: Path) -> RunConfig:
     include_instance_ids = sorted(set(include_instance_ids))
     max_instances = run.get("max_instances")
     attempts = int(run.get("attempts", 1))
+    max_workers = int(run.get("max_workers", 1))
     timeout_seconds = int(run.get("timeout_seconds", 900))
     prepare_workspace = bool(run.get("prepare_workspace", False))
     repo_url_template = str(
@@ -110,6 +112,8 @@ def load_run_config(config_path: Path) -> RunConfig:
 
     if attempts < 1:
         raise ValueError("run.attempts must be >= 1")
+    if max_workers < 1:
+        raise ValueError("run.max_workers must be >= 1")
     if timeout_seconds < 1:
         raise ValueError("run.timeout_seconds must be >= 1")
     if workspace_timeout_seconds < 1:
@@ -142,6 +146,7 @@ def load_run_config(config_path: Path) -> RunConfig:
         include_instance_ids=include_instance_ids,
         max_instances=None if max_instances is None else int(max_instances),
         attempts=attempts,
+        max_workers=max_workers,
         timeout_seconds=timeout_seconds,
         output_root=output_root,
         prepare_workspace=prepare_workspace,

@@ -9,6 +9,7 @@ include_instance_ids = []
 instance_ids_file = "tokio_task_ids.txt"
 max_instances = 2
 attempts = 1
+max_workers = 2
 timeout_seconds = 1200
 output_root = "runs"
 prepare_workspace = true

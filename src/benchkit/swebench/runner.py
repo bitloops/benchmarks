@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import sys
+import threading
 
 from benchkit.common.artifacts import create_run_layout, snapshot_config
 from benchkit.common.config import AgentConfig, RunConfig
 from benchkit.common.io import write_json, write_jsonl
-from benchkit.swebench.agents.base import RunContext
+from benchkit.swebench.agents.base import AgentAdapter, RunContext
 from benchkit.swebench.agents.registry import build_agent_adapter
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.evaluation import AttemptEvaluationResult, evaluate_predictions_with_harness
@@ -29,7 +31,12 @@ class RunResult:
     evaluation_reports: list[Path]
 
 
-def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None = None) -> RunResult:
+def execute_run(
+    config: RunConfig,
+    dry_run: bool = False,
+    attempts: int | None = None,
+    max_workers: int | None = None,
+) -> RunResult:
     all_instances = load_instances(config.dataset_path)
     selected_instances = filter_instances(
         all_instances,
@@ -47,6 +54,9 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
     attempts_count = attempts if attempts is not None else config.attempts
     if attempts_count < 1:
         raise ValueError("attempts must be >= 1")
+    max_workers_count = max_workers if max_workers is not None else config.max_workers
+    if max_workers_count < 1:
+        raise ValueError("max_workers must be >= 1")
 
     layout = create_run_layout(config.output_root, config.benchmark)
     snapshot_config(config.source_path, layout.config_snapshot_path)
@@ -80,6 +90,7 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
         run_id=layout.run_id,
         total_instances=len(selected_instances),
         attempts=attempts_count,
+        max_workers=max_workers_count,
         dry_run=dry_run,
         started_at=started_at,
     )
@@ -89,6 +100,8 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
     trace_files: list[Path] = []
     evaluation_results: list[AttemptEvaluationResult] = []
     workspace_cache: dict[str, WorkspacePrepResult] = {}
+    workspace_in_flight: dict[str, threading.Event] = {}
+    workspace_lock = threading.Lock()
     success_count_total = 0
 
     for attempt in range(1, attempts_count + 1):
@@ -97,82 +110,86 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
         prediction_path = attempt_dir / "predictions.jsonl"
         trace_path = attempt_dir / "trace.jsonl"
 
-        predictions: list[dict[str, Any]] = []
-        traces: list[dict[str, Any]] = []
+        predictions_slots: list[dict[str, Any] | None] = [None] * len(selected_instances)
+        trace_slots: list[dict[str, Any] | None] = [None] * len(selected_instances)
+        attempt_success_count = 0
+        attempt_max_workers = min(max_workers_count, len(selected_instances))
+        _log_progress(
+            f"attempt {attempt}/{attempts_count}: executing "
+            f"{len(selected_instances)} instance(s) with max_workers={attempt_max_workers}"
+        )
 
-        for instance_index, instance in enumerate(selected_instances, start=1):
-            status = "ok"
-            patch = ""
-            metadata: dict[str, Any] = {}
-            error_message = None
-            _log_progress(
-                f"attempt {attempt}/{attempts_count} "
-                f"instance {instance_index}/{len(selected_instances)} "
-                f"{instance.instance_id}: start"
-            )
-            workspace_result = _resolve_workspace(
-                config=config,
-                layout_run_root=layout.run_root,
-                instance=instance,
-                cache=workspace_cache,
-            )
-            workspace_metadata = {"workspace": workspace_result.to_metadata()}
-
-            run_context = RunContext(
-                attempt=attempt,
-                timeout_seconds=config.timeout_seconds,
-                workspace_root=workspace_result.workspace_path or Path.cwd(),
-                model=resolved_model,
-                canonical_model_name=model_resolution.canonical_name,
-                run_id=layout.run_id,
-                benchmark=config.benchmark,
-            )
-
-            if workspace_result.status == "error":
-                status = "error"
-                error_message = f"workspace preparation failed: {workspace_result.error}"
-                metadata = workspace_metadata
-            else:
-                try:
-                    result = adapter.generate_patch(instance, run_context)
-                    patch = result.patch
-                    metadata = {**workspace_metadata, **result.metadata}
-                    success_count_total += 1
-                    call_elapsed_ms = result.metadata.get("elapsed_ms")
-                    elapsed_note = (
-                        f", elapsed_ms={call_elapsed_ms}"
-                        if isinstance(call_elapsed_ms, (int, float))
-                        else ""
+        if attempt_max_workers == 1:
+            for instance_index, instance in enumerate(selected_instances, start=1):
+                (
+                    item_index,
+                    prediction_row,
+                    trace_row,
+                    succeeded,
+                ) = _run_instance(
+                    attempt=attempt,
+                    attempts_count=attempts_count,
+                    instance_index=instance_index,
+                    total_instances=len(selected_instances),
+                    instance=instance,
+                    adapter=adapter,
+                    config=config,
+                    layout_run_root=layout.run_root,
+                    run_id=layout.run_id,
+                    resolved_model=resolved_model,
+                    canonical_model_name=model_resolution.canonical_name,
+                    model_label=model_label,
+                    workspace_cache=workspace_cache,
+                    workspace_in_flight=workspace_in_flight,
+                    workspace_lock=workspace_lock,
+                )
+                predictions_slots[item_index] = prediction_row
+                trace_slots[item_index] = trace_row
+                if succeeded:
+                    attempt_success_count += 1
+        else:
+            with ThreadPoolExecutor(max_workers=attempt_max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _run_instance,
+                        attempt=attempt,
+                        attempts_count=attempts_count,
+                        instance_index=instance_index,
+                        total_instances=len(selected_instances),
+                        instance=instance,
+                        adapter=adapter,
+                        config=config,
+                        layout_run_root=layout.run_root,
+                        run_id=layout.run_id,
+                        resolved_model=resolved_model,
+                        canonical_model_name=model_resolution.canonical_name,
+                        model_label=model_label,
+                        workspace_cache=workspace_cache,
+                        workspace_in_flight=workspace_in_flight,
+                        workspace_lock=workspace_lock,
                     )
-                    _log_progress(
-                        f"attempt {attempt}/{attempts_count} "
-                        f"instance {instance_index}/{len(selected_instances)} "
-                        f"{instance.instance_id}: success{elapsed_note}"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    status = "error"
-                    error_message = str(exc)
-                    metadata = workspace_metadata
-                    _log_progress(
-                        f"attempt {attempt}/{attempts_count} "
-                        f"instance {instance_index}/{len(selected_instances)} "
-                        f"{instance.instance_id}: error ({error_message})"
-                    )
+                    for instance_index, instance in enumerate(selected_instances, start=1)
+                ]
+                for future in as_completed(futures):
+                    (
+                        item_index,
+                        prediction_row,
+                        trace_row,
+                        succeeded,
+                    ) = future.result()
+                    predictions_slots[item_index] = prediction_row
+                    trace_slots[item_index] = trace_row
+                    if succeeded:
+                        attempt_success_count += 1
 
-            prediction = PredictionRecord(
-                instance_id=instance.instance_id,
-                model_name_or_path=model_label,
-                model_patch=patch,
-            )
-            predictions.append(prediction.to_row())
-            traces.append(
-                {
-                    "instance_id": instance.instance_id,
-                    "status": status,
-                    "error": error_message,
-                    "metadata": metadata,
-                }
-            )
+        if any(item is None for item in predictions_slots):
+            raise RuntimeError("Internal error: missing predictions for one or more instances")
+        if any(item is None for item in trace_slots):
+            raise RuntimeError("Internal error: missing traces for one or more instances")
+
+        predictions = [item for item in predictions_slots if item is not None]
+        traces = [item for item in trace_slots if item is not None]
+        success_count_total += attempt_success_count
 
         write_jsonl(prediction_path, predictions)
         write_jsonl(trace_path, traces)
@@ -202,6 +219,7 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
         "include_instance_ids": config.include_instance_ids,
         "total_instances": len(selected_instances),
         "attempts": attempts_count,
+        "max_workers": max_workers_count,
         "total_agent_calls": total_calls,
         "successful_agent_calls": success_count_total,
         "failed_agent_calls": total_calls - success_count_total,
@@ -246,6 +264,7 @@ def _build_manifest(
     run_id: str,
     total_instances: int,
     attempts: int,
+    max_workers: int,
     dry_run: bool,
     started_at: str,
 ) -> dict[str, Any]:
@@ -260,6 +279,7 @@ def _build_manifest(
         "include_instance_ids": config.include_instance_ids,
         "max_instances": config.max_instances,
         "attempts": attempts,
+        "max_workers": max_workers,
         "timeout_seconds": config.timeout_seconds,
         "dry_run": dry_run,
         "total_instances": total_instances,
@@ -305,11 +325,106 @@ def _build_manifest(
     }
 
 
+def _run_instance(
+    *,
+    attempt: int,
+    attempts_count: int,
+    instance_index: int,
+    total_instances: int,
+    instance: BenchmarkInstance,
+    adapter: AgentAdapter,
+    config: RunConfig,
+    layout_run_root: Path,
+    run_id: str,
+    resolved_model: Any,
+    canonical_model_name: str,
+    model_label: str,
+    workspace_cache: dict[str, WorkspacePrepResult],
+    workspace_in_flight: dict[str, threading.Event],
+    workspace_lock: threading.Lock,
+) -> tuple[int, dict[str, Any], dict[str, Any], bool]:
+    status = "ok"
+    patch = ""
+    metadata: dict[str, Any] = {}
+    error_message: str | None = None
+
+    _log_progress(
+        f"attempt {attempt}/{attempts_count} "
+        f"instance {instance_index}/{total_instances} "
+        f"{instance.instance_id}: start"
+    )
+    workspace_result = _resolve_workspace(
+        config=config,
+        layout_run_root=layout_run_root,
+        instance=instance,
+        cache=workspace_cache,
+        in_flight=workspace_in_flight,
+        cache_lock=workspace_lock,
+    )
+    workspace_metadata = {"workspace": workspace_result.to_metadata()}
+
+    run_context = RunContext(
+        attempt=attempt,
+        timeout_seconds=config.timeout_seconds,
+        workspace_root=workspace_result.workspace_path or Path.cwd(),
+        model=resolved_model,
+        canonical_model_name=canonical_model_name,
+        run_id=run_id,
+        benchmark=config.benchmark,
+    )
+
+    if workspace_result.status == "error":
+        status = "error"
+        error_message = f"workspace preparation failed: {workspace_result.error}"
+        metadata = workspace_metadata
+    else:
+        try:
+            result = adapter.generate_patch(instance, run_context)
+            patch = result.patch
+            metadata = {**workspace_metadata, **result.metadata}
+            call_elapsed_ms = result.metadata.get("elapsed_ms")
+            elapsed_note = (
+                f", elapsed_ms={call_elapsed_ms}"
+                if isinstance(call_elapsed_ms, (int, float))
+                else ""
+            )
+            _log_progress(
+                f"attempt {attempt}/{attempts_count} "
+                f"instance {instance_index}/{total_instances} "
+                f"{instance.instance_id}: success{elapsed_note}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            status = "error"
+            error_message = str(exc)
+            metadata = workspace_metadata
+            _log_progress(
+                f"attempt {attempt}/{attempts_count} "
+                f"instance {instance_index}/{total_instances} "
+                f"{instance.instance_id}: error ({error_message})"
+            )
+
+    prediction = PredictionRecord(
+        instance_id=instance.instance_id,
+        model_name_or_path=model_label,
+        model_patch=patch,
+    ).to_row()
+    trace = {
+        "instance_id": instance.instance_id,
+        "status": status,
+        "error": error_message,
+        "metadata": metadata,
+    }
+
+    return instance_index - 1, prediction, trace, status == "ok"
+
+
 def _resolve_workspace(
     config: RunConfig,
     layout_run_root: Path,
     instance: BenchmarkInstance,
     cache: dict[str, WorkspacePrepResult],
+    in_flight: dict[str, threading.Event],
+    cache_lock: threading.Lock,
 ) -> WorkspacePrepResult:
     if not config.prepare_workspace:
         return WorkspacePrepResult(
@@ -321,19 +436,47 @@ def _resolve_workspace(
         )
 
     key = f"{instance.repo}@{instance.base_commit}"
-    if key in cache and cache[key].status in {"prepared", "reused"}:
-        return cache[key]
+    while True:
+        wait_event: threading.Event | None = None
+        is_owner = False
 
-    result = prepare_instance_workspace(
-        instance=instance,
-        run_root=layout_run_root,
-        repo_url_template=config.repo_url_template,
-        git_bin=config.git_bin,
-        timeout_seconds=config.workspace_timeout_seconds,
-        workspace_root=config.workspace_root,
-    )
-    cache[key] = result
-    return result
+        with cache_lock:
+            cached = cache.get(key)
+            if cached and cached.status in {"prepared", "reused"}:
+                return cached
+            wait_event = in_flight.get(key)
+            if wait_event is None:
+                wait_event = threading.Event()
+                in_flight[key] = wait_event
+                is_owner = True
+
+        if is_owner:
+            try:
+                result = prepare_instance_workspace(
+                    instance=instance,
+                    run_root=layout_run_root,
+                    repo_url_template=config.repo_url_template,
+                    git_bin=config.git_bin,
+                    timeout_seconds=config.workspace_timeout_seconds,
+                    workspace_root=config.workspace_root,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result = WorkspacePrepResult(
+                    status="error",
+                    workspace_path=None,
+                    repo_url=None,
+                    elapsed_ms=0,
+                    error=str(exc),
+                )
+
+            with cache_lock:
+                cache[key] = result
+                in_flight.pop(key, None)
+                wait_event.set()
+            return result
+
+        assert wait_event is not None
+        wait_event.wait()
 
 
 def _log_progress(message: str) -> None:

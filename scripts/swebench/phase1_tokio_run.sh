@@ -14,6 +14,8 @@ TOKIO_TASK_IDS="${TOKIO_TASK_IDS:-configs/swebench/tokio_task_ids.txt}"
 CLAUDE_CONFIG="${CLAUDE_CONFIG:-configs/swebench/rust_tokio_phase1_claude.toml}"
 CURSOR_CONFIG="${CURSOR_CONFIG:-configs/swebench/rust_tokio_phase1_cursor.toml}"
 APPENDIX_DIR="${APPENDIX_DIR:-reports/appendix/phase1_tokio}"
+RUN_AGENTS_IN_PARALLEL="${RUN_AGENTS_IN_PARALLEL:-1}"
+RUN_MAX_WORKERS="${RUN_MAX_WORKERS:-2}"
 
 run_cli() {
   PYTHONPATH=src "$PYTHON_BIN" -m "$CLI_MODULE" "$@"
@@ -38,10 +40,35 @@ extract_run_root() {
   printf "%s" "$run_root"
 }
 
+run_baseline() {
+  local config_path="$1"
+  local output_file="$2"
+
+  run_cli run --config "$config_path" --max-workers "$RUN_MAX_WORKERS" >"$output_file" 2>&1
+}
+
+is_truthy() {
+  local value
+  value="$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 echo "[0/7] Preflight checks"
 require_file "$TOKIO_TASK_IDS"
 require_file "$CLAUDE_CONFIG"
 require_file "$CURSOR_CONFIG"
+
+if ! [[ "$RUN_MAX_WORKERS" =~ ^[0-9]+$ ]] || (( RUN_MAX_WORKERS < 1 )); then
+  echo "RUN_MAX_WORKERS must be an integer >= 1 (got: $RUN_MAX_WORKERS)" >&2
+  exit 1
+fi
 
 if ! "$PYTHON_BIN" -c "import swebench" >/dev/null 2>&1; then
   echo "Missing Python dependency: swebench. Install with: python3 -m pip install swebench" >&2
@@ -66,13 +93,48 @@ run_cli plan --config "$CLAUDE_CONFIG" --show 3
 echo "[3/7] Validating Cursor config/model mapping"
 run_cli plan --config "$CURSOR_CONFIG" --show 3
 
-echo "[4/7] Running Claude baseline"
-CLAUDE_OUTPUT="$(run_cli run --config "$CLAUDE_CONFIG")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/benchkit-phase1.XXXXXX")"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+CLAUDE_LOG="$TMP_DIR/claude_run.log"
+CURSOR_LOG="$TMP_DIR/cursor_run.log"
+
+echo "[4/7] Running baselines (agents_parallel=$RUN_AGENTS_IN_PARALLEL, run_max_workers=$RUN_MAX_WORKERS)"
+if is_truthy "$RUN_AGENTS_IN_PARALLEL"; then
+  run_baseline "$CLAUDE_CONFIG" "$CLAUDE_LOG" &
+  CLAUDE_PID=$!
+  run_baseline "$CURSOR_CONFIG" "$CURSOR_LOG" &
+  CURSOR_PID=$!
+
+  CLAUDE_STATUS=0
+  CURSOR_STATUS=0
+  wait "$CLAUDE_PID" || CLAUDE_STATUS=$?
+  wait "$CURSOR_PID" || CURSOR_STATUS=$?
+
+  if (( CLAUDE_STATUS != 0 || CURSOR_STATUS != 0 )); then
+    echo "One or more baseline runs failed." >&2
+    echo "--- Claude run output ---" >&2
+    cat "$CLAUDE_LOG" >&2 || true
+    echo "--- Cursor run output ---" >&2
+    cat "$CURSOR_LOG" >&2 || true
+    exit 1
+  fi
+else
+  run_baseline "$CLAUDE_CONFIG" "$CLAUDE_LOG"
+  run_baseline "$CURSOR_CONFIG" "$CURSOR_LOG"
+fi
+
+echo "[5/7] Collecting baseline outputs"
+echo "--- Claude baseline ---"
+CLAUDE_OUTPUT="$(cat "$CLAUDE_LOG")"
 printf "%s\n" "$CLAUDE_OUTPUT"
 CLAUDE_RUN_ROOT="$(extract_run_root "$CLAUDE_OUTPUT")"
 
-echo "[5/7] Running Cursor baseline"
-CURSOR_OUTPUT="$(run_cli run --config "$CURSOR_CONFIG")"
+echo "--- Cursor baseline ---"
+CURSOR_OUTPUT="$(cat "$CURSOR_LOG")"
 printf "%s\n" "$CURSOR_OUTPUT"
 CURSOR_RUN_ROOT="$(extract_run_root "$CURSOR_OUTPUT")"
 

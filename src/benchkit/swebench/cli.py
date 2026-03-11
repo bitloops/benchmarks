@@ -32,6 +32,12 @@ def main() -> None:
         default=None,
         help="Override attempts from config",
     )
+    run_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="Override run.max_workers from config",
+    )
     export_parser = subparsers.add_parser(
         "export-hf",
         help="Export SWE-bench Multilingual split from HF to local JSONL",
@@ -137,7 +143,7 @@ def main() -> None:
         return
 
     if args.command == "run":
-        run_execute(args.config, args.dry_run, args.attempts)
+        run_execute(args.config, args.dry_run, args.attempts, args.max_workers)
         return
 
     if args.command == "export-hf":
@@ -205,16 +211,27 @@ def run_plan(config_path: Path, show: int) -> None:
     )
     print(f"Max instances: {config.max_instances}")
     print(f"Attempts: {config.attempts}")
+    print(f"Run max workers: {config.max_workers}")
     print()
     print("Sample instance IDs:")
     for item in selected[: max(0, show)]:
         print(f"- {item.instance_id}")
 
 
-def run_execute(config_path: Path, dry_run: bool, attempts: int | None) -> None:
+def run_execute(
+    config_path: Path,
+    dry_run: bool,
+    attempts: int | None,
+    max_workers: int | None,
+) -> None:
     config = load_run_config(config_path)
     try:
-        result = execute_run(config, dry_run=dry_run, attempts=attempts)
+        result = execute_run(
+            config,
+            dry_run=dry_run,
+            attempts=attempts,
+            max_workers=max_workers,
+        )
     except ValueError as exc:
         raise SystemExit(f"Run error: {exc}") from exc
     print(f"Run ID: {result.run_id}")
