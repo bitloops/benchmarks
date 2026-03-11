@@ -150,3 +150,23 @@ Run the full Tokio Phase 1 flow in one command:
 ```bash
 ./scripts/swebench/phase1_tokio_run.sh
 ```
+
+## Dataset viewer
+
+A Streamlit app for browsing bug-report datasets (JSONL/JSON) with a GitHub-style diff viewer for patches.
+
+1. Install viewer dependencies:
+
+```bash
+pip install -r requirements-dataset-viewer.txt
+```
+
+Or with the project installed: `pip install -e '.[viewer]'`.
+
+2. Run the app:
+
+```bash
+streamlit run app.py
+```
+
+3. In the sidebar, set the dataset path (default: `datasets/swebench_multilingual.test.tokio.jsonl`), filter by repo, search problem statements, or jump to a record by `instance_id`. The main panel shows metadata, problem statement, hints, and side-by-side patch and test-patch diffs (rendered with diff2html).
