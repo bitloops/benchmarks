@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 hf = ["datasets>=2.20.0"]
+viewer = ["streamlit>=1.28", "pandas>=2.0"]
 
 [project.scripts]
 benchkit = "benchkit.swebench.cli:main"

@@ -1,0 +1,4 @@
+# Dataset viewer (Streamlit + diff2html via CDN)
+# Run: pip install -r requirements-dataset-viewer.txt && streamlit run app.py
+streamlit>=1.28
+pandas>=2.0
