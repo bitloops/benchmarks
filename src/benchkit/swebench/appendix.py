@@ -302,9 +302,9 @@ def _pick_number(metadata: Any, keys: tuple[str, ...]) -> float | int | None:
     for key in keys:
         if key not in metadata:
             continue
-        value = metadata[key]
-        if isinstance(value, (int, float)):
-            return value
+        number = _coerce_number(metadata[key])
+        if number is not None:
+            return number
     return None
 
 
@@ -355,3 +355,22 @@ def _derive_repo_label(repo: str) -> str | None:
         return None
     owner, _, _name = repo.partition("/")
     return owner.strip() or repo
+
+
+def _coerce_number(value: Any) -> float | int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return float(text)
+            except ValueError:
+                return None
+    return None

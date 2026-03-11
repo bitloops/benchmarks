@@ -58,7 +58,16 @@ class AppendixTests(unittest.TestCase):
                     {
                         "instance_id": "tokio__1",
                         "status": "ok",
-                        "metadata": {"elapsed_ms": 2000, "tool_calls": 7},
+                        "metadata": {
+                            "elapsed_ms": 2000,
+                            "token_input": "1010",
+                            "token_output": 220,
+                            "estimated_cost": "0.04",
+                            "tool_calls": "7",
+                            "shell_commands": "3",
+                            "file_reads": 8,
+                            "search_actions": "2",
+                        },
                     }
                 ],
             )
@@ -84,11 +93,32 @@ class AppendixTests(unittest.TestCase):
             per_task = [json.loads(line) for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(per_task), 1)
             self.assertEqual(per_task[0]["status"], "solved")
+            self.assertEqual(per_task[0]["token_input"], 1010)
+            self.assertEqual(per_task[0]["token_output"], 220)
+            self.assertEqual(per_task[0]["estimated_cost"], 0.04)
+            self.assertEqual(per_task[0]["tool_calls"], 7)
+            self.assertEqual(per_task[0]["shell_commands"], 3)
+            self.assertEqual(per_task[0]["file_reads"], 8)
+            self.assertEqual(per_task[0]["search_actions"], 2)
 
             with outputs.results_csv.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["solved"], "1")
+            self.assertNotEqual(rows[0]["median_tool_calls"], "")
+            self.assertNotEqual(rows[0]["median_file_reads"], "")
+            self.assertNotEqual(rows[0]["median_search_actions"], "")
+            self.assertNotEqual(rows[0]["median_cost"], "")
+            self.assertEqual(float(rows[0]["median_tool_calls"]), 7.0)
+            self.assertEqual(float(rows[0]["median_file_reads"]), 8.0)
+            self.assertEqual(float(rows[0]["median_search_actions"]), 2.0)
+            self.assertEqual(float(rows[0]["median_cost"]), 0.04)
+
+            markdown = outputs.results_markdown.read_text(encoding="utf-8")
+            self.assertIn("7.000", markdown)
+            self.assertIn("8.000", markdown)
+            self.assertIn("2.000", markdown)
+            self.assertIn("0.040", markdown)
 
 
 if __name__ == "__main__":

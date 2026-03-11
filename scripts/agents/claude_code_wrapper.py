@@ -7,8 +7,12 @@ from common import (  # type: ignore[import-not-found]
     call_command,
     emit_success,
     env_args,
+    extract_usage_metrics,
     extract_git_patch,
     fatal_error,
+    load_hook_metrics,
+    merge_metric_metadata,
+    parse_agent_payload,
     parse_agent_output,
     read_payload_from_stdin,
     render_task_prompt,
@@ -49,8 +53,21 @@ def main() -> None:
             },
         )
 
-    parsed_text = parse_agent_output(stdout)
+    parsed_payload = parse_agent_payload(stdout)
+    parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
     patch, patch_source = extract_git_patch(parsed_text)
+    usage_metrics = extract_usage_metrics(parsed_payload)
+    hook_metrics = load_hook_metrics(
+        (
+            "CLAUDE_HOOK_METRICS_PATH",
+            "CLAUDE_HOOK_LOG_PATH",
+            "AGENT_HOOK_METRICS_PATH",
+            "AGENT_HOOK_LOG_PATH",
+            "HOOK_METRICS_PATH",
+            "HOOK_LOG_PATH",
+        )
+    )
+    merged_metrics = merge_metric_metadata(usage_metrics, hook_metrics)
 
     emit_success(
         patch=patch,
@@ -62,6 +79,7 @@ def main() -> None:
             "elapsed_ms": elapsed_ms,
             "patch_source": patch_source,
             "stderr": stderr.strip(),
+            **merged_metrics,
         },
     )
 

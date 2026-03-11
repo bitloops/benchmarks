@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import json
+import os
 import subprocess
+import sys
+import threading
 import time
 
 from benchkit.common.config import AgentConfig, ModelConfig
@@ -97,15 +100,25 @@ class JsonCommandAgentAdapter(AgentAdapter):
         command = self._build_command()
 
         start = time.time()
-        completed = subprocess.run(
-            command,
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            timeout=context.timeout_seconds,
-            cwd=str(context.workspace_root),
-            check=False,
+        heartbeat = _AgentHeartbeat(
+            adapter_id=self.config.id,
+            instance_id=instance.instance_id,
+            attempt=context.attempt,
+            timeout_seconds=context.timeout_seconds,
         )
+        heartbeat.start()
+        try:
+            completed = subprocess.run(
+                command,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                timeout=context.timeout_seconds,
+                cwd=str(context.workspace_root),
+                check=False,
+            )
+        finally:
+            heartbeat.stop()
         elapsed_ms = int((time.time() - start) * 1000)
 
         if completed.returncode != 0:
@@ -153,3 +166,66 @@ def _resolve_relative_command_paths(command: list[str], base_dir: Path) -> list[
         absolute = (base_dir / candidate).resolve()
         resolved.append(str(absolute) if absolute.exists() else token)
     return resolved
+
+
+def _heartbeat_interval_seconds() -> float | None:
+    raw = os.environ.get("BENCHKIT_AGENT_HEARTBEAT_SECONDS", "20").strip().lower()
+    if raw in {"", "0", "off", "false", "no"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return 20.0
+    return value if value > 0 else None
+
+
+class _AgentHeartbeat:
+    def __init__(
+        self,
+        adapter_id: str,
+        instance_id: str,
+        attempt: int,
+        timeout_seconds: int,
+    ) -> None:
+        self.adapter_id = adapter_id
+        self.instance_id = instance_id
+        self.attempt = attempt
+        self.timeout_seconds = timeout_seconds
+        self.interval_seconds = _heartbeat_interval_seconds()
+        self._start = time.time()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._emit_start()
+        if self.interval_seconds is None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.2)
+        elapsed = int(time.time() - self._start)
+        self._emit(f"finished in {elapsed}s")
+
+    def _run(self) -> None:
+        assert self.interval_seconds is not None
+        while not self._stop_event.wait(self.interval_seconds):
+            elapsed = int(time.time() - self._start)
+            self._emit(f"still running ({elapsed}s elapsed)")
+
+    def _emit_start(self) -> None:
+        timeout_note = (
+            f", timeout={self.timeout_seconds}s" if self.timeout_seconds > 0 else ""
+        )
+        self._emit(f"started{timeout_note}")
+
+    def _emit(self, message: str) -> None:
+        sys.stderr.write(
+            "[benchkit] "
+            f"agent={self.adapter_id} attempt={self.attempt} "
+            f"instance={self.instance_id}: {message}\n"
+        )
+        sys.stderr.flush()

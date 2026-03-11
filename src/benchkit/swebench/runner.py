@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import sys
 
 from benchkit.common.artifacts import create_run_layout, snapshot_config
 from benchkit.common.config import AgentConfig, RunConfig
@@ -99,11 +100,16 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
         predictions: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
 
-        for instance in selected_instances:
+        for instance_index, instance in enumerate(selected_instances, start=1):
             status = "ok"
             patch = ""
             metadata: dict[str, Any] = {}
             error_message = None
+            _log_progress(
+                f"attempt {attempt}/{attempts_count} "
+                f"instance {instance_index}/{len(selected_instances)} "
+                f"{instance.instance_id}: start"
+            )
             workspace_result = _resolve_workspace(
                 config=config,
                 layout_run_root=layout.run_root,
@@ -132,10 +138,26 @@ def execute_run(config: RunConfig, dry_run: bool = False, attempts: int | None =
                     patch = result.patch
                     metadata = {**workspace_metadata, **result.metadata}
                     success_count_total += 1
+                    call_elapsed_ms = result.metadata.get("elapsed_ms")
+                    elapsed_note = (
+                        f", elapsed_ms={call_elapsed_ms}"
+                        if isinstance(call_elapsed_ms, (int, float))
+                        else ""
+                    )
+                    _log_progress(
+                        f"attempt {attempt}/{attempts_count} "
+                        f"instance {instance_index}/{len(selected_instances)} "
+                        f"{instance.instance_id}: success{elapsed_note}"
+                    )
                 except Exception as exc:  # noqa: BLE001
                     status = "error"
                     error_message = str(exc)
                     metadata = workspace_metadata
+                    _log_progress(
+                        f"attempt {attempt}/{attempts_count} "
+                        f"instance {instance_index}/{len(selected_instances)} "
+                        f"{instance.instance_id}: error ({error_message})"
+                    )
 
             prediction = PredictionRecord(
                 instance_id=instance.instance_id,
@@ -312,3 +334,8 @@ def _resolve_workspace(
     )
     cache[key] = result
     return result
+
+
+def _log_progress(message: str) -> None:
+    sys.stderr.write(f"[benchkit] {message}\n")
+    sys.stderr.flush()

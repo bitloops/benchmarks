@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from benchkit.swebench.agents.base import _resolve_relative_command_paths
+from benchkit.swebench.agents.base import (
+    _heartbeat_interval_seconds,
+    _resolve_relative_command_paths,
+)
 
 
 class AgentBaseTests(unittest.TestCase):
@@ -35,6 +39,18 @@ class AgentBaseTests(unittest.TestCase):
         command = ["python3", "scripts/agents/missing_wrapper.py"]
         resolved = _resolve_relative_command_paths(command, base_dir=base_dir)
         self.assertEqual(resolved, command)
+
+    def test_heartbeat_interval_defaults_to_20_seconds(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_heartbeat_interval_seconds(), 20.0)
+
+    def test_heartbeat_interval_can_be_disabled(self) -> None:
+        with patch.dict("os.environ", {"BENCHKIT_AGENT_HEARTBEAT_SECONDS": "off"}):
+            self.assertIsNone(_heartbeat_interval_seconds())
+
+    def test_heartbeat_interval_uses_custom_positive_value(self) -> None:
+        with patch.dict("os.environ", {"BENCHKIT_AGENT_HEARTBEAT_SECONDS": "7.5"}):
+            self.assertEqual(_heartbeat_interval_seconds(), 7.5)
 
 
 if __name__ == "__main__":
