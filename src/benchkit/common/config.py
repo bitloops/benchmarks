@@ -5,13 +5,20 @@ from pathlib import Path
 from typing import Any
 import tomllib
 
+DEFAULT_ATTEMPTS = 1
+DEFAULT_MAX_WORKERS = 2
+DEFAULT_TIMEOUT_SECONDS = 900
+DEFAULT_WORKSPACE_TIMEOUT_SECONDS = 600
+DEFAULT_PREPARE_WORKSPACE = False
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_MAX_TOKENS = 32000
 
 @dataclass(slots=True)
 class ModelConfig:
     provider: str
     name: str
-    temperature: float = 0.0
-    max_tokens: int = 32000
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
 @dataclass(slots=True)
@@ -96,10 +103,10 @@ def load_run_config(config_path: Path) -> RunConfig:
     )
     include_instance_ids = sorted(set(include_instance_ids))
     max_instances = run.get("max_instances")
-    attempts = int(run.get("attempts", 1))
-    max_workers = int(run.get("max_workers", 1))
-    timeout_seconds = int(run.get("timeout_seconds", 900))
-    prepare_workspace = bool(run.get("prepare_workspace", False))
+    attempts = int(run.get("attempts", DEFAULT_ATTEMPTS))
+    max_workers = int(run.get("max_workers", DEFAULT_MAX_WORKERS))
+    timeout_seconds = int(run.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
+    prepare_workspace = bool(run.get("prepare_workspace", DEFAULT_PREPARE_WORKSPACE))
     repo_url_template = str(
         run.get("repo_url_template", "https://github.com/{repo}.git")
     ).strip()
@@ -108,7 +115,7 @@ def load_run_config(config_path: Path) -> RunConfig:
     workspace_root = None
     if isinstance(workspace_root_raw, str) and workspace_root_raw.strip():
         workspace_root = Path(workspace_root_raw.strip())
-    workspace_timeout_seconds = int(run.get("workspace_timeout_seconds", 600))
+    workspace_timeout_seconds = int(run.get("workspace_timeout_seconds", DEFAULT_WORKSPACE_TIMEOUT_SECONDS))
 
     if attempts < 1:
         raise ValueError("run.attempts must be >= 1")
@@ -130,8 +137,8 @@ def load_run_config(config_path: Path) -> RunConfig:
     model_cfg = ModelConfig(
         provider=str(_require(model, "provider", "model")),
         name=str(_require(model, "name", "model")),
-        temperature=float(model.get("temperature", 0.0)),
-        max_tokens=int(model.get("max_tokens", 32000)),
+        temperature=float(model.get("temperature", DEFAULT_TEMPERATURE)),
+        max_tokens=int(model.get("max_tokens", DEFAULT_MAX_TOKENS)),
     )
     model_map = _parse_model_map(model_map_raw)
     evaluation_cfg = _parse_evaluation_config(evaluation, split=split, benchmark=benchmark)
