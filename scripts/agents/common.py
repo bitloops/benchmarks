@@ -384,22 +384,32 @@ def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     language = str(payload.get("language", "unknown"))
     problem = str(payload.get("problem_statement", "")).strip()
     extra_notes = payload.get("metadata", {})
+    prompt_context = payload.get("prompt_context")
 
-    return (
+    parts = [
         f"You are {wrapper_name} running in benchmark mode.\n"
-        "Task: produce a fix patch only.\n"
-        "Output constraints:\n"
-        "- Return ONLY a valid unified git diff patch.\n"
-        "- Start with 'diff --git'.\n"
-        "- Do not add explanations or markdown.\n"
-        "- If no fix can be produced, return an empty response.\n\n"
+        f"You have access to a workspace containing the source code of {repo} "
+        f"at commit {base_commit}.\n\n"
+        "Task: Investigate and fix the following issue by editing files "
+        "directly in the workspace.\n\n"
+        "Instructions:\n"
+        "- Read the relevant source files to understand the code.\n"
+        "- Identify the root cause of the issue described below.\n"
+        "- Edit the necessary files to fix the bug.\n"
+        "- Do not commit your changes; just leave the edited files in place.\n"
+        "- Do not add explanations or commentary to your final response.\n\n"
         f"Instance ID: {instance_id}\n"
         f"Repository: {repo}\n"
         f"Base commit: {base_commit}\n"
         f"Language: {language}\n\n"
         f"Issue:\n{problem}\n\n"
         f"Additional metadata:\n{json.dumps(extra_notes, ensure_ascii=False)}"
-    )
+    ]
+
+    if isinstance(prompt_context, str) and prompt_context.strip():
+        parts.append(f"\n\nAdditional context:\n{prompt_context.strip()}")
+
+    return "".join(parts)
 
 
 def resolve_workspace(payload: dict[str, Any]) -> Path:
@@ -409,6 +419,39 @@ def resolve_workspace(payload: dict[str, Any]) -> Path:
         if isinstance(root, str) and root.strip():
             return Path(root).resolve()
     return Path.cwd()
+
+
+def reset_workspace(workspace: Path, git_bin: str = "git") -> None:
+    """Reset workspace to a clean state (HEAD commit, no uncommitted changes)."""
+    subprocess.run(
+        [git_bin, "reset", "--hard", "HEAD"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    subprocess.run(
+        [git_bin, "clean", "-fd"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+
+def capture_workspace_patch(workspace: Path, git_bin: str = "git") -> str:
+    """Capture uncommitted changes in the workspace via ``git diff``."""
+    result = subprocess.run(
+        [git_bin, "diff"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.stdout.strip()
 
 
 def _find_number_by_paths(

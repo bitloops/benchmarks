@@ -24,6 +24,7 @@ class RunContext:
     canonical_model_name: str
     run_id: str
     benchmark: str
+    prompt_context: str | None = None
 
 
 @dataclass(slots=True)
@@ -83,6 +84,7 @@ class JsonCommandAgentAdapter(AgentAdapter):
             "problem_statement": instance.problem_statement,
             "language": instance.language,
             "metadata": instance.metadata,
+            "prompt_context": context.prompt_context,
             "model": {
                 "provider": context.model.provider,
                 "name": context.model.name,

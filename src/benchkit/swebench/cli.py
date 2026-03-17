@@ -315,6 +315,7 @@ def run_appendix(run_roots: list[Path], output_dir: Path) -> None:
     print(f"Per-task CSV: {outputs.per_task_csv}")
     print(f"Results CSV: {outputs.results_csv}")
     print(f"Results Markdown: {outputs.results_markdown}")
+    print(f"Per-Attempt Breakdown: {outputs.per_attempt_markdown}")
 
 
 if __name__ == "__main__":

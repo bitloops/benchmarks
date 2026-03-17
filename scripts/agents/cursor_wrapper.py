@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from common import (  # type: ignore[import-not-found]
     call_command,
+    capture_workspace_patch,
     emit_success,
     env_args,
     extract_usage_metrics,
@@ -16,6 +18,7 @@ from common import (  # type: ignore[import-not-found]
     parse_agent_output,
     read_payload_from_stdin,
     render_task_prompt,
+    reset_workspace,
     resolve_workspace,
 )
 
@@ -31,6 +34,14 @@ def main() -> None:
     )
     workspace = resolve_workspace(payload)
 
+    try:
+        reset_workspace(workspace)
+    except Exception as exc:
+        fatal_error(
+            "workspace reset failed",
+            details={"error": str(exc), "workspace": str(workspace)},
+        )
+
     prompt = render_task_prompt(payload, wrapper_name="cursor")
     command = [
         os.environ.get("CURSOR_AGENT_BIN", "cursor-agent"),
@@ -41,6 +52,7 @@ def main() -> None:
         str(workspace),
         "--model",
         model_name,
+        "--dangerously-skip-permissions",
     ]
     trust_flag = os.environ.get("CURSOR_TRUST_FLAG", "--trust").strip()
     if trust_flag:
@@ -50,19 +62,29 @@ def main() -> None:
     timeout_seconds = int(os.environ.get("CURSOR_TIMEOUT_SECONDS", "900"))
 
     stdout, stderr, return_code, elapsed_ms = call_command(command, timeout_seconds)
-    if return_code != 0:
+
+    workspace_patch = capture_workspace_patch(workspace)
+
+    if workspace_patch:
+        patch = workspace_patch + "\n"
+        patch_source = "workspace_git_diff"
+    elif return_code != 0:
         fatal_error(
-            "cursor-agent command failed",
+            "cursor-agent command failed and no workspace changes were made",
             details={
                 "return_code": return_code,
                 "stderr": stderr.strip(),
                 "command": command,
             },
         )
+        sys.exit(1)
+    else:
+        parsed_text = parse_agent_output(
+            stdout, parsed_payload=parse_agent_payload(stdout)
+        )
+        patch, patch_source = extract_git_patch(parsed_text)
 
     parsed_payload = parse_agent_payload(stdout)
-    parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
-    patch, patch_source = extract_git_patch(parsed_text)
     usage_metrics = extract_usage_metrics(parsed_payload)
     hook_metrics = load_hook_metrics(
         (

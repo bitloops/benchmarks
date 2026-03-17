@@ -13,6 +13,7 @@ from benchkit.common.io import read_json, read_jsonl, write_jsonl
 
 PER_TASK_FIELDS = [
     "task_id",
+    "attempt",
     "benchmark",
     "benchmark_version",
     "repo",
@@ -61,6 +62,7 @@ class AppendixOutputs:
     per_task_csv: Path
     results_csv: Path
     results_markdown: Path
+    per_attempt_markdown: Path
 
 
 def generate_appendix_files(run_roots: list[Path], output_dir: Path) -> AppendixOutputs:
@@ -74,17 +76,22 @@ def generate_appendix_files(run_roots: list[Path], output_dir: Path) -> Appendix
     per_task_csv = output_dir / "appendix_minimal_per_task_log.csv"
     results_csv = output_dir / "appendix_minimal_results_table.csv"
     results_markdown = output_dir / "appendix_minimal_results_table.md"
+    per_attempt_markdown = output_dir / "appendix_per_attempt_breakdown.md"
 
     write_jsonl(per_task_jsonl, per_task_rows)
     _write_csv(per_task_csv, PER_TASK_FIELDS, per_task_rows)
     _write_csv(results_csv, RESULTS_FIELDS, results_rows)
     results_markdown.write_text(_render_results_markdown(results_rows), encoding="utf-8")
+    per_attempt_markdown.write_text(
+        _render_per_attempt_markdown(per_task_rows, results_rows), encoding="utf-8"
+    )
 
     return AppendixOutputs(
         per_task_jsonl=per_task_jsonl,
         per_task_csv=per_task_csv,
         results_csv=results_csv,
         results_markdown=results_markdown,
+        per_attempt_markdown=per_attempt_markdown,
     )
 
 
@@ -138,6 +145,7 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
 
                 row = {
                     "task_id": instance_id,
+                    "attempt": attempt,
                     "benchmark": manifest.get("benchmark"),
                     "benchmark_version": _build_benchmark_version(manifest),
                     "repo": repo,
@@ -258,6 +266,51 @@ def _render_results_markdown(rows: list[dict[str, Any]]) -> str:
             )
             + " |\n"
         )
+    return "".join(lines)
+
+
+def _render_per_attempt_markdown(
+    per_task_rows: list[dict[str, Any]],
+    results_rows: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = ["# Per-Attempt Breakdown\n\n"]
+
+    header = (
+        "| Attempt | Task ID | Status | Runtime (s) | Input Tokens "
+        "| Output Tokens | Cost ($) | Tool Calls | Files Edited | Patch Size |\n"
+    )
+    sep = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+    lines.append(header)
+    lines.append(sep)
+    for row in per_task_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("attempt", "")),
+                    str(row.get("task_id", "")),
+                    str(row.get("status", "")),
+                    _fmt_optional(row.get("runtime_sec")),
+                    _fmt_optional(row.get("token_input")),
+                    _fmt_optional(row.get("token_output")),
+                    _fmt_optional(row.get("estimated_cost")),
+                    _fmt_optional(row.get("tool_calls")),
+                    _fmt_optional(row.get("files_edited")),
+                    str(row.get("patch_size", "")),
+                ]
+            )
+            + " |\n"
+        )
+
+    lines.append("\n## Summary\n\n")
+    for result in results_rows:
+        total = result.get("tasks", 0)
+        solved = result.get("solved", 0)
+        rate = f"{float(result['solve_rate']) * 100:.1f}%" if total else "N/A"
+        lines.append(f"- **Solve rate**: {solved}/{total} ({rate})\n")
+        lines.append(f"- **Median runtime**: {_fmt_optional(result.get('median_runtime_sec'))}s\n")
+        lines.append(f"- **Median cost**: ${_fmt_optional(result.get('median_cost'))}\n")
+
     return "".join(lines)
 
 

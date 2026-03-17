@@ -275,6 +275,7 @@ def _build_manifest(
         "split": config.split,
         "language": config.language,
         "condition": config.condition,
+        "prompt_context": config.prompt_context,
         "include_repos": config.include_repos,
         "include_instance_ids": config.include_instance_ids,
         "max_instances": config.max_instances,
@@ -371,6 +372,7 @@ def _run_instance(
         canonical_model_name=canonical_model_name,
         run_id=run_id,
         benchmark=config.benchmark,
+        prompt_context=config.prompt_context,
     )
 
     if workspace_result.status == "error":
