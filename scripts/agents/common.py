@@ -218,6 +218,7 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int]:
     tool_calls = _find_number_by_paths(
         payload,
         [
+            ("num_turns",),
             ("tool_calls",),
             ("total_tool_calls",),
             ("tools_count",),
