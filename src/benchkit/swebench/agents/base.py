@@ -125,8 +125,10 @@ class JsonCommandAgentAdapter(AgentAdapter):
 
         if completed.returncode != 0:
             stderr = completed.stderr.strip()
+            stdout = completed.stdout.strip()
+            detail = stderr or _summarize_failed_adapter_stdout(stdout)
             raise RuntimeError(
-                f"Adapter command failed (exit={completed.returncode}): {stderr}"
+                f"Adapter command failed (exit={completed.returncode}): {detail}"
             )
 
         stdout = completed.stdout.strip()
@@ -140,6 +142,26 @@ class JsonCommandAgentAdapter(AgentAdapter):
         metadata.setdefault("elapsed_ms", elapsed_ms)
 
         return AgentResult(patch=patch, metadata=metadata)
+
+
+def _summarize_failed_adapter_stdout(stdout: str) -> str:
+    if not stdout.strip():
+        return ""
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout.strip()
+
+    if isinstance(payload, dict):
+        if "error" in payload:
+            return json.dumps(payload)
+        result = payload.get("result")
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        return json.dumps(payload)
+
+    return stdout.strip()
 
 
 def _resolve_relative_command_paths(command: list[str], base_dir: Path) -> list[str]:

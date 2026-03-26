@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import median
+from statistics import mean, median, stdev, variance
 from typing import Any
 import csv
 import json
@@ -53,6 +53,12 @@ RESULTS_FIELDS = [
     "median_file_reads",
     "median_search_actions",
     "median_cost",
+    "mean_runtime_sec",
+    "variance_runtime_sec",
+    "stddev_runtime_sec",
+    "mean_cost",
+    "variance_cost",
+    "stddev_cost",
 ]
 
 
@@ -216,6 +222,12 @@ def _build_results_rows(per_task_rows: list[dict[str, Any]]) -> list[dict[str, A
         file_reads = _median_of(rows, "file_reads")
         search_actions = _median_of(rows, "search_actions")
         cost = _median_of(rows, "estimated_cost")
+        mean_runtime = _mean_of(rows, "runtime_sec")
+        variance_runtime = _variance_of(rows, "runtime_sec")
+        stddev_runtime = _stddev_of(rows, "runtime_sec")
+        mean_cost = _mean_of(rows, "estimated_cost")
+        variance_cost = _variance_of(rows, "estimated_cost")
+        stddev_cost = _stddev_of(rows, "estimated_cost")
 
         results.append(
             {
@@ -231,6 +243,12 @@ def _build_results_rows(per_task_rows: list[dict[str, Any]]) -> list[dict[str, A
                 "median_file_reads": file_reads,
                 "median_search_actions": search_actions,
                 "median_cost": cost,
+                "mean_runtime_sec": mean_runtime,
+                "variance_runtime_sec": variance_runtime,
+                "stddev_runtime_sec": stddev_runtime,
+                "mean_cost": mean_cost,
+                "variance_cost": variance_cost,
+                "stddev_cost": stddev_cost,
             }
         )
     return results
@@ -240,9 +258,13 @@ def _render_results_markdown(rows: list[dict[str, Any]]) -> str:
     header = (
         "| Agent | Condition | Benchmark | Language | Tasks | Solved | Solve Rate "
         "| Median Runtime (s) | Median Tool Calls | Median File Reads "
-        "| Median Search Actions | Median Cost |\n"
+        "| Median Search Actions | Median Cost | Mean Runtime (s) | Variance Runtime (s^2) "
+        "| Stddev Runtime (s) | Mean Cost | Variance Cost | Stddev Cost |\n"
     )
-    sep = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+    sep = (
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+        "--- | --- | --- | --- | --- | --- |\n"
+    )
     lines = [header, sep]
     for row in rows:
         solve_rate = f"{float(row['solve_rate']) * 100:.1f}%"
@@ -262,6 +284,12 @@ def _render_results_markdown(rows: list[dict[str, Any]]) -> str:
                     _fmt_optional(row.get("median_file_reads")),
                     _fmt_optional(row.get("median_search_actions")),
                     _fmt_optional(row.get("median_cost")),
+                    _fmt_optional(row.get("mean_runtime_sec")),
+                    _fmt_optional(row.get("variance_runtime_sec")),
+                    _fmt_optional(row.get("stddev_runtime_sec")),
+                    _fmt_optional(row.get("mean_cost")),
+                    _fmt_optional(row.get("variance_cost")),
+                    _fmt_optional(row.get("stddev_cost")),
                 ]
             )
             + " |\n"
@@ -310,6 +338,8 @@ def _render_per_attempt_markdown(
         lines.append(f"- **Solve rate**: {solved}/{total} ({rate})\n")
         lines.append(f"- **Median runtime**: {_fmt_optional(result.get('median_runtime_sec'))}s\n")
         lines.append(f"- **Median cost**: ${_fmt_optional(result.get('median_cost'))}\n")
+        lines.append(f"- **Runtime variance**: {_fmt_optional(result.get('variance_runtime_sec'))}\n")
+        lines.append(f"- **Cost variance**: {_fmt_optional(result.get('variance_cost'))}\n")
 
     return "".join(lines)
 
@@ -384,6 +414,27 @@ def _median_of(rows: list[dict[str, Any]], key: str) -> float | None:
     if not values:
         return None
     return float(median(values))
+
+
+def _mean_of(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(item[key]) for item in rows if isinstance(item.get(key), (int, float))]
+    if not values:
+        return None
+    return float(mean(values))
+
+
+def _variance_of(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(item[key]) for item in rows if isinstance(item.get(key), (int, float))]
+    if len(values) < 2:
+        return None
+    return float(variance(values))
+
+
+def _stddev_of(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(item[key]) for item in rows if isinstance(item.get(key), (int, float))]
+    if len(values) < 2:
+        return None
+    return float(stdev(values))
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:

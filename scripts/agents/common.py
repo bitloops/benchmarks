@@ -117,6 +117,26 @@ def parse_agent_output(raw_stdout: str, parsed_payload: Any | None = None) -> st
     return text.strip()
 
 
+def summarize_command_failure(stdout: str, stderr: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    stderr_text = stderr.strip()
+    stdout_text = stdout.strip()
+    if stderr_text:
+        summary["stderr"] = stderr_text
+    if not stdout_text:
+        return summary
+
+    parsed = _try_parse_json(stdout_text)
+    if isinstance(parsed, dict):
+        summary["stdout_json"] = parsed
+        result = parsed.get("result")
+        if isinstance(result, str) and result.strip():
+            summary["stdout_result"] = result.strip()
+    else:
+        summary["stdout"] = stdout_text
+    return summary
+
+
 def _try_parse_json(raw_text: str) -> Any | None:
     try:
         return json.loads(raw_text)

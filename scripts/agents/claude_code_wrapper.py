@@ -20,6 +20,7 @@ from common import (  # type: ignore[import-not-found]
     render_task_prompt,
     reset_workspace,
     resolve_workspace,
+    summarize_command_failure,
 )
 
 
@@ -65,12 +66,13 @@ def main() -> None:
         patch = workspace_patch + "\n"
         patch_source = "workspace_git_diff"
     elif return_code != 0:
+        failure_summary = summarize_command_failure(stdout, stderr)
         fatal_error(
             "claude command failed and no workspace changes were made",
             details={
                 "return_code": return_code,
-                "stderr": stderr.strip(),
                 "command": command,
+                **failure_summary,
             },
         )
         sys.exit(1)

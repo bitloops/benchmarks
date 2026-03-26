@@ -1,7 +1,7 @@
 # Benchmarking Guide
 
 End-to-end instructions for running SWE-bench Multilingual benchmarks on Rust tasks
-with the Claude Code agent.
+with the Claude Code agent on Amazon Bedrock.
 
 ## Prerequisites
 
@@ -18,12 +18,30 @@ You also need:
 - `claude` CLI installed and authenticated (`claude --version`)
 - Git
 
+### Bedrock environment
+
+Run benchmarks with the repo virtualenv and Bedrock environment configured:
+
+```bash
+source .venv/bin/activate
+
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_PROFILE=default
+export AWS_REGION=eu-central-1
+export AWS_SDK_LOAD_CONFIG=1
+```
+
+Notes:
+- Use `./.venv/bin/python` for commands in this repo.
+- The benchmark setup assumes Bedrock auth is already working.
+- `claude auth status` should show Bedrock before you start a run.
+
 ## 1. Export the dataset
 
 Pull Rust tasks from HuggingFace into a local JSONL file:
 
 ```bash
-python3 -m benchkit.swebench.cli export-hf \
+./.venv/bin/python -m benchkit.swebench.cli export-hf \
   --split test \
   --language rust \
   --output datasets/swebench_multilingual.test.rust_all.jsonl \
@@ -33,7 +51,7 @@ python3 -m benchkit.swebench.cli export-hf \
 To export only a single repo:
 
 ```bash
-python3 -m benchkit.swebench.cli export-hf \
+./.venv/bin/python -m benchkit.swebench.cli export-hf \
   --split test \
   --repo astral-sh/ruff \
   --output datasets/swebench_multilingual.test.ruff.jsonl \
@@ -49,17 +67,17 @@ Use an existing config as-is or copy it as a starting point.
 **Baseline** (no extra context):
 
 ```bash
-python3 -m benchkit.swebench.cli run \
+./.venv/bin/python -m benchkit.swebench.cli run \
   --config configs/swebench/ruff_15309_claude.toml
 ```
 
 See [`configs/swebench/ruff_15309_claude.toml`](configs/swebench/ruff_15309_claude.toml)
-— targets `astral-sh__ruff-15309`, 3 attempts, Opus 4.6, condition `baseline`.
+— targets `astral-sh__ruff-15309` with condition `baseline`.
 
 **With extra context**:
 
 ```bash
-python3 -m benchkit.swebench.cli run \
+./.venv/bin/python -m benchkit.swebench.cli run \
   --config configs/swebench/ruff_15309_claude_with_context.toml
 ```
 
@@ -87,20 +105,32 @@ Other single-task configs available:
 ### Override attempts from the CLI
 
 ```bash
-python3 -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml --attempts 5
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/ruff_15309_claude.toml \
+  --attempts 5
 ```
 
 ## 3. Run all Rust tasks (or a whole repo)
 
 ```bash
-python3 -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_baseline.toml
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/ruff_all_claude.toml
 ```
 
-See [`configs/swebench/ruff_all_baseline.toml`](configs/swebench/ruff_all_baseline.toml)
-— runs all `astral-sh/ruff` tasks (up to `max_instances = 7`), 1 attempt each,
-condition `baseline`.
+See [`configs/swebench/ruff_all_claude.toml`](configs/swebench/ruff_all_claude.toml)
+— runs all `astral-sh/ruff` tasks in `datasets/swebench_multilingual.test.ruff.jsonl`.
+
+To run the 4-attempt Ruff benchmark sweep used for reporting, either edit `attempts = 4`
+in the config or override attempts from the CLI:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/ruff_all_claude.toml \
+  --attempts 4
+```
+
+That run can be reported to a directory like:
+- `reports/appendix/ruff_all_4_attempts`
 
 To target a different scope, edit these fields in your config:
 
@@ -113,24 +143,14 @@ To target a different scope, edit these fields in your config:
 
 The model is configured in two TOML sections. No code changes needed.
 
-**Claude Opus 4.6** (default — used by all existing configs):
+**Claude Opus 4.6 on Bedrock**:
 
 ```toml
 [model]
 name = "opus-4-6"
 
 [model_map.claude_code]
-"opus-4-6" = "claude-opus-4-6"
-```
-
-**Claude Sonnet 4.6**:
-
-```toml
-[model]
-name = "sonnet-4-6"
-
-[model_map.claude_code]
-"sonnet-4-6" = "claude-sonnet-4-6"
+"opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
 ```
 
 `[model].name` is the canonical label used in reports and the `model_version` CSV
@@ -142,7 +162,7 @@ column. `model_map` maps it to the actual `--model` CLI flag value passed to the
 After a run completes, generate CSV and Markdown reports:
 
 ```bash
-python3 -m benchkit.swebench.cli appendix \
+./.venv/bin/python -m benchkit.swebench.cli appendix \
   --run-root runs/swebench_multilingual/<date>/<run_id> \
   --output-dir reports/appendix/my_report
 ```
@@ -151,11 +171,10 @@ The run root path is printed at the end of every `run` command.
 
 ### Compare multiple runs
 
-Pass multiple `--run-root` flags to combine baseline and with-context runs into
-a single report:
+Pass multiple `--run-root` flags to combine runs into a single report:
 
 ```bash
-python3 -m benchkit.swebench.cli appendix \
+./.venv/bin/python -m benchkit.swebench.cli appendix \
   --run-root runs/swebench_multilingual/20260317/20260317_151318_1a9dbd \
   --run-root runs/swebench_multilingual/20260317/20260317_153808_af673c \
   --output-dir reports/appendix/baseline_vs_context
@@ -173,6 +192,59 @@ The appendix command generates five files:
 | `appendix_minimal_results_table.md` | Markdown version of the results table |
 | `appendix_per_attempt_breakdown.md` | Detailed per-attempt markdown table |
 
+## 6. Query results with SQLite
+
+Import appendix results plus run metadata into a local SQLite database:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli db-import \
+  --appendix-csv reports/appendix/20attempts/appendix_minimal_per_task_log.csv \
+  --run-root runs/swebench_multilingual/20260326/20260326_134738_d4468c \
+  --db-path reports/benchmarks.sqlite
+```
+
+Then inspect the database:
+
+```bash
+sqlite3 reports/benchmarks.sqlite
+```
+
+Exit SQLite with:
+
+```sql
+.quit
+```
+
+Example grouped query by task:
+
+```sql
+SELECT
+  task_id,
+  COUNT(*) AS attempts,
+  SUM(CASE WHEN status = 'solved' THEN 1 ELSE 0 END) AS solved,
+  AVG(runtime_sec) AS avg_runtime_sec,
+  AVG(estimated_cost) AS avg_cost
+FROM task_attempts
+GROUP BY task_id
+ORDER BY task_id;
+```
+
+Notes:
+- Re-importing the same run does not duplicate rows.
+- The database is append-only in practice, keyed by `(run_id, task_id, attempt)`.
+- Main tables are `runs` and `task_attempts`.
+- Helper views include `run_summary` and `model_condition_summary`.
+
+## 7. Bedrock quota note
+
+For Claude Opus 4.6 on Bedrock, the relevant quota is:
+- `Global cross-region model inference tokens per day for Anthropic Claude Opus 4.6 V1`
+- Applied account-level quota: `2,592,000`
+
+Operationally, this quota is exhausted at roughly `~30` Opus benchmark attempts in
+our runs. For larger sweeps, split runs across days, reduce attempts, or use a
+cheaper model.
+
 ## CSV column reference
 
 The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
@@ -187,7 +259,7 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 | repo_label | instance metadata | Owner prefix (e.g. `astral-sh`) |
 | language | instance / manifest | e.g. `rust` |
 | agent | run manifest | e.g. `claude_code` |
-| model_version | run manifest | Resolved model name (e.g. `claude-opus-4-6`) |
+| model_version | run manifest | Resolved model name (e.g. `eu.anthropic.claude-opus-4-6-v1`) |
 | condition | run manifest | `baseline`, `with_testlens_context`, etc. |
 | status | evaluation harness | `solved` / `unsolved` / `invalid` |
 | runtime_sec | trace metadata | Agent wall-clock time in seconds |
@@ -210,20 +282,37 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 
 ```bash
 # Export all Rust tasks
-python3 -m benchkit.swebench.cli export-hf --split test --language rust \
+./.venv/bin/python -m benchkit.swebench.cli export-hf --split test --language rust \
   --output datasets/swebench_multilingual.test.rust_all.jsonl --overwrite
 
-# Run a single task (baseline, 3 attempts)
-python3 -m benchkit.swebench.cli run --config configs/swebench/ruff_15309_claude.toml
+# Run a single task on Bedrock
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/ruff_15309_claude.toml
 
-# Run a single task (with context, 3 attempts)
-python3 -m benchkit.swebench.cli run --config configs/swebench/ruff_15309_claude_with_context.toml
-
-# Run all ruff tasks (baseline, 1 attempt each)
-python3 -m benchkit.swebench.cli run --config configs/swebench/ruff_all_baseline.toml
+# Run all ruff tasks with 4 attempts
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/ruff_all_claude.toml --attempts 4
 
 # Generate reports
-python3 -m benchkit.swebench.cli appendix \
+./.venv/bin/python -m benchkit.swebench.cli appendix \
   --run-root runs/swebench_multilingual/<date>/<run_id> \
   --output-dir reports/appendix/my_report
+
+# Import report into SQLite
+./.venv/bin/python -m benchkit.swebench.cli db-import \
+  --appendix-csv reports/appendix/20attempts/appendix_minimal_per_task_log.csv \
+  --run-root runs/swebench_multilingual/20260326/20260326_134738_d4468c \
+  --db-path reports/benchmarks.sqlite
+
+# Query grouped results by task
+sqlite3 reports/benchmarks.sqlite "
+SELECT
+  task_id,
+  COUNT(*) AS attempts,
+  AVG(runtime_sec) AS avg_runtime_sec,
+  AVG(estimated_cost) AS avg_cost
+FROM task_attempts
+GROUP BY task_id
+ORDER BY task_id;
+"
 ```
