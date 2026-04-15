@@ -7,7 +7,10 @@ import tempfile
 import unittest
 
 from benchkit.common.io import write_json, write_jsonl
-from benchkit.swebench.appendix import generate_appendix_files
+from benchkit.swebench.appendix import (
+    _render_tool_invocation_markdown,
+    generate_appendix_files,
+)
 
 
 class AppendixTests(unittest.TestCase):
@@ -30,7 +33,7 @@ class AppendixTests(unittest.TestCase):
                     "split": "dev",
                     "condition": "baseline",
                     "agent": {"id": "claude_code"},
-                    "model": {"resolved_name": "claude-opus-4-6"},
+                    "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
                 },
             )
             write_jsonl(
@@ -67,10 +70,54 @@ class AppendixTests(unittest.TestCase):
                 metadata = {
                     "token_input": str(1000 + index),
                     "token_output": 220 + index,
+                    "cache_creation_input_tokens": 10 + index,
+                    "cache_read_input_tokens": 20 + index,
+                    "cache_creation_ephemeral_5m_input_tokens": 7 + index,
+                    "cache_creation_ephemeral_1h_input_tokens": 3,
                     "tool_calls": "7",
                     "shell_commands": "3",
                     "file_reads": 8,
                     "search_actions": "2",
+                    "command": ["claude", "--print", f"Prompt for attempt {index}"],
+                    "tool_usage_breakdown": {
+                        "web_search_requests": 2,
+                        "runTerminalCmdRequests": 1,
+                    },
+                    "tool_invocation_counts": {
+                        "Read": 2,
+                        "Bash": 1,
+                    },
+                    "tool_invocation_sequence": ["Read", "Bash", "Read"],
+                    "tool_invocations_raw": [
+                        {
+                            "call_index": 1,
+                            "tool": "Read",
+                            "tool_use_id": "toolu_1",
+                            "input": {"file_path": "src/main.rs"},
+                            "raw_event": {"type": "tool_use", "name": "Read"},
+                        },
+                        {
+                            "call_index": 2,
+                            "tool": "Bash",
+                            "tool_use_id": "toolu_2",
+                            "input": {"command": "pytest -q"},
+                            "raw_event": {"type": "tool_use", "name": "Bash"},
+                        },
+                    ],
+                    "tool_invocations_curated": [
+                        {
+                            "call_index": 1,
+                            "tool": "Read",
+                            "tool_use_id": "toolu_1",
+                            "path": "src/main.rs",
+                        },
+                        {
+                            "call_index": 2,
+                            "tool": "Bash",
+                            "tool_use_id": "toolu_2",
+                            "command": "pytest -q",
+                        },
+                    ],
                 }
                 if elapsed_ms is not None:
                     metadata["elapsed_ms"] = elapsed_ms
@@ -105,6 +152,9 @@ class AppendixTests(unittest.TestCase):
 
             self.assertTrue(outputs.per_task_jsonl.exists())
             self.assertTrue(outputs.results_csv.exists())
+            self.assertTrue(outputs.prompt_tool_markdown.exists())
+            self.assertTrue(outputs.tool_invocation_jsonl.exists())
+            self.assertTrue(outputs.tool_invocation_markdown.exists())
             per_task = [
                 json.loads(line)
                 for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
@@ -114,6 +164,12 @@ class AppendixTests(unittest.TestCase):
             self.assertEqual(per_task[0]["token_input"], 1001)
             self.assertEqual(per_task[0]["token_output"], 221)
             self.assertEqual(per_task[0]["estimated_cost"], 0.04)
+            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 11)
+            self.assertEqual(per_task[0]["cache_read_input_tokens"], 21)
+            self.assertEqual(per_task[0]["cache_creation_ephemeral_5m_input_tokens"], 8)
+            self.assertEqual(per_task[0]["cache_creation_ephemeral_1h_input_tokens"], 3)
+            self.assertEqual(per_task[0]["bedrock_quota_tokens"], 2117)
+            self.assertAlmostEqual(per_task[0]["bedrock_cost_usd"], 0.0106205)
             self.assertEqual(per_task[0]["tool_calls"], 7)
             self.assertEqual(per_task[0]["shell_commands"], 3)
             self.assertEqual(per_task[0]["file_reads"], 8)
@@ -148,6 +204,27 @@ class AppendixTests(unittest.TestCase):
             self.assertIn("0.100", markdown)
             self.assertIn("9.000", markdown)
             self.assertIn("0.004", markdown)
+
+            prompt_tool_markdown = outputs.prompt_tool_markdown.read_text(encoding="utf-8")
+            self.assertIn("Prompt for attempt 1", prompt_tool_markdown)
+            self.assertIn("Read", prompt_tool_markdown)
+            self.assertIn("Bash", prompt_tool_markdown)
+            self.assertIn("Tool Sequence", prompt_tool_markdown)
+            self.assertIn("appendix_tool_invocation_breakdown.md", prompt_tool_markdown)
+
+            tool_invocation_rows = [
+                json.loads(line)
+                for line in outputs.tool_invocation_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertGreaterEqual(len(tool_invocation_rows), 2)
+            self.assertEqual(tool_invocation_rows[0]["tool"], "Read")
+            self.assertIn("curated", tool_invocation_rows[0])
+            self.assertIn("raw", tool_invocation_rows[0])
+
+            tool_invocation_markdown = outputs.tool_invocation_markdown.read_text(encoding="utf-8")
+            self.assertIn("Tool Invocation Breakdown", tool_invocation_markdown)
+            self.assertIn("`path`=src/main.rs", tool_invocation_markdown)
+            self.assertIn("`command`=pytest -q", tool_invocation_markdown)
 
     def test_single_non_null_value_yields_mean_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -215,6 +292,252 @@ class AppendixTests(unittest.TestCase):
             self.assertEqual(row["stddev_runtime_sec"], "")
             self.assertEqual(row["variance_cost"], "")
             self.assertEqual(row["stddev_cost"], "")
+
+    def test_bedrock_quota_tokens_require_bedrock_model_and_cache_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "condition": "baseline",
+                    "agent": {"id": "claude_code"},
+                    "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:claude_code",
+                        "model_patch": "",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {"token_input": 10, "token_output": 3},
+                    }
+                ],
+            )
+            write_jsonl(attempt_dir / "evaluation.tasks.jsonl", [])
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+
+            per_task = [
+                json.loads(line)
+                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertIsNone(per_task[0]["cache_creation_input_tokens"])
+            self.assertIsNone(per_task[0]["cache_read_input_tokens"])
+            self.assertIsNone(per_task[0]["bedrock_quota_tokens"])
+            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
+
+    def test_bedrock_quota_tokens_remain_blank_for_non_bedrock_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "condition": "baseline",
+                    "agent": {"id": "claude_code"},
+                    "model": {"resolved_name": "claude-opus-4-6"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:claude_code",
+                        "model_patch": "",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {
+                            "token_input": 10,
+                            "token_output": 3,
+                            "cache_creation_input_tokens": 2,
+                            "cache_read_input_tokens": 1,
+                            "cache_creation_ephemeral_5m_input_tokens": 1,
+                            "cache_creation_ephemeral_1h_input_tokens": 1,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(attempt_dir / "evaluation.tasks.jsonl", [])
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+
+            per_task = [
+                json.loads(line)
+                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 2)
+            self.assertEqual(per_task[0]["cache_read_input_tokens"], 1)
+            self.assertIsNone(per_task[0]["bedrock_quota_tokens"])
+            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
+
+    def test_bedrock_cost_usd_requires_cache_write_breakdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "condition": "baseline",
+                    "agent": {"id": "claude_code"},
+                    "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:claude_code",
+                        "model_patch": "",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {
+                            "token_input": 10,
+                            "token_output": 3,
+                            "cache_creation_input_tokens": 2,
+                            "cache_read_input_tokens": 1,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(attempt_dir / "evaluation.tasks.jsonl", [])
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+
+            per_task = [
+                json.loads(line)
+                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(per_task[0]["bedrock_quota_tokens"], 27)
+            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
+
+    def test_tool_invocation_markdown_separates_same_task_by_agent_and_model(self) -> None:
+        markdown = _render_tool_invocation_markdown(
+            [
+                {
+                    "condition": "baseline",
+                    "task_id": "tokio__1",
+                    "attempt": 1,
+                    "agent": "claude_code",
+                    "model_version": "eu.anthropic.claude-opus-4-6-v1",
+                    "call_index": 1,
+                    "tool": "Read",
+                    "curated": {"tool": "Read", "path": "src/a.rs"},
+                },
+                {
+                    "condition": "baseline",
+                    "task_id": "tokio__1",
+                    "attempt": 1,
+                    "agent": "cursor",
+                    "model_version": "sonnet-4",
+                    "call_index": 1,
+                    "tool": "Read",
+                    "curated": {"tool": "Read", "path": "src/b.rs"},
+                },
+            ]
+        )
+
+        self.assertEqual(markdown.count("### Task `tokio__1` (attempt 1)"), 2)
+        self.assertIn(
+            "### Agent `claude_code` | Model `eu.anthropic.claude-opus-4-6-v1`",
+            markdown,
+        )
+        self.assertIn("### Agent `cursor` | Model `sonnet-4`", markdown)
+        self.assertIn("`path`=src/a.rs", markdown)
+        self.assertIn("`path`=src/b.rs", markdown)
 
 
 if __name__ == "__main__":

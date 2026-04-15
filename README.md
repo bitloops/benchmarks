@@ -19,6 +19,7 @@ Run these before `./scripts/swebench/phase1_tokio_run.sh`.
    - Docker Desktop / Docker daemon running
    - `claude` CLI installed and authenticated
    - `cursor-agent` CLI installed and authenticated
+   - `bitloops` CLI installed (required for `with_bitloops` runs)
 2. Create and activate a virtual environment:
 
 ```bash
@@ -75,6 +76,7 @@ RUN_MAX_WORKERS=3 ./scripts/swebench/phase1_tokio_run.sh
    - `configs/swebench/rust_claude_code.toml` (Claude Code wrapper)
    - `configs/swebench/rust_cursor.toml` (Cursor wrapper)
    - `configs/swebench/rust_tokio_phase1_claude.toml` (Tokio Phase 1)
+   - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
    - `configs/swebench/rust_tokio_phase1_cursor.toml` (Tokio Phase 1)
 2. Export SWE-bench Multilingual data into local JSONL:
 
@@ -164,6 +166,38 @@ Run the full Tokio Phase 1 flow in one command:
 ```bash
 ./scripts/swebench/phase1_tokio_run.sh
 ```
+
+Run a reusable A/B comparison (baseline vs `with_bitloops`) in one command:
+
+```bash
+./scripts/swebench/run_ab_compare.sh
+```
+
+Useful overrides:
+
+```bash
+# Point to any baseline/experiment config pair
+BASELINE_CONFIG=configs/swebench/rust_tokio_phase1_claude.toml \
+EXPERIMENT_CONFIG=configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml \
+APPENDIX_DIR=reports/appendix/tokio_claude_bitloops_ab \
+./scripts/swebench/run_ab_compare.sh
+
+# Override run concurrency for both runs
+RUN_MAX_WORKERS=2 ./scripts/swebench/run_ab_compare.sh
+```
+
+Bitloops-enabled configs opt in at wrapper level:
+
+```toml
+[run]
+condition = "with_bitloops"
+
+[agent]
+extra_args = ["--bitloops-init"]
+```
+
+Use the same `extra_args` pattern for Cursor configs to compare `baseline` vs
+`with_bitloops` under the `cursor` agent as well.
 
 ## Dataset viewer
 

@@ -345,6 +345,9 @@ def run_appendix(run_roots: list[Path], output_dir: Path) -> None:
     print(f"Results CSV: {outputs.results_csv}")
     print(f"Results Markdown: {outputs.results_markdown}")
     print(f"Per-Attempt Breakdown: {outputs.per_attempt_markdown}")
+    print(f"Prompt/Tool Breakdown: {outputs.prompt_tool_markdown}")
+    print(f"Tool Invocation Log: {outputs.tool_invocation_jsonl}")
+    print(f"Tool Invocation Breakdown: {outputs.tool_invocation_markdown}")
 
 
 def run_db_import(appendix_csvs: list[Path], run_roots: list[Path], db_path: Path) -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import json
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterable
@@ -95,10 +96,7 @@ def evaluate_predictions_with_harness(
     stdout_path = attempt_dir / "evaluation.stdout.log"
     stderr_path = attempt_dir / "evaluation.stderr.log"
     cwd = config.swebench_repo.resolve() if config.swebench_repo else None
-    env = os.environ.copy()
-    if cwd:
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{cwd}:{existing}" if existing else str(cwd)
+    env = _build_evaluation_env(cwd)
 
     try:
         start = time.time()
@@ -165,6 +163,62 @@ def evaluate_predictions_with_harness(
     )
     write_json(report_path, result.to_row())
     return result
+
+
+def _build_evaluation_env(cwd: Path | None) -> dict[str, str]:
+    env = os.environ.copy()
+    if cwd:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{cwd}:{existing}" if existing else str(cwd)
+    _ensure_docker_credential_helper_on_path(env)
+    return env
+
+
+def _ensure_docker_credential_helper_on_path(env: dict[str, str]) -> None:
+    helper_name = _docker_credential_helper_name(env)
+    if not helper_name:
+        return
+    helper_path = shutil.which(helper_name, path=env.get("PATH"))
+    if helper_path:
+        return
+
+    helper_dir = _docker_desktop_bin_dir()
+    if helper_dir is None:
+        return
+    candidate = helper_dir / helper_name
+    if not candidate.exists():
+        return
+
+    existing = env.get("PATH", "")
+    env["PATH"] = f"{helper_dir}{os.pathsep}{existing}" if existing else str(helper_dir)
+
+
+def _docker_credential_helper_name(env: dict[str, str]) -> str | None:
+    config = _load_docker_config(env)
+    store = config.get("credsStore")
+    if not isinstance(store, str) or not store.strip():
+        return None
+    return f"docker-credential-{store.strip()}"
+
+
+def _load_docker_config(env: dict[str, str]) -> dict[str, Any]:
+    config_dir = env.get("DOCKER_CONFIG")
+    if config_dir:
+        config_path = Path(config_dir).expanduser() / "config.json"
+    else:
+        config_path = Path(env.get("HOME", "~")).expanduser() / ".docker" / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _docker_desktop_bin_dir() -> Path | None:
+    candidate = Path("/Applications/Docker.app/Contents/Resources/bin")
+    return candidate if candidate.exists() else None
 
 
 def _build_evaluation_command(

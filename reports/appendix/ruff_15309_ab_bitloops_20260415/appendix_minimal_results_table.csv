@@ -1,0 +1,3 @@
+agent,condition,benchmark,language,tasks,solved,solve_rate,median_runtime_sec,median_tool_calls,median_file_reads,median_search_actions,median_cost,mean_runtime_sec,variance_runtime_sec,stddev_runtime_sec,mean_cost,variance_cost,stddev_cost
+claude_code,baseline,swebench_multilingual,astral-sh,1,1,1.0,268.37,52.0,,0.0,1.2261398999999997,268.37,,,1.2261398999999997,,
+claude_code,with_bitloops,swebench_multilingual,astral-sh,1,1,1.0,367.229,33.0,,0.0,0.7106758499999999,367.229,,,0.7106758499999999,,

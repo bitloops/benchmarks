@@ -1,6 +1,6 @@
 [run]
 benchmark = "swebench_multilingual"
-dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
+dataset_path = "datasets/swebench_multilingual.test.ruff.jsonl"
 split = "test"
 language = ""
 condition = "baseline"

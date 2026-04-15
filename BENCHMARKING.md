@@ -16,6 +16,7 @@ python -m pip install swebench
 You also need:
 - Docker Desktop running (`docker info` should succeed)
 - `claude` CLI installed and authenticated (`claude --version`)
+- `bitloops` CLI installed (`bitloops --version`) for `with_bitloops` runs
 - Git
 
 ### Bedrock environment
@@ -29,12 +30,14 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_PROFILE=default
 export AWS_REGION=eu-central-1
 export AWS_SDK_LOAD_CONFIG=1
+export BENCHKIT_REQUIRE_EXACT_TOOLS=1
 ```
 
 Notes:
 - Use `./.venv/bin/python` for commands in this repo.
 - The benchmark setup assumes Bedrock auth is already working.
 - `claude auth status` should show Bedrock before you start a run.
+- `BENCHKIT_REQUIRE_EXACT_TOOLS=1` enforces per-tool event capture (run fails if only aggregate tool counts are available).
 
 ## 1. Export the dataset
 
@@ -93,6 +96,15 @@ Other single-task configs available:
 | [`ruff_15330_claude.toml`](configs/swebench/ruff_15330_claude.toml) | `astral-sh__ruff-15330` | baseline |
 | [`ruff_15330_claude_with_context.toml`](configs/swebench/ruff_15330_claude_with_context.toml) | `astral-sh__ruff-15330` | with_testlens_context |
 
+### Bitloops-enabled condition
+
+Use a config with:
+- `condition = "with_bitloops"`
+- `[agent].extra_args = ["--bitloops-init"]`
+
+Example Tokio config:
+- [`rust_tokio_phase1_claude_with_bitloops.toml`](configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml)
+
 ### Key TOML fields
 
 | Field | Purpose |
@@ -101,6 +113,7 @@ Other single-task configs available:
 | `attempts` | How many times to run each task |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
 | `prompt_context` | Extra text appended to the agent's prompt |
+| `agent.extra_args` | Wrapper toggles (for Bitloops use `["--bitloops-init"]`) |
 
 ### Override attempts from the CLI
 
@@ -177,12 +190,31 @@ Pass multiple `--run-root` flags to combine runs into a single report:
 ./.venv/bin/python -m benchkit.swebench.cli appendix \
   --run-root runs/swebench_multilingual/20260317/20260317_151318_1a9dbd \
   --run-root runs/swebench_multilingual/20260317/20260317_153808_af673c \
-  --output-dir reports/appendix/baseline_vs_context
+  --output-dir reports/appendix/test1
+```
+
+The aggregated results table is grouped by `agent` + `condition`, so for
+Bitloops A/B runs you should see separate rows for `baseline` and `with_bitloops`.
+
+Run the reusable A/B helper script (baseline config + Bitloops config):
+
+```bash
+./scripts/swebench/run_ab_compare.sh
+```
+
+Optional overrides:
+
+```bash
+BASELINE_CONFIG=configs/swebench/rust_tokio_phase1_claude.toml \
+EXPERIMENT_CONFIG=configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml \
+APPENDIX_DIR=reports/appendix/tokio_claude_bitloops_ab \
+RUN_MAX_WORKERS=2 \
+./scripts/swebench/run_ab_compare.sh
 ```
 
 ### Output files
 
-The appendix command generates five files:
+The appendix command generates seven files:
 
 | File | Description |
 | --- | --- |
@@ -191,6 +223,9 @@ The appendix command generates five files:
 | `appendix_minimal_results_table.csv` | Aggregated results grouped by agent/condition |
 | `appendix_minimal_results_table.md` | Markdown version of the results table |
 | `appendix_per_attempt_breakdown.md` | Detailed per-attempt markdown table |
+| `appendix_prompt_tool_breakdown.md` | Prompt text + exact tool usage/sequence per condition |
+| `appendix_tool_invocation_log.jsonl` | One JSON object per tool call with raw + curated invocation details |
+| `appendix_tool_invocation_breakdown.md` | Human-readable per-call breakdown (grep/read/bash/edit details) |
 
 ## 6. Query results with SQLite
 
