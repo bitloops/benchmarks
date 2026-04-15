@@ -50,6 +50,7 @@ class RunConfig:
     agent: AgentConfig
     model: ModelConfig
     model_map: dict[str, dict[str, str]]
+    prompt_context: str | None
     evaluation: "EvaluationConfig"
     source_path: Path
 
@@ -140,6 +141,11 @@ def load_run_config(config_path: Path) -> RunConfig:
         temperature=float(model.get("temperature", DEFAULT_TEMPERATURE)),
         max_tokens=int(model.get("max_tokens", DEFAULT_MAX_TOKENS)),
     )
+    prompt_context_raw = run.get("prompt_context")
+    prompt_context = (
+        str(prompt_context_raw).strip() if isinstance(prompt_context_raw, str) and prompt_context_raw.strip() else None
+    )
+
     model_map = _parse_model_map(model_map_raw)
     evaluation_cfg = _parse_evaluation_config(evaluation, split=split, benchmark=benchmark)
 
@@ -163,6 +169,7 @@ def load_run_config(config_path: Path) -> RunConfig:
         workspace_timeout_seconds=workspace_timeout_seconds,
         agent=agent_cfg,
         model=model_cfg,
+        prompt_context=prompt_context,
         model_map=model_map,
         evaluation=evaluation_cfg,
         source_path=config_path,

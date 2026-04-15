@@ -5,6 +5,7 @@ from pathlib import Path
 
 from benchkit.common.config import load_run_config
 from benchkit.swebench.appendix import generate_appendix_files
+from benchkit.swebench.db import import_appendix_csv_to_sqlite
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
 from benchkit.swebench.model_mapper import resolve_model_name
@@ -135,6 +136,30 @@ def main() -> None:
         default=Path("reports/appendix"),
         help="Directory for generated appendix files",
     )
+    db_parser = subparsers.add_parser(
+        "db-import",
+        help="Import appendix CSV results into a local SQLite database",
+    )
+    db_parser.add_argument(
+        "--appendix-csv",
+        action="append",
+        required=True,
+        type=Path,
+        help="Repeatable appendix per-task CSV path",
+    )
+    db_parser.add_argument(
+        "--run-root",
+        action="append",
+        required=True,
+        type=Path,
+        help="Repeatable run root path matching each appendix CSV",
+    )
+    db_parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=Path("reports/benchmarks.sqlite"),
+        help="SQLite database file path",
+    )
 
     args = parser.parse_args()
 
@@ -167,6 +192,10 @@ def main() -> None:
 
     if args.command == "appendix":
         run_appendix(args.run_root, args.output_dir)
+        return
+
+    if args.command == "db-import":
+        run_db_import(args.appendix_csv, args.run_root, args.db_path)
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")
@@ -315,6 +344,35 @@ def run_appendix(run_roots: list[Path], output_dir: Path) -> None:
     print(f"Per-task CSV: {outputs.per_task_csv}")
     print(f"Results CSV: {outputs.results_csv}")
     print(f"Results Markdown: {outputs.results_markdown}")
+    print(f"Per-Attempt Breakdown: {outputs.per_attempt_markdown}")
+    print(f"Prompt/Tool Breakdown: {outputs.prompt_tool_markdown}")
+    print(f"Tool Invocation Log: {outputs.tool_invocation_jsonl}")
+    print(f"Tool Invocation Breakdown: {outputs.tool_invocation_markdown}")
+
+
+def run_db_import(appendix_csvs: list[Path], run_roots: list[Path], db_path: Path) -> None:
+    if len(appendix_csvs) != len(run_roots):
+        raise SystemExit(
+            "db-import error: --appendix-csv and --run-root must be provided the same number of times"
+        )
+
+    total_runs = 0
+    total_task_attempts = 0
+    for appendix_csv, run_root in zip(appendix_csvs, run_roots):
+        result = import_appendix_csv_to_sqlite(
+            db_path=db_path,
+            appendix_csv=appendix_csv,
+            run_root=run_root,
+        )
+        total_runs += result.inserted_runs
+        total_task_attempts += result.inserted_task_attempts
+        print(
+            f"Imported run {result.run_id}: +{result.inserted_runs} runs, "
+            f"+{result.inserted_task_attempts} task_attempts"
+        )
+    print(f"SQLite DB: {db_path.resolve()}")
+    print(f"New runs inserted: {total_runs}")
+    print(f"New task_attempts inserted: {total_task_attempts}")
 
 
 if __name__ == "__main__":

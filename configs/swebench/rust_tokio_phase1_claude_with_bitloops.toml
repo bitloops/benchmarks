@@ -3,7 +3,7 @@ benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.test.tokio.jsonl"
 split = "test"
 language = ""
-condition = "baseline"
+condition = "with_bitloops"
 include_repos = ["tokio-rs/tokio"]
 attempts = 10
 max_workers = 3
@@ -17,7 +17,7 @@ workspace_timeout_seconds = 600
 [agent]
 id = "claude_code"
 command = ["python3", "scripts/agents/claude_code_wrapper.py"]
-extra_args = []
+extra_args = ["--bitloops-init"]
 
 [model]
 provider = "anthropic"

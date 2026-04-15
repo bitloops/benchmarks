@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from benchkit.common.config import EvaluationConfig
 from benchkit.swebench.evaluation import (
+    _build_evaluation_env,
     _build_evaluation_command,
     evaluate_predictions_with_harness,
 )
@@ -36,6 +38,53 @@ class EvaluationTests(unittest.TestCase):
             self.assertIn("--report_dir", command)
             idx = command.index("--report_dir")
             self.assertEqual(command[idx + 1], str(attempt_dir.resolve()))
+
+    def test_build_evaluation_env_adds_swebench_repo_to_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cwd = Path(temp_dir) / "repo"
+            cwd.mkdir(parents=True, exist_ok=True)
+            with patch.dict("os.environ", {"PATH": "/usr/bin", "HOME": temp_dir}, clear=True):
+                env = _build_evaluation_env(cwd)
+            self.assertEqual(env["PYTHONPATH"], str(cwd))
+
+    def test_build_evaluation_env_adds_docker_desktop_helper_dir_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docker_dir = Path(temp_dir) / ".docker"
+            docker_dir.mkdir(parents=True, exist_ok=True)
+            (docker_dir / "config.json").write_text('{"credsStore":"desktop"}', encoding="utf-8")
+            helper_dir = Path(temp_dir) / "docker-bin"
+            helper_dir.mkdir(parents=True, exist_ok=True)
+            (helper_dir / "docker-credential-desktop").write_text("", encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {"PATH": "/usr/bin", "HOME": temp_dir},
+                clear=True,
+            ), patch(
+                "benchkit.swebench.evaluation._docker_desktop_bin_dir",
+                return_value=helper_dir,
+            ):
+                env = _build_evaluation_env(None)
+
+            self.assertTrue(env["PATH"].startswith(f"{helper_dir}:"))
+
+    def test_build_evaluation_env_does_not_touch_path_when_helper_already_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docker_dir = Path(temp_dir) / ".docker"
+            docker_dir.mkdir(parents=True, exist_ok=True)
+            (docker_dir / "config.json").write_text('{"credsStore":"desktop"}', encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {"PATH": "/usr/bin", "HOME": temp_dir},
+                clear=True,
+            ), patch(
+                "shutil.which",
+                return_value="/usr/local/bin/docker-credential-desktop",
+            ):
+                env = _build_evaluation_env(None)
+
+            self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_skips_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

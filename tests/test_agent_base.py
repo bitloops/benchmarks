@@ -8,6 +8,7 @@ from unittest.mock import patch
 from benchkit.swebench.agents.base import (
     _heartbeat_interval_seconds,
     _resolve_relative_command_paths,
+    _summarize_failed_adapter_stdout,
 )
 
 
@@ -51,6 +52,20 @@ class AgentBaseTests(unittest.TestCase):
     def test_heartbeat_interval_uses_custom_positive_value(self) -> None:
         with patch.dict("os.environ", {"BENCHKIT_AGENT_HEARTBEAT_SECONDS": "7.5"}):
             self.assertEqual(_heartbeat_interval_seconds(), 7.5)
+
+    def test_summarize_failed_adapter_stdout_prefers_json_error(self) -> None:
+        stdout = '{"error":"wrapper failed","details":{"return_code":1}}'
+        self.assertEqual(
+            _summarize_failed_adapter_stdout(stdout),
+            '{"error": "wrapper failed", "details": {"return_code": 1}}',
+        )
+
+    def test_summarize_failed_adapter_stdout_uses_result_text(self) -> None:
+        stdout = '{"type":"result","is_error":true,"result":"API Error: invalid"}'
+        self.assertEqual(
+            _summarize_failed_adapter_stdout(stdout),
+            "API Error: invalid",
+        )
 
 
 if __name__ == "__main__":

@@ -119,6 +119,7 @@ def _make_config(root: Path, max_workers: int) -> RunConfig:
         workspace_timeout_seconds=60,
         agent=AgentConfig(id="noop", command=[], extra_args=[]),
         model=ModelConfig(provider="test", name="test-model"),
+        prompt_context=None,
         model_map={},
         evaluation=EvaluationConfig(enabled=False),
         source_path=source_path,

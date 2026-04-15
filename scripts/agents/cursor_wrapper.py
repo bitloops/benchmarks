@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import os
+import sys
 
 from common import (  # type: ignore[import-not-found]
     call_command,
+    capture_workspace_patch,
     emit_success,
     env_args,
     extract_usage_metrics,
     extract_git_patch,
+    extract_tool_invocations_curated,
+    extract_tool_invocations_raw,
+    extract_tool_invocation_sequence,
+    extract_tool_usage_breakdown,
     fatal_error,
     load_hook_metrics,
     merge_metric_metadata,
@@ -16,11 +23,27 @@ from common import (  # type: ignore[import-not-found]
     parse_agent_output,
     read_payload_from_stdin,
     render_task_prompt,
+    reset_workspace,
     resolve_workspace,
+    setup_bitloops_for_workspace,
+    summarize_tool_invocation_counts,
+    summarize_command_failure,
 )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--bitloops-init",
+        action="store_true",
+        help="Initialize Bitloops before running the agent command.",
+    )
+    args, _ = parser.parse_known_args()
+    return args
+
+
 def main() -> None:
+    args = parse_args()
     payload = read_payload_from_stdin()
     model = payload.get("model", {})
     canonical_model_name = str(model.get("canonical_name", "")).strip()
@@ -30,6 +53,24 @@ def main() -> None:
         or "sonnet-4"
     )
     workspace = resolve_workspace(payload)
+
+    try:
+        reset_workspace(workspace)
+    except Exception as exc:
+        fatal_error(
+            "workspace reset failed",
+            details={"error": str(exc), "workspace": str(workspace)},
+        )
+
+    bitloops_metadata: dict[str, object] = {}
+    if args.bitloops_init:
+        try:
+            bitloops_metadata = setup_bitloops_for_workspace(agent_name="cursor")
+        except Exception as exc:
+            fatal_error(
+                "bitloops setup failed",
+                details={"error": str(exc), "workspace": str(workspace)},
+            )
 
     prompt = render_task_prompt(payload, wrapper_name="cursor")
     command = [
@@ -41,6 +82,7 @@ def main() -> None:
         str(workspace),
         "--model",
         model_name,
+        "--dangerously-skip-permissions",
     ]
     trust_flag = os.environ.get("CURSOR_TRUST_FLAG", "--trust").strip()
     if trust_flag:
@@ -50,20 +92,36 @@ def main() -> None:
     timeout_seconds = int(os.environ.get("CURSOR_TIMEOUT_SECONDS", "900"))
 
     stdout, stderr, return_code, elapsed_ms = call_command(command, timeout_seconds)
-    if return_code != 0:
+
+    workspace_patch = capture_workspace_patch(workspace)
+
+    if workspace_patch:
+        patch = workspace_patch + "\n"
+        patch_source = "workspace_git_diff"
+    elif return_code != 0:
+        failure_summary = summarize_command_failure(stdout, stderr)
         fatal_error(
-            "cursor-agent command failed",
+            "cursor-agent command failed and no workspace changes were made",
             details={
                 "return_code": return_code,
-                "stderr": stderr.strip(),
                 "command": command,
+                **failure_summary,
             },
         )
+        sys.exit(1)
+    else:
+        parsed_text = parse_agent_output(
+            stdout, parsed_payload=parse_agent_payload(stdout)
+        )
+        patch, patch_source = extract_git_patch(parsed_text)
 
     parsed_payload = parse_agent_payload(stdout)
-    parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
-    patch, patch_source = extract_git_patch(parsed_text)
     usage_metrics = extract_usage_metrics(parsed_payload)
+    tool_usage_breakdown = extract_tool_usage_breakdown(parsed_payload)
+    tool_invocations_raw = extract_tool_invocations_raw(parsed_payload)
+    tool_invocations_curated = extract_tool_invocations_curated(tool_invocations_raw)
+    tool_invocation_sequence = extract_tool_invocation_sequence(parsed_payload)
+    tool_invocation_counts = summarize_tool_invocation_counts(tool_invocation_sequence)
     hook_metrics = load_hook_metrics(
         (
             "CURSOR_HOOK_METRICS_PATH",
@@ -85,8 +143,15 @@ def main() -> None:
             "resolved_model_name": model_name,
             "elapsed_ms": elapsed_ms,
             "patch_source": patch_source,
+            "prompt_text": prompt,
             "stderr": stderr.strip(),
+            "tool_usage_breakdown": tool_usage_breakdown,
+            "tool_invocations_raw": tool_invocations_raw,
+            "tool_invocations_curated": tool_invocations_curated,
+            "tool_invocation_sequence": tool_invocation_sequence,
+            "tool_invocation_counts": tool_invocation_counts,
             **merged_metrics,
+            **bitloops_metadata,
         },
     )
 

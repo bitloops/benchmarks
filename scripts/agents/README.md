@@ -49,15 +49,32 @@ Both wrappers:
 4. Parse output and extract a unified diff patch.
 5. Print JSON response with `patch` and `metadata`.
 
+For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also includes:
+- `tool_invocations_raw` (exact per-call tool-use events)
+- `tool_invocations_curated` (normalized per-call details: grep/read/bash/edit + fallback raw input JSON)
+
+Token usage metadata includes:
+- `token_input` / `token_output` extracted from the terminal Claude `type="result"` event when using stream-json output (same canonical semantics as non-stream JSON output).
+- `token_metrics_source` indicating extraction provenance (`result_usage`, `result_model_usage`, `fallback_scan`, or `fallback_max_candidate`).
+
 The wrapper uses `payload.model.name` as the concrete CLI model ID. The runner can
 map a canonical benchmark model to this value via `model_map` in TOML config.
+
+Optional wrapper argument:
+
+- `--bitloops-init`: runs non-interactive Bitloops setup in the task workspace
+  before invoking the agent CLI:
+  - checks daemon status
+  - starts daemon (`bitloops start --detached`)
+  - if needed, bootstraps daemon config (`bitloops start --create-default-config --telemetry=false --detached`)
+  - runs `bitloops init --agent <agent> --telemetry=false --sync=false --ingest=false`
 
 ## Claude Wrapper
 
 Command shape:
 
 ```bash
-claude --print --output-format json --model <model> "<prompt>"
+claude --print --output-format stream-json --include-partial-messages --model <model> "<prompt>"
 ```
 
 Env vars:
@@ -66,6 +83,10 @@ Env vars:
 - `CLAUDE_MODEL` (fallback model if payload.model.name is empty)
 - `CLAUDE_EXTRA_ARGS` (extra CLI args, shell-split)
 - `CLAUDE_TIMEOUT_SECONDS` (default: `900`)
+- `CLAUDE_OUTPUT_FORMAT` (default: `stream-json`)
+- `CLAUDE_INCLUDE_PARTIAL_MESSAGES` (default: enabled for `stream-json`)
+- `CLAUDE_STREAM_JSON_VERBOSE` (default: enabled; auto-adds `--verbose` for `stream-json`)
+- `BENCHKIT_REQUIRE_EXACT_TOOLS` (default: enabled when `CLAUDE_CODE_USE_BEDROCK=1`; fails run if per-tool events are missing)
 
 Typical non-interactive setting:
 

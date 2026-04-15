@@ -108,6 +108,12 @@ def _validate_model_resolution(resolution: ModelResolution) -> None:
     expected_normalized = _normalize_model_token(expected_model_id)
     if resolved_normalized == expected_normalized:
         return
+    if _is_compatible_alternate_model_id(
+        canonical_name=resolution.canonical_name,
+        agent_id=resolution.agent_id,
+        resolved_name=resolution.resolved_name,
+    ):
+        return
 
     raise ValueError(
         "Model mapping mismatch for agent "
@@ -147,3 +153,26 @@ def _expected_agent_model_id(canonical_model_name: str, agent_id: str) -> str | 
     if agent_id == "cursor":
         return f"{family}-{major}.{minor}{suffix}"
     return None
+
+
+def _is_compatible_alternate_model_id(
+    canonical_name: str,
+    agent_id: str,
+    resolved_name: str,
+) -> bool:
+    normalized_canonical = _normalize_canonical_model_name(canonical_name)
+    match = _ANTHROPIC_CANONICAL_PATTERN.match(normalized_canonical)
+    if not match:
+        return False
+
+    family = match.group("family")
+    if family not in SUPPORTED_ANTHROPIC_FAMILIES:
+        return False
+    if agent_id != "claude_code":
+        return False
+
+    major = match.group("major")
+    minor = match.group("minor")
+    expected_core = _normalize_model_token(f"anthropic.claude-{family}-{major}-{minor}")
+    resolved_normalized = _normalize_model_token(resolved_name)
+    return expected_core in resolved_normalized
