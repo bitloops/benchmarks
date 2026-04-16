@@ -1,0 +1,2 @@
+agent,condition,benchmark,language,tasks,solved,solve_rate,median_runtime_sec,median_tool_calls,median_file_reads,median_search_actions,median_cost,mean_runtime_sec,variance_runtime_sec,stddev_runtime_sec,mean_cost,variance_cost,stddev_cost
+claude_code,baseline,swebench_multilingual,uutils,5,2,0.4,160.429,31.0,,0.0,0.5285975000000002,170.3742,6730.6205156999995,82.04035906613281,0.7219643900000001,0.32198853126316185,0.5674403327779599
