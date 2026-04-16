@@ -9,6 +9,7 @@ Required:
 - `git`
 - Docker Desktop running
 - `claude` CLI installed and authenticated
+- `bitloops` CLI installed (only for `with_bitloops` runs)
 
 Install dependencies once:
 
@@ -25,6 +26,7 @@ Preflight checks (run before benchmark runs):
 ```bash
 python -c "import datasets, swebench; print('python deps ok')"
 command -v claude
+command -v bitloops
 docker info
 claude auth status
 ```
@@ -127,6 +129,18 @@ extra_args = []
 Notes:
 - Keep `evaluation.python_bin = "./.venv/bin/python"` to avoid evaluator failures with system Python.
 
+### Optional: run the same task with Bitloops
+
+If you want `with_bitloops` instead of baseline, update only these fields:
+
+```toml
+[run]
+condition = "with_bitloops"
+
+[agent]
+extra_args = ["--bitloops-init"]
+```
+
 ## 6) Verify selected tasks before run
 
 ```bash
@@ -145,6 +159,8 @@ Check that:
   --config configs/swebench/single_task_claude.toml \
   --appendix-output-dir reports/appendix/single_task
 ```
+
+If you run a Bitloops variant config, use the same command with that config path.
 
 ## 8) Where to find outputs
 
