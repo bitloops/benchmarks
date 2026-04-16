@@ -1,0 +1,7 @@
+agent,condition,benchmark,tasks,solved,solve_rate,median_runtime_sec,median_cost
+claude_code,baseline,swebench_multilingual,7,6,0.8571428571428571,182.836,0.7268142999999999
+claude_code,baseline,swebench_multilingual,2,2,1.0,348.118,1.083582475
+claude_code,baseline,swebench_multilingual,5,5,1.0,65.349,0.3195553
+claude_code,baseline,swebench_multilingual,16,13,0.8125,64.685,0.298895625
+claude_code,baseline,swebench_multilingual,8,4,0.5,151.8855,0.5750363000000001
+claude_code,baseline,swebench_multilingual,5,2,0.4,160.429,0.5285975000000002

@@ -39,6 +39,12 @@ def main() -> None:
         default=None,
         help="Override run.max_workers from config",
     )
+    run_parser.add_argument(
+        "--appendix-output-dir",
+        type=Path,
+        default=None,
+        help="If set, auto-generate appendix files for this run into the given directory",
+    )
     export_parser = subparsers.add_parser(
         "export-hf",
         help="Export SWE-bench Multilingual split from HF to local JSONL",
@@ -168,7 +174,13 @@ def main() -> None:
         return
 
     if args.command == "run":
-        run_execute(args.config, args.dry_run, args.attempts, args.max_workers)
+        run_execute(
+            args.config,
+            args.dry_run,
+            args.attempts,
+            args.max_workers,
+            args.appendix_output_dir,
+        )
         return
 
     if args.command == "export-hf":
@@ -252,6 +264,7 @@ def run_execute(
     dry_run: bool,
     attempts: int | None,
     max_workers: int | None,
+    appendix_output_dir: Path | None = None,
 ) -> None:
     config = load_run_config(config_path)
     try:
@@ -276,6 +289,10 @@ def run_execute(
     print("Evaluation reports:")
     for path in result.evaluation_reports:
         print(f"- {path}")
+    if appendix_output_dir is not None:
+        print()
+        print("Generating appendix files...")
+        run_appendix(run_roots=[result.run_root], output_dir=appendix_output_dir)
 
 
 def run_export_hf(

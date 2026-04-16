@@ -1,0 +1,47 @@
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
+include_repos = [
+  "tokio-rs/tokio",
+  "nushell/nushell",
+  "tokio-rs/axum",
+  "burntsushi/ripgrep",
+  "sharkdp/bat",
+  "astral-sh/ruff",
+]
+split = "test"
+language = ""
+condition = "baseline"
+attempts = 1
+max_workers = 4
+timeout_seconds = 1200
+output_root = "runs"
+prepare_workspace = true
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+workspace_root = "datasets/workspaces/rust_all"
+workspace_timeout_seconds = 600
+
+[agent]
+id = "claude_code"
+command = ["python3", "scripts/agents/claude_code_wrapper.py"]
+extra_args = []
+
+[model]
+provider = "anthropic"
+name = "opus-4-6"
+temperature = 0.0
+max_tokens = 32000
+
+[model_map.claude_code]
+"opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
+
+[evaluation]
+enabled = true
+python_bin = "python3"
+dataset_name = "SWE-bench/SWE-bench_Multilingual"
+split = "test"
+max_workers = 6
+timeout_seconds = 7200
+command_template = []
+extra_args = []
