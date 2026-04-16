@@ -141,6 +141,9 @@ condition = "with_bitloops"
 extra_args = ["--bitloops-init"]
 ```
 
+`--bitloops-init` starts/bootstraps the daemon and runs
+`bitloops init --install-default-daemon --sync=true` (with `--ingest=false`).
+
 ## 6) Verify selected tasks before run
 
 ```bash

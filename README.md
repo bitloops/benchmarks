@@ -196,6 +196,9 @@ condition = "with_bitloops"
 extra_args = ["--bitloops-init"]
 ```
 
+With `--bitloops-init`, the wrapper performs daemon bootstrap/setup and then runs
+`bitloops init --install-default-daemon --sync=true` (with `--ingest=false`).
+
 Use the same `extra_args` pattern for Cursor configs to compare `baseline` vs
 `with_bitloops` under the `cursor` agent as well.
 

@@ -300,37 +300,52 @@ def setup_bitloops_for_workspace(
                 )
             )
 
-    init_command = [
-        binary,
-        "init",
-        "--agent",
-        agent_name,
-        "--telemetry=false",
-        "--sync=false",
-        "--ingest=false",
-    ]
-    init_stdout, init_stderr, init_code, init_elapsed_ms = call_command(
-        init_command,
-        timeout,
-    )
+    include_install_default_daemon = True
+    include_ingest_flag = True
     init_fallback_used = False
-    if init_code != 0 and _bitloops_init_rejects_ingest_flag(init_stdout, init_stderr):
-        fallback_command = [
+    init_command: list[str] = []
+    init_stdout = ""
+    init_stderr = ""
+    init_code = 1
+    init_elapsed_ms = 0
+
+    while True:
+        init_command = [
             binary,
             "init",
             "--agent",
             agent_name,
             "--telemetry=false",
-            "--sync=false",
+            "--sync=true",
         ]
+        if include_install_default_daemon:
+            init_command.append("--install-default-daemon")
+        if include_ingest_flag:
+            init_command.append("--ingest=false")
+
         (
             init_stdout,
             init_stderr,
             init_code,
-            fallback_elapsed_ms,
-        ) = call_command(fallback_command, timeout)
-        init_elapsed_ms += fallback_elapsed_ms
-        init_command = fallback_command
+            current_init_elapsed_ms,
+        ) = call_command(init_command, timeout)
+        init_elapsed_ms += current_init_elapsed_ms
+        if init_code == 0:
+            break
+
+        fallback_applied = False
+        if include_ingest_flag and _bitloops_init_rejects_ingest_flag(init_stdout, init_stderr):
+            include_ingest_flag = False
+            fallback_applied = True
+        if include_install_default_daemon and _bitloops_init_rejects_install_default_daemon_flag(
+            init_stdout,
+            init_stderr,
+        ):
+            include_install_default_daemon = False
+            fallback_applied = True
+
+        if not fallback_applied:
+            break
         init_fallback_used = True
 
     if init_code != 0:
@@ -380,6 +395,14 @@ def _bitloops_daemon_needs_bootstrap(stdout: str, stderr: str) -> bool:
 def _bitloops_init_rejects_ingest_flag(stdout: str, stderr: str) -> bool:
     text = "\n".join((stdout, stderr)).strip().lower()
     return "unexpected argument '--ingest'" in text
+
+
+def _bitloops_init_rejects_install_default_daemon_flag(
+    stdout: str,
+    stderr: str,
+) -> bool:
+    text = "\n".join((stdout, stderr)).strip().lower()
+    return "unexpected argument '--install-default-daemon'" in text
 
 
 def _serialize_command_failure(
