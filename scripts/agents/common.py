@@ -248,6 +248,11 @@ def setup_bitloops_for_workspace(
     daemon_start_elapsed_ms = 0
     daemon_start_command: list[str] | None = None
     daemon_bootstrap_command: list[str] | None = None
+    git_detached_head = False
+    git_checkout_attempted = False
+    git_branch_checkout_command: list[str] | None = None
+    git_checked_out_branch: str | None = None
+    git_checkout_elapsed_ms = 0
 
     if not daemon_running:
         daemon_start_attempted = True
@@ -299,6 +304,14 @@ def setup_bitloops_for_workspace(
                     return_code=start_code,
                 )
             )
+
+    (
+        git_detached_head,
+        git_checkout_attempted,
+        git_branch_checkout_command,
+        git_checked_out_branch,
+        git_checkout_elapsed_ms,
+    ) = _ensure_git_branch_for_bitloops_sync(timeout_seconds=timeout)
 
     include_install_default_daemon = True
     include_ingest_flag = True
@@ -372,6 +385,11 @@ def setup_bitloops_for_workspace(
         "bitloops_bootstrap_command": daemon_bootstrap_command,
         "bitloops_init_command": init_command,
         "bitloops_init_fallback_used": init_fallback_used,
+        "bitloops_git_detached_head": git_detached_head,
+        "bitloops_git_checkout_attempted": git_checkout_attempted,
+        "bitloops_git_checkout_command": git_branch_checkout_command,
+        "bitloops_git_checked_out_branch": git_checked_out_branch,
+        "bitloops_git_checkout_elapsed_ms": git_checkout_elapsed_ms,
         "bitloops_status_elapsed_ms": status_elapsed_ms,
         "bitloops_daemon_start_elapsed_ms": daemon_start_elapsed_ms,
         "bitloops_init_elapsed_ms": init_elapsed_ms,
@@ -403,6 +421,62 @@ def _bitloops_init_rejects_install_default_daemon_flag(
 ) -> bool:
     text = "\n".join((stdout, stderr)).strip().lower()
     return "unexpected argument '--install-default-daemon'" in text
+
+
+def _ensure_git_branch_for_bitloops_sync(
+    *,
+    timeout_seconds: int,
+) -> tuple[bool, bool, list[str] | None, str | None, int]:
+    detached = _git_head_is_detached(timeout_seconds)
+    if not detached:
+        return False, False, None, None, 0
+
+    elapsed_ms_total = 0
+    short_sha = "detached"
+    stdout, _stderr, code, elapsed_ms = call_command(
+        ["git", "rev-parse", "--short=12", "HEAD"],
+        timeout_seconds,
+    )
+    elapsed_ms_total += elapsed_ms
+    if code == 0 and stdout.strip():
+        short_sha = stdout.strip()
+
+    branch_name = f"benchkit-bitloops-{short_sha}"
+    create_command = ["git", "switch", "-c", branch_name]
+    create_stdout, create_stderr, create_code, create_elapsed_ms = call_command(
+        create_command,
+        timeout_seconds,
+    )
+    elapsed_ms_total += create_elapsed_ms
+    if create_code == 0:
+        return True, True, create_command, branch_name, elapsed_ms_total
+
+    switch_command = ["git", "switch", branch_name]
+    switch_stdout, switch_stderr, switch_code, switch_elapsed_ms = call_command(
+        switch_command,
+        timeout_seconds,
+    )
+    elapsed_ms_total += switch_elapsed_ms
+    if switch_code == 0:
+        return True, True, switch_command, branch_name, elapsed_ms_total
+
+    raise RuntimeError(
+        "unable to attach detached HEAD before bitloops sync: "
+        + _serialize_command_failure(
+            command=switch_command,
+            stdout=switch_stdout or create_stdout,
+            stderr=switch_stderr or create_stderr,
+            return_code=switch_code or create_code,
+        )
+    )
+
+
+def _git_head_is_detached(timeout_seconds: int) -> bool:
+    _stdout, _stderr, code, _elapsed_ms = call_command(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        timeout_seconds,
+    )
+    return code != 0
 
 
 def _serialize_command_failure(

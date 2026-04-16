@@ -1,0 +1,2 @@
+agent,condition,benchmark,language,tasks,solved,solve_rate,median_runtime_sec,median_tool_calls,median_file_reads,median_search_actions,median_cost,mean_runtime_sec,variance_runtime_sec,stddev_runtime_sec,mean_cost,variance_cost,stddev_cost
+claude_code,with_bitloops,swebench_multilingual,sharkdp,1,0,0.0,153.712,22.0,,0.0,0.6857844999999998,153.712,,,0.6857844999999998,,

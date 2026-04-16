@@ -67,6 +67,7 @@ Optional wrapper argument:
   - checks daemon status
   - starts daemon (`bitloops start --detached`)
   - if needed, bootstraps daemon config (`bitloops start --create-default-config --telemetry=false --detached`)
+  - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
   - runs `bitloops init --agent <agent> --telemetry=false --install-default-daemon --sync=true --ingest=false`
 
 ## Claude Wrapper
