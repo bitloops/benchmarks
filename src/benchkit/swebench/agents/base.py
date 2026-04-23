@@ -24,7 +24,9 @@ class RunContext:
     canonical_model_name: str
     run_id: str
     benchmark: str
+    condition: str | None = None
     prompt_context: str | None = None
+    bitloops_sandbox: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -96,7 +98,10 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 "run_id": context.run_id,
                 "attempt": context.attempt,
                 "benchmark": context.benchmark,
+                "condition": context.condition,
+                "timeout_seconds": context.timeout_seconds,
                 "workspace_root": str(context.workspace_root),
+                "bitloops_sandbox": context.bitloops_sandbox,
             },
         }
         command = self._build_command()

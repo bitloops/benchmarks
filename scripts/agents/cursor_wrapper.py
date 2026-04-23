@@ -7,6 +7,7 @@ import sys
 
 from common import (  # type: ignore[import-not-found]
     call_command,
+    build_bitloops_task_environment,
     capture_workspace_patch,
     emit_success,
     env_args,
@@ -24,8 +25,11 @@ from common import (  # type: ignore[import-not-found]
     read_payload_from_stdin,
     render_task_prompt,
     reset_workspace,
+    resolve_bitloops_sandbox,
     resolve_workspace,
     setup_bitloops_for_workspace,
+    start_bitloops_task_daemon,
+    stop_bitloops_task_daemon,
     summarize_tool_invocation_counts,
     summarize_command_failure,
 )
@@ -42,6 +46,27 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
+    env_timeout = os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "").strip()
+    env_value = 0
+    if env_timeout:
+        try:
+            env_value = int(env_timeout)
+        except ValueError:
+            env_value = 0
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        raw_timeout = run.get("timeout_seconds")
+        try:
+            run_value = int(raw_timeout)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            run_value = 0
+
+    return max(env_value, run_value, 180)
+
+
 def main() -> None:
     args = parse_args()
     payload = read_payload_from_stdin()
@@ -53,6 +78,8 @@ def main() -> None:
         or "sonnet-4"
     )
     workspace = resolve_workspace(payload)
+    bitloops_sandbox = resolve_bitloops_sandbox(payload)
+    bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
 
     try:
         reset_workspace(workspace)
@@ -63,10 +90,28 @@ def main() -> None:
         )
 
     bitloops_metadata: dict[str, object] = {}
+    task_daemon_handle = None
     if args.bitloops_init:
+        bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
         try:
-            bitloops_metadata = setup_bitloops_for_workspace(agent_name="cursor")
+            if bitloops_env is not None and bitloops_sandbox is not None:
+                task_daemon_handle = start_bitloops_task_daemon(
+                    binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
+                    timeout=bitloops_setup_timeout_seconds,
+                    env=bitloops_env,
+                    sandbox=bitloops_sandbox,
+                    cwd=str(workspace),
+                )
+            bitloops_metadata = setup_bitloops_for_workspace(
+                agent_name="cursor",
+                timeout_seconds=bitloops_setup_timeout_seconds,
+                sandbox=bitloops_sandbox,
+                env=bitloops_env,
+                cwd=str(workspace),
+                task_daemon_handle=task_daemon_handle,
+            )
         except Exception as exc:
+            stop_bitloops_task_daemon(task_daemon_handle)
             fatal_error(
                 "bitloops setup failed",
                 details={"error": str(exc), "workspace": str(workspace)},
@@ -91,7 +136,15 @@ def main() -> None:
     command.append(prompt)
     timeout_seconds = int(os.environ.get("CURSOR_TIMEOUT_SECONDS", "900"))
 
-    stdout, stderr, return_code, elapsed_ms = call_command(command, timeout_seconds)
+    try:
+        stdout, stderr, return_code, elapsed_ms = call_command(
+            command,
+            timeout_seconds,
+            env=bitloops_env,
+            cwd=str(workspace),
+        )
+    finally:
+        stop_bitloops_task_daemon(task_daemon_handle)
 
     workspace_patch = capture_workspace_patch(workspace)
 

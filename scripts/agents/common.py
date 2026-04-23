@@ -4,18 +4,28 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from copy import deepcopy
+import contextlib
+import fcntl
 import json
 import os
 import re
 import shlex
+import shutil
+import socket
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
 CANONICAL_METRIC_KEYS: tuple[str, ...] = (
     "token_input",
     "token_output",
+    "cached_input_tokens",
+    "cached_output_tokens",
+    "token_input_uncached",
+    "token_output_uncached",
     "estimated_cost",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
@@ -33,6 +43,8 @@ DEBUG_RUN_ID = os.environ.get("BENCHKIT_RUN_ID", "unknown")
 DEBUG_SERVER_ENDPOINT = "http://127.0.0.1:7347/ingest/b923941d-c2ed-47b2-9859-b78772d71f43"
 DEBUG_HTTP_FALLBACK_ENV_VAR = "BENCHKIT_DEBUG_HTTP_FALLBACK"
 DEBUG_SERVER_ENDPOINT_ENV_VAR = "BENCHKIT_DEBUG_SERVER_ENDPOINT"
+BITLOOPS_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_BITLOOPS_GLOBAL_LOCK_PATH"
+BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_DISABLE_BITLOOPS_GLOBAL_LOCK"
 
 
 def _debug_log(*, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -212,33 +224,494 @@ def env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
-def call_command(command: list[str], timeout_seconds: int) -> tuple[str, str, int, int]:
+def call_command(
+    command: list[str],
+    timeout_seconds: int,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> tuple[str, str, int, int]:
     start = time.time()
     completed = subprocess.run(
         command,
         text=True,
         capture_output=True,
         timeout=timeout_seconds,
+        env=env,
+        cwd=cwd,
         check=False,
     )
     elapsed_ms = int((time.time() - start) * 1000)
     return completed.stdout, completed.stderr, completed.returncode, elapsed_ms
 
 
-def setup_bitloops_for_workspace(
-    *,
-    agent_name: str,
-    bitloops_bin: str | None = None,
-    timeout_seconds: int | None = None,
-) -> dict[str, Any]:
-    binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
-    timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "180"))
-    setup_started = time.time()
+class BitloopsTaskDaemonHandle:
+    def __init__(
+        self,
+        *,
+        process: subprocess.Popen[str],
+        port: int,
+        stderr_log_path: Path,
+    ) -> None:
+        self.process = process
+        self.port = port
+        self.stderr_log_path = stderr_log_path
 
+
+def resolve_bitloops_sandbox(payload: dict[str, Any]) -> dict[str, Any] | None:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return None
+    sandbox = run.get("bitloops_sandbox")
+    if not isinstance(sandbox, dict):
+        return None
+    mode = str(sandbox.get("mode", "")).strip()
+    if not mode:
+        return None
+    return sandbox
+
+
+def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(sandbox, dict):
+        return None
+    mode = str(sandbox.get("mode", "")).strip().lower()
+    if mode != "per_task_daemon":
+        return None
+
+    env = dict(os.environ)
+    original_home = str(env.get("HOME", "")).strip()
+    path_map = {
+        "HOME": sandbox.get("home_root"),
+        "USERPROFILE": sandbox.get("home_root"),
+        "XDG_CONFIG_HOME": sandbox.get("xdg_config_home"),
+        "XDG_STATE_HOME": sandbox.get("xdg_state_home"),
+        "XDG_CACHE_HOME": sandbox.get("xdg_cache_home"),
+        "XDG_DATA_HOME": sandbox.get("xdg_data_home"),
+    }
+    for key, value in path_map.items():
+        if isinstance(value, str) and value.strip():
+            env[key] = value.strip()
+    if original_home:
+        env.setdefault("CARGO_HOME", str(Path(original_home) / ".cargo"))
+        env.setdefault("RUSTUP_HOME", str(Path(original_home) / ".rustup"))
+        # Keep AWS SDK credential discovery anchored to the user's real home.
+        # The task sandbox rewrites HOME/XDG roots for Bitloops, but Bedrock auth
+        # still needs access to ~/.aws/{config,credentials}.
+        env.setdefault("AWS_CONFIG_FILE", str(Path(original_home) / ".aws" / "config"))
+        env.setdefault(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            str(Path(original_home) / ".aws" / "credentials"),
+        )
+        sandbox_home = str(sandbox.get("home_root", "")).strip()
+        if sandbox_home:
+            _mirror_aws_auth_cache_into_sandbox(
+                original_home=Path(original_home),
+                sandbox_home=Path(sandbox_home),
+            )
+    env["BITLOOPS_BENCHKIT_SANDBOX_MODE"] = mode
+    return env
+
+
+def _mirror_aws_auth_cache_into_sandbox(*, original_home: Path, sandbox_home: Path) -> None:
+    aws_root = sandbox_home / ".aws"
+    aws_root.mkdir(parents=True, exist_ok=True)
+    for relative_dir in (
+        Path(".aws") / "login" / "cache",
+        Path(".aws") / "sso" / "cache",
+    ):
+        source = original_home / relative_dir
+        destination = sandbox_home / relative_dir
+        if not source.exists() or not source.is_dir():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def _ensure_sandbox_directories(sandbox: dict[str, Any]) -> None:
+    for key in (
+        "sandbox_root",
+        "home_root",
+        "xdg_config_home",
+        "xdg_state_home",
+        "xdg_cache_home",
+        "xdg_data_home",
+    ):
+        value = sandbox.get(key)
+        if isinstance(value, str) and value.strip():
+            Path(value).mkdir(parents=True, exist_ok=True)
+
+
+def _allocate_localhost_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_task_daemon_ready(
+    *,
+    binary: str,
+    timeout: int,
+    env: dict[str, str],
+    port: int,
+    cwd: str | None = None,
+) -> None:
+    deadline = time.time() + timeout
+    status_command = [binary, "status"]
+    probe_url = f"http://127.0.0.1:{port}/devql/sdl"
+    while time.time() < deadline:
+        status_stdout, _status_stderr, status_code, _status_elapsed = call_command(
+            status_command,
+            timeout,
+            env=env,
+            cwd=cwd,
+        )
+        if status_code == 0 and _bitloops_daemon_is_running(status_stdout):
+            try:
+                with urllib.request.urlopen(probe_url, timeout=1):
+                    return
+            except OSError:
+                pass
+        time.sleep(0.2)
+    raise TimeoutError(f"timed out waiting for task daemon readiness on port {port}")
+
+
+def _resolve_bitloops_runtime_db_path(env: dict[str, str] | None) -> Path | None:
+    if not env:
+        return None
+    home = str(env.get("HOME", "")).strip()
+    if not home:
+        return None
+    return Path(home) / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
+
+
+def _load_runtime_document(
+    runtime_db_path: Path | None,
+    *,
+    document_kind: str,
+) -> dict[str, Any] | None:
+    if runtime_db_path is None or not runtime_db_path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{runtime_db_path}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(
+            "SELECT payload FROM runtime_documents WHERE document_kind = ?",
+            (document_kind,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+    if row is None or not row[0]:
+        return None
+    try:
+        payload = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _bitloops_init_ready_via_runtime_state(
+    *,
+    runtime_db_path: Path | None,
+    repo_root: str | None,
+) -> tuple[bool, dict[str, Any] | None]:
+    repo_root_value = str(repo_root or "").strip()
+    if not repo_root_value:
+        return False, None
+
+    queue_state = _load_runtime_document(
+        runtime_db_path,
+        document_kind="devql_task_queue_state",
+    )
+    init_state = _load_runtime_document(
+        runtime_db_path,
+        document_kind="init_session_state",
+    )
+    enrichment_state = _load_runtime_document(
+        runtime_db_path,
+        document_kind="enrichment_queue_state",
+    )
+    if queue_state is None or init_state is None:
+        return False, None
+
+    tasks = queue_state.get("tasks", [])
+    sessions = init_state.get("sessions", [])
+    if not isinstance(tasks, list) or not isinstance(sessions, list):
+        return False, None
+
+    repo_tasks = [
+        task for task in tasks
+        if isinstance(task, dict)
+        and str(task.get("repo_root", "")).strip() == repo_root_value
+        and str(task.get("source", "")).strip() == "init"
+        and str(task.get("kind", "")).strip() == "sync"
+    ]
+    if not repo_tasks:
+        return False, None
+    repo_tasks.sort(key=lambda item: int(item.get("submitted_at_unix") or 0))
+    latest_task = repo_tasks[-1]
+    latest_init_session_id = str(latest_task.get("init_session_id", "")).strip()
+
+    repo_sessions = [
+        session for session in sessions
+        if isinstance(session, dict)
+        and str(session.get("repo_root", "")).strip() == repo_root_value
+        and (
+            not latest_init_session_id
+            or str(session.get("init_session_id", "")).strip() == latest_init_session_id
+        )
+    ]
+    if not repo_sessions:
+        return False, None
+    repo_sessions.sort(key=lambda item: int(item.get("submitted_at_unix") or 0))
+    latest_session = repo_sessions[-1]
+
+    progress = latest_task.get("progress")
+    result = latest_task.get("result")
+    selections = latest_session.get("selections")
+    sync_complete = (
+        str(latest_task.get("status", "")).strip() == "completed"
+        and isinstance(progress, dict)
+        and str(progress.get("type", "")).strip() == "sync"
+        and isinstance(progress.get("value"), dict)
+        and str(progress["value"].get("phase", "")).strip() == "complete"
+        and isinstance(result, dict)
+        and str(result.get("type", "")).strip() == "sync"
+        and isinstance(result.get("value"), dict)
+        and bool(result["value"].get("success"))
+    )
+    no_follow_up_sync = latest_session.get("follow_up_sync_required") is False
+    initial_sync_recorded = latest_session.get("initial_sync_completion_seq") is not None
+    no_background_jobs = True
+    if isinstance(enrichment_state, dict):
+        jobs = enrichment_state.get("jobs")
+        if isinstance(jobs, list):
+            no_background_jobs = len(jobs) == 0
+
+    ready = (
+        sync_complete
+        and no_follow_up_sync
+        and initial_sync_recorded
+        and (
+            not isinstance(selections, dict)
+            or bool(selections.get("run_sync", False))
+        )
+        and no_background_jobs
+    )
+    if not ready:
+        return False, None
+
+    progress_value = progress.get("value", {}) if isinstance(progress, dict) else {}
+    result_value = result.get("value", {}) if isinstance(result, dict) else {}
+    metadata = {
+        "repo_root": repo_root_value,
+        "runtime_db_path": str(runtime_db_path) if runtime_db_path is not None else None,
+        "init_session_id": latest_session.get("init_session_id"),
+        "sync_task_id": latest_task.get("task_id"),
+        "sync_status": latest_task.get("status"),
+        "sync_phase": progress_value.get("phase"),
+        "paths_total": progress_value.get("pathsTotal"),
+        "paths_completed": progress_value.get("pathsCompleted"),
+        "paths_remaining": progress_value.get("pathsRemaining"),
+        "parse_errors": progress_value.get("parseErrors"),
+        "sync_success": result_value.get("success"),
+        "follow_up_sync_required": latest_session.get("follow_up_sync_required"),
+        "initial_sync_completion_seq": latest_session.get("initial_sync_completion_seq"),
+    }
+    return True, metadata
+
+
+def _run_command_with_runtime_ready_shortcut(
+    *,
+    command: list[str],
+    timeout_seconds: int,
+    env: dict[str, str] | None,
+    cwd: str | None,
+) -> tuple[str, str, int, int, dict[str, Any] | None]:
+    start = time.time()
+    runtime_db_path = _resolve_bitloops_runtime_db_path(env)
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+    )
+    while True:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            elapsed_ms = int((time.time() - start) * 1000)
+            return stdout, stderr, int(process.returncode or 0), elapsed_ms, None
+
+        ready, metadata = _bitloops_init_ready_via_runtime_state(
+            runtime_db_path=runtime_db_path,
+            repo_root=cwd,
+        )
+        if ready:
+            with contextlib.suppress(OSError):
+                process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    process.kill()
+                stdout, stderr = process.communicate()
+            elapsed_ms = int((time.time() - start) * 1000)
+            return stdout, stderr, 0, elapsed_ms, metadata
+
+        if (time.time() - start) >= timeout_seconds:
+            with contextlib.suppress(OSError):
+                process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    process.kill()
+                stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout_seconds,
+                output=stdout,
+                stderr=stderr,
+            )
+        time.sleep(1.0)
+
+
+def start_bitloops_task_daemon(
+    *,
+    binary: str,
+    timeout: int,
+    env: dict[str, str],
+    sandbox: dict[str, Any],
+    cwd: str | None = None,
+) -> BitloopsTaskDaemonHandle:
+    _ensure_sandbox_directories(sandbox)
+    port = _allocate_localhost_port()
+    stderr_log_path = Path(str(sandbox.get("daemon_stderr_log_path") or "")).expanduser()
+    if not stderr_log_path.is_absolute():
+        stderr_log_path = (Path.cwd() / stderr_log_path).resolve()
+    stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_handle = stderr_log_path.open("w", encoding="utf-8")
+    command = [
+        binary,
+        "daemon",
+        "start",
+        "--create-default-config",
+        "--no-telemetry",
+        "--http",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_handle,
+            env=env,
+            cwd=cwd,
+        )
+    except Exception:
+        stderr_handle.close()
+        raise
+
+    try:
+        _wait_for_task_daemon_ready(
+            binary=binary,
+            timeout=timeout,
+            env=env,
+            port=port,
+            cwd=cwd,
+        )
+    except Exception:
+        with contextlib.suppress(OSError):
+            process.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+        if process.poll() is None:
+            with contextlib.suppress(OSError):
+                process.kill()
+        stderr_handle.close()
+        raise
+
+    stderr_handle.close()
+    return BitloopsTaskDaemonHandle(process=process, port=port, stderr_log_path=stderr_log_path)
+
+
+def stop_bitloops_task_daemon(handle: BitloopsTaskDaemonHandle | None) -> None:
+    if handle is None:
+        return
+    if handle.process.poll() is not None:
+        return
+    with contextlib.suppress(OSError):
+        handle.process.terminate()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        handle.process.wait(timeout=5)
+    if handle.process.poll() is None:
+        with contextlib.suppress(OSError):
+            handle.process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            handle.process.wait(timeout=2)
+
+
+def _resolve_bitloops_global_lock_path() -> Path:
+    raw = os.environ.get(BITLOOPS_GLOBAL_LOCK_ENV_VAR, "").strip()
+    if raw:
+        path = Path(raw).expanduser()
+    else:
+        path = Path(tempfile.gettempdir()) / "benchkit-bitloops-global.lock"
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    return path
+
+
+@contextlib.contextmanager
+def _acquire_bitloops_global_lock(
+    *,
+    lock_path: Path,
+    timeout_seconds: int,
+) -> Any:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    wait_started = time.time()
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if (time.time() - wait_started) >= timeout_seconds:
+                    raise TimeoutError(
+                        f"timed out waiting for Bitloops global lock: {lock_path}"
+                    )
+                time.sleep(0.1)
+        wait_elapsed_ms = int((time.time() - wait_started) * 1000)
+        try:
+            yield wait_elapsed_ms
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _ensure_bitloops_daemon_started(
+    *,
+    binary: str,
+    timeout: int,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
     status_command = [binary, "status"]
     status_stdout, status_stderr, status_code, status_elapsed_ms = call_command(
         status_command,
         timeout,
+        env=env,
+        cwd=cwd,
     )
     daemon_running = status_code == 0 and _bitloops_daemon_is_running(status_stdout)
 
@@ -248,11 +721,6 @@ def setup_bitloops_for_workspace(
     daemon_start_elapsed_ms = 0
     daemon_start_command: list[str] | None = None
     daemon_bootstrap_command: list[str] | None = None
-    git_detached_head = False
-    git_checkout_attempted = False
-    git_branch_checkout_command: list[str] | None = None
-    git_checked_out_branch: str | None = None
-    git_checkout_elapsed_ms = 0
 
     if not daemon_running:
         daemon_start_attempted = True
@@ -261,6 +729,8 @@ def setup_bitloops_for_workspace(
         start_stdout, start_stderr, start_code, start_elapsed_ms = call_command(
             start_command,
             timeout,
+            env=env,
+            cwd=cwd,
         )
         daemon_start_elapsed_ms += start_elapsed_ms
 
@@ -281,7 +751,12 @@ def setup_bitloops_for_workspace(
                 bootstrap_stderr,
                 bootstrap_code,
                 bootstrap_elapsed_ms,
-            ) = call_command(bootstrap_command, timeout)
+            ) = call_command(
+                bootstrap_command,
+                timeout,
+                env=env,
+                cwd=cwd,
+            )
             daemon_start_elapsed_ms += bootstrap_elapsed_ms
             if bootstrap_code != 0:
                 raise RuntimeError(
@@ -305,15 +780,33 @@ def setup_bitloops_for_workspace(
                 )
             )
 
-    (
-        git_detached_head,
-        git_checkout_attempted,
-        git_branch_checkout_command,
-        git_checked_out_branch,
-        git_checkout_elapsed_ms,
-    ) = _ensure_git_branch_for_bitloops_sync(timeout_seconds=timeout)
+    return {
+        "bitloops_daemon_was_running": daemon_running,
+        "bitloops_daemon_start_attempted": daemon_start_attempted,
+        "bitloops_daemon_bootstrap_attempted": daemon_bootstrap_attempted,
+        "bitloops_daemon_start_mode": daemon_start_mode,
+        "bitloops_status_command": status_command,
+        "bitloops_start_command": daemon_start_command,
+        "bitloops_bootstrap_command": daemon_bootstrap_command,
+        "bitloops_status_elapsed_ms": status_elapsed_ms,
+        "bitloops_daemon_start_elapsed_ms": daemon_start_elapsed_ms,
+    }
 
-    include_install_default_daemon = True
+
+def _run_bitloops_init(
+    *,
+    binary: str,
+    timeout: int,
+    agent_name: str,
+    sync: bool,
+    ingest: bool,
+    install_default_daemon: bool,
+    embeddings_runtime: str | None,
+    no_embeddings: bool,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    include_install_default_daemon = install_default_daemon
     include_ingest_flag = True
     init_fallback_used = False
     init_command: list[str] = []
@@ -321,6 +814,7 @@ def setup_bitloops_for_workspace(
     init_stderr = ""
     init_code = 1
     init_elapsed_ms = 0
+    runtime_ready_shortcut_metadata: dict[str, Any] | None = None
 
     while True:
         init_command = [
@@ -329,19 +823,48 @@ def setup_bitloops_for_workspace(
             "--agent",
             agent_name,
             "--telemetry=false",
-            "--sync=true",
+            f"--sync={'true' if sync else 'false'}",
         ]
         if include_install_default_daemon:
             init_command.append("--install-default-daemon")
         if include_ingest_flag:
-            init_command.append("--ingest=false")
+            init_command.append(f"--ingest={'true' if ingest else 'false'}")
+        if embeddings_runtime:
+            init_command.extend(["--embeddings-runtime", embeddings_runtime])
+        if no_embeddings:
+            init_command.append("--no-embeddings")
 
-        (
-            init_stdout,
-            init_stderr,
-            init_code,
-            current_init_elapsed_ms,
-        ) = call_command(init_command, timeout)
+        use_runtime_ready_shortcut = (
+            sync
+            and isinstance(env, dict)
+            and str(env.get("BITLOOPS_BENCHKIT_SANDBOX_MODE", "")).strip().lower()
+            == "per_task_daemon"
+        )
+        if use_runtime_ready_shortcut:
+            (
+                init_stdout,
+                init_stderr,
+                init_code,
+                current_init_elapsed_ms,
+                runtime_ready_shortcut_metadata,
+            ) = _run_command_with_runtime_ready_shortcut(
+                command=init_command,
+                timeout_seconds=timeout,
+                env=env,
+                cwd=cwd,
+            )
+        else:
+            (
+                init_stdout,
+                init_stderr,
+                init_code,
+                current_init_elapsed_ms,
+            ) = call_command(
+                init_command,
+                timeout,
+                env=env,
+                cwd=cwd,
+            )
         init_elapsed_ms += current_init_elapsed_ms
         if init_code == 0:
             break
@@ -372,29 +895,264 @@ def setup_bitloops_for_workspace(
             )
         )
 
-    setup_elapsed_ms = int((time.time() - setup_started) * 1000)
+    return {
+        "bitloops_install_default_daemon": include_install_default_daemon,
+        "bitloops_init_command": init_command,
+        "bitloops_init_fallback_used": init_fallback_used,
+        "bitloops_init_elapsed_ms": init_elapsed_ms,
+        "bitloops_init_runtime_ready_shortcut_used": runtime_ready_shortcut_metadata is not None,
+        "bitloops_init_runtime_ready_shortcut": runtime_ready_shortcut_metadata,
+    }
+
+
+def setup_bitloops_for_workspace(
+    *,
+    agent_name: str,
+    bitloops_bin: str | None = None,
+    timeout_seconds: int | None = None,
+    sync: bool = True,
+    ingest: bool = False,
+    install_default_daemon: bool = True,
+    embeddings_runtime: str | None = None,
+    no_embeddings: bool = False,
+    summary_mode: str | None = None,
+    embedding_mode: str | None = None,
+    sandbox: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    task_daemon_handle: BitloopsTaskDaemonHandle | None = None,
+) -> dict[str, Any]:
+    binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
+    timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "180"))
+    setup_started = time.time()
+    (
+        git_detached_head,
+        git_checkout_attempted,
+        git_branch_checkout_command,
+        git_checked_out_branch,
+        git_checkout_elapsed_ms,
+    ) = _ensure_git_branch_for_bitloops_sync(
+        timeout_seconds=timeout,
+        env=env,
+        cwd=cwd,
+    )
+
+    daemon_metadata: dict[str, Any]
+    init_metadata: dict[str, Any]
+    sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
+    if sandbox_mode == "per_task_daemon":
+        sandbox_env = env or build_bitloops_task_environment(sandbox)
+        if sandbox_env is None:
+            raise RuntimeError("per-task Bitloops sandbox requested without a valid environment")
+        handle = task_daemon_handle or start_bitloops_task_daemon(
+            binary=binary,
+            timeout=timeout,
+            env=sandbox_env,
+            sandbox=sandbox,
+            cwd=cwd,
+        )
+        daemon_metadata = {
+            "bitloops_daemon_was_running": False,
+            "bitloops_daemon_start_attempted": True,
+            "bitloops_daemon_bootstrap_attempted": True,
+            "bitloops_daemon_start_mode": "per_task_foreground",
+            "bitloops_status_command": [binary, "status"],
+            "bitloops_status_elapsed_ms": 0,
+            "bitloops_start_command": [
+                binary,
+                "daemon",
+                "start",
+                "--create-default-config",
+                "--no-telemetry",
+                "--http",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(handle.port),
+            ],
+            "bitloops_bootstrap_command": None,
+            "bitloops_daemon_start_elapsed_ms": 0,
+            "bitloops_global_lock_enabled": False,
+            "bitloops_global_lock_path": None,
+            "bitloops_global_lock_acquired": False,
+            "bitloops_global_lock_wait_elapsed_ms": 0,
+            "bitloops_setup_serialized": False,
+            "bitloops_task_daemon_enabled": True,
+            "bitloops_task_daemon_port": handle.port,
+            "bitloops_task_daemon_pid": handle.process.pid,
+            "bitloops_task_daemon_stderr_log_path": str(handle.stderr_log_path),
+            "bitloops_task_sandbox_mode": "per_task_daemon",
+            "bitloops_task_sandbox_root": sandbox.get("sandbox_root"),
+            "bitloops_task_home_root": sandbox.get("home_root"),
+            "bitloops_task_xdg_config_home": sandbox.get("xdg_config_home"),
+            "bitloops_task_xdg_state_home": sandbox.get("xdg_state_home"),
+            "bitloops_task_xdg_cache_home": sandbox.get("xdg_cache_home"),
+            "bitloops_task_xdg_data_home": sandbox.get("xdg_data_home"),
+        }
+        init_metadata = _run_bitloops_init(
+            binary=binary,
+            timeout=timeout,
+            agent_name=agent_name,
+            sync=sync,
+            ingest=ingest,
+            install_default_daemon=False,
+            embeddings_runtime=embeddings_runtime,
+            no_embeddings=no_embeddings,
+            env=sandbox_env,
+            cwd=cwd,
+        )
+    else:
+        global_lock_enabled = not env_flag(BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR, default=False)
+        global_lock_path = _resolve_bitloops_global_lock_path() if global_lock_enabled else None
+        global_lock_wait_elapsed_ms = 0
+        global_lock_acquired = False
+        if global_lock_enabled and global_lock_path is not None:
+            with _acquire_bitloops_global_lock(
+                lock_path=global_lock_path,
+                timeout_seconds=timeout,
+            ) as wait_elapsed_ms:
+                global_lock_wait_elapsed_ms = wait_elapsed_ms
+                global_lock_acquired = True
+                daemon_metadata = _ensure_bitloops_daemon_started(
+                    binary=binary,
+                    timeout=timeout,
+                    env=env,
+                    cwd=cwd,
+                )
+                init_metadata = _run_bitloops_init(
+                    binary=binary,
+                    timeout=timeout,
+                    agent_name=agent_name,
+                    sync=sync,
+                    ingest=ingest,
+                    install_default_daemon=False,
+                    embeddings_runtime=embeddings_runtime,
+                    no_embeddings=no_embeddings,
+                    env=env,
+                    cwd=cwd,
+                )
+        else:
+            daemon_metadata = _ensure_bitloops_daemon_started(
+                binary=binary,
+                timeout=timeout,
+                env=env,
+                cwd=cwd,
+            )
+            init_metadata = _run_bitloops_init(
+                binary=binary,
+                timeout=timeout,
+                agent_name=agent_name,
+                sync=sync,
+                ingest=ingest,
+                install_default_daemon=install_default_daemon,
+                embeddings_runtime=embeddings_runtime,
+                no_embeddings=no_embeddings,
+                env=env,
+                cwd=cwd,
+            )
+        daemon_metadata.setdefault("bitloops_global_lock_enabled", global_lock_enabled)
+        daemon_metadata.setdefault(
+            "bitloops_global_lock_path",
+            str(global_lock_path) if global_lock_path else None,
+        )
+        daemon_metadata.setdefault("bitloops_global_lock_acquired", global_lock_acquired)
+        daemon_metadata.setdefault(
+            "bitloops_global_lock_wait_elapsed_ms",
+            global_lock_wait_elapsed_ms,
+        )
+        daemon_metadata.setdefault("bitloops_setup_serialized", global_lock_enabled)
+        daemon_metadata.setdefault("bitloops_task_daemon_enabled", False)
+        daemon_metadata.setdefault("bitloops_task_daemon_port", None)
+        daemon_metadata.setdefault("bitloops_task_daemon_pid", None)
+        daemon_metadata.setdefault("bitloops_task_daemon_stderr_log_path", None)
+        daemon_metadata.setdefault("bitloops_task_sandbox_mode", "shared_daemon")
+        daemon_metadata.setdefault("bitloops_task_sandbox_root", None)
+        daemon_metadata.setdefault("bitloops_task_home_root", None)
+        daemon_metadata.setdefault("bitloops_task_xdg_config_home", None)
+        daemon_metadata.setdefault("bitloops_task_xdg_state_home", None)
+        daemon_metadata.setdefault("bitloops_task_xdg_cache_home", None)
+        daemon_metadata.setdefault("bitloops_task_xdg_data_home", None)
+
+    repo_config_path = _apply_bitloops_repo_semantic_modes(
+        summary_mode=summary_mode,
+        embedding_mode=embedding_mode,
+    )
+
     return {
         "bitloops_enabled": True,
         "bitloops_agent": agent_name,
-        "bitloops_daemon_was_running": daemon_running,
-        "bitloops_daemon_start_attempted": daemon_start_attempted,
-        "bitloops_daemon_bootstrap_attempted": daemon_bootstrap_attempted,
-        "bitloops_daemon_start_mode": daemon_start_mode,
-        "bitloops_status_command": status_command,
-        "bitloops_start_command": daemon_start_command,
-        "bitloops_bootstrap_command": daemon_bootstrap_command,
-        "bitloops_init_command": init_command,
-        "bitloops_init_fallback_used": init_fallback_used,
+        "bitloops_sync": sync,
+        "bitloops_ingest": ingest,
+        "bitloops_install_default_daemon_requested": install_default_daemon,
+        "bitloops_embeddings_runtime": embeddings_runtime,
+        "bitloops_no_embeddings": no_embeddings,
+        "bitloops_summary_mode": summary_mode,
+        "bitloops_embedding_mode": embedding_mode,
         "bitloops_git_detached_head": git_detached_head,
         "bitloops_git_checkout_attempted": git_checkout_attempted,
         "bitloops_git_checkout_command": git_branch_checkout_command,
         "bitloops_git_checked_out_branch": git_checked_out_branch,
         "bitloops_git_checkout_elapsed_ms": git_checkout_elapsed_ms,
-        "bitloops_status_elapsed_ms": status_elapsed_ms,
-        "bitloops_daemon_start_elapsed_ms": daemon_start_elapsed_ms,
-        "bitloops_init_elapsed_ms": init_elapsed_ms,
-        "bitloops_setup_elapsed_ms": setup_elapsed_ms,
+        "bitloops_repo_config_path": str(repo_config_path) if repo_config_path else None,
+        "bitloops_setup_elapsed_ms": int((time.time() - setup_started) * 1000),
+        **daemon_metadata,
+        **init_metadata,
     }
+
+
+def _apply_bitloops_repo_semantic_modes(
+    *,
+    summary_mode: str | None,
+    embedding_mode: str | None,
+) -> Path | None:
+    updates = {
+        key: value
+        for key, value in {
+            "summary_mode": summary_mode,
+            "embedding_mode": embedding_mode,
+        }.items()
+        if isinstance(value, str) and value.strip()
+    }
+    if not updates:
+        return None
+
+    config_path = Path.cwd() / "config.toml"
+    content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    content = _upsert_toml_table_values(content, "semantic_clones", updates)
+    config_path.write_text(content, encoding="utf-8")
+    return config_path
+
+
+def _upsert_toml_table_values(
+    content: str,
+    table_name: str,
+    values: dict[str, str],
+) -> str:
+    table_pattern = re.compile(
+        rf"(?ms)^\[{re.escape(table_name)}\]\n(?P<body>.*?)(?=^\[|\Z)"
+    )
+    match = table_pattern.search(content)
+    if match:
+        body = match.group("body")
+        for key, value in values.items():
+            key_pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=.*$")
+            line = f'{key} = "{value}"'
+            if key_pattern.search(body):
+                body = key_pattern.sub(line, body, count=1)
+            else:
+                if body and not body.endswith("\n"):
+                    body += "\n"
+                body += f"{line}\n"
+        return content[: match.start("body")] + body + content[match.end("body") :]
+
+    if content and not content.endswith("\n"):
+        content += "\n"
+    if content:
+        content += "\n"
+    content += f"[{table_name}]\n"
+    for key, value in values.items():
+        content += f'{key} = "{value}"\n'
+    return content
 
 
 def _bitloops_daemon_is_running(status_stdout: str) -> bool:
@@ -426,8 +1184,10 @@ def _bitloops_init_rejects_install_default_daemon_flag(
 def _ensure_git_branch_for_bitloops_sync(
     *,
     timeout_seconds: int,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
 ) -> tuple[bool, bool, list[str] | None, str | None, int]:
-    detached = _git_head_is_detached(timeout_seconds)
+    detached = _git_head_is_detached(timeout_seconds, env=env, cwd=cwd)
     if not detached:
         return False, False, None, None, 0
 
@@ -436,6 +1196,8 @@ def _ensure_git_branch_for_bitloops_sync(
     stdout, _stderr, code, elapsed_ms = call_command(
         ["git", "rev-parse", "--short=12", "HEAD"],
         timeout_seconds,
+        env=env,
+        cwd=cwd,
     )
     elapsed_ms_total += elapsed_ms
     if code == 0 and stdout.strip():
@@ -446,6 +1208,8 @@ def _ensure_git_branch_for_bitloops_sync(
     create_stdout, create_stderr, create_code, create_elapsed_ms = call_command(
         create_command,
         timeout_seconds,
+        env=env,
+        cwd=cwd,
     )
     elapsed_ms_total += create_elapsed_ms
     if create_code == 0:
@@ -455,6 +1219,8 @@ def _ensure_git_branch_for_bitloops_sync(
     switch_stdout, switch_stderr, switch_code, switch_elapsed_ms = call_command(
         switch_command,
         timeout_seconds,
+        env=env,
+        cwd=cwd,
     )
     elapsed_ms_total += switch_elapsed_ms
     if switch_code == 0:
@@ -471,10 +1237,17 @@ def _ensure_git_branch_for_bitloops_sync(
     )
 
 
-def _git_head_is_detached(timeout_seconds: int) -> bool:
+def _git_head_is_detached(
+    timeout_seconds: int,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> bool:
     _stdout, _stderr, code, _elapsed_ms = call_command(
         ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
         timeout_seconds,
+        env=env,
+        cwd=cwd,
     )
     return code != 0
 
@@ -534,13 +1307,37 @@ def first_non_empty_text(data: Any) -> str:
     return ""
 
 
+def _extract_terminal_agent_message(payload: Any) -> str:
+    events = payload if isinstance(payload, list) else [payload]
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        event_type = _normalize_event_type(event.get("type"))
+        if event_type in {"item_completed", "item_started", "item"}:
+            item = event.get("item")
+            if not isinstance(item, dict):
+                continue
+            item_type = _normalize_event_type(item.get("type"))
+            if item_type != "agent_message":
+                continue
+            text = first_non_empty_text(item.get("text"))
+            if text:
+                return text
+        if event_type == "result":
+            text = first_non_empty_text(event.get("result"))
+            if text:
+                return text
+    return ""
+
+
 def parse_agent_output(raw_stdout: str, parsed_payload: Any | None = None) -> str:
     text = raw_stdout.strip()
     if not text:
         return ""
     parsed = parsed_payload if parsed_payload is not None else _try_parse_json(text)
     if parsed is not None:
-        text = first_non_empty_text(parsed) or ""
+        terminal_text = _extract_terminal_agent_message(parsed)
+        text = terminal_text or first_non_empty_text(parsed) or ""
     return text.strip()
 
 
@@ -631,6 +1428,26 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("cache_creation_input_tokens",),
         ("cacheCreationInputTokens",),
     ]
+    cached_input_paths = [
+        ("usage", "cached_input_tokens"),
+        ("usage", "cachedInputTokens"),
+        ("cached_input_tokens",),
+        ("cachedInputTokens",),
+        ("usage", "input_tokens_details", "cached_tokens"),
+        ("usage", "inputTokensDetails", "cachedTokens"),
+        ("input_tokens_details", "cached_tokens"),
+        ("inputTokensDetails", "cachedTokens"),
+    ]
+    cached_output_paths = [
+        ("usage", "cached_output_tokens"),
+        ("usage", "cachedOutputTokens"),
+        ("cached_output_tokens",),
+        ("cachedOutputTokens",),
+        ("usage", "output_tokens_details", "cached_tokens"),
+        ("usage", "outputTokensDetails", "cachedTokens"),
+        ("output_tokens_details", "cached_tokens"),
+        ("outputTokensDetails", "cachedTokens"),
+    ]
     cache_read_input_paths = [
         ("usage", "cache_read_input_tokens"),
         ("usage", "cacheReadInputTokens"),
@@ -712,6 +1529,8 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
     token_input, token_input_source = _extract_number_with_source(payload, token_input_paths)
     token_output, token_output_source = _extract_number_with_source(payload, token_output_paths)
     estimated_cost, _ = _extract_number_with_source(payload, estimated_cost_paths)
+    cached_input_tokens, _ = _extract_number_with_source(payload, cached_input_paths)
+    cached_output_tokens, _ = _extract_number_with_source(payload, cached_output_paths)
     cache_creation_input_tokens, _ = _extract_number_with_source(payload, cache_creation_input_paths)
     cache_read_input_tokens, _ = _extract_number_with_source(payload, cache_read_input_paths)
     cache_creation_ephemeral_5m_input_tokens, _ = _extract_number_with_source(payload, cache_write_5m_paths)
@@ -750,6 +1569,10 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         metrics["token_output"] = token_output
     if estimated_cost is not None:
         metrics["estimated_cost"] = estimated_cost
+    if cached_input_tokens is not None:
+        metrics["cached_input_tokens"] = cached_input_tokens
+    if cached_output_tokens is not None:
+        metrics["cached_output_tokens"] = cached_output_tokens
     if cache_creation_input_tokens is not None:
         metrics["cache_creation_input_tokens"] = cache_creation_input_tokens
     if cache_read_input_tokens is not None:
@@ -776,6 +1599,16 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
     )
     if token_metrics_source:
         metrics["token_metrics_source"] = token_metrics_source
+    if token_input is not None and cached_input_tokens is not None:
+        metrics["token_input_uncached"] = max(
+            0,
+            int(float(token_input) - float(cached_input_tokens)),
+        )
+    if token_output is not None and cached_output_tokens is not None:
+        metrics["token_output_uncached"] = max(
+            0,
+            int(float(token_output) - float(cached_output_tokens)),
+        )
 
     candidate_keys = {
         "input_tokens",
@@ -795,6 +1628,11 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         "ephemeral5mInputTokens",
         "ephemeral_1h_input_tokens",
         "ephemeral1hInputTokens",
+        "cached_input_tokens",
+        "cachedInputTokens",
+        "cached_output_tokens",
+        "cachedOutputTokens",
+        "cached_tokens",
     }
     # region agent log
     _debug_log(
@@ -848,6 +1686,17 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
                         ("usage", "costUSD"),
                         ("modelUsage", "*", "costUSD"),
                         ("model_usage", "*", "cost_usd"),
+                    ],
+                ),
+                "cached_input_tokens": _collect_metric_sources(
+                    payload,
+                    paths=[
+                        ("usage", "cached_input_tokens"),
+                        ("usage", "cachedInputTokens"),
+                        ("usage", "input_tokens_details", "cached_tokens"),
+                        ("usage", "inputTokensDetails", "cachedTokens"),
+                        ("cached_input_tokens",),
+                        ("cachedInputTokens",),
                     ],
                 ),
             },
@@ -1111,6 +1960,16 @@ def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     problem = str(payload.get("problem_statement", "")).strip()
     extra_notes = payload.get("metadata", {})
     prompt_context = payload.get("prompt_context")
+    run = payload.get("run", {})
+    condition = str(run.get("condition", "")).strip().lower() if isinstance(run, dict) else ""
+    condition_instructions = ""
+
+    if condition == "with_bitloops" and problem:
+        problem = f"Using DevQL\n\n{problem}"
+        condition_instructions = (
+            "- For code understanding and exploration, you must use `bitloops devql` first.\n"
+            "- Only fall back to grep/read/glob or directory crawling if DevQL returns nothing useful.\n"
+        )
 
     parts = [
         f"You are {wrapper_name} running in benchmark mode.\n"
@@ -1119,6 +1978,7 @@ def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
         "Task: Investigate and fix the following issue by editing files "
         "directly in the workspace.\n\n"
         "Instructions:\n"
+        f"{condition_instructions}"
         "- Read the relevant source files to understand the code.\n"
         "- Identify the root cause of the issue described below.\n"
         "- Edit the necessary files to fix the bug.\n"
@@ -1246,7 +2106,8 @@ def _select_terminal_result_event(payload: Any) -> dict[str, Any] | None:
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
-            if _normalize_event_type(node.get("type")) == "result":
+            event_type = _normalize_event_type(node.get("type"))
+            if event_type in {"result", "turn_completed"}:
                 result_events.append(node)
             for value in node.values():
                 walk(value)
@@ -1378,6 +2239,22 @@ def _classify_tool_usage_metrics(payload: Any) -> dict[str, int]:
             if any(token in key for token in ("file", "read", "open", "view")):
                 totals["file_reads"] += count_int
 
+    if not usage_blocks:
+        for event in _collect_tool_use_events(payload):
+            tool_name = _extract_tool_name(event)
+            if not tool_name:
+                continue
+            key = tool_name.strip().lower()
+            if not key:
+                continue
+            totals["tool_calls"] += 1
+            if any(token in key for token in ("terminal", "shell", "bash", "cmd")):
+                totals["shell_commands"] += 1
+            if any(token in key for token in ("search", "grep", "find")):
+                totals["search_actions"] += 1
+            if any(token in key for token in ("file", "read", "open", "view")):
+                totals["file_reads"] += 1
+
     return {k: v for k, v in totals.items() if v > 0}
 
 
@@ -1402,9 +2279,11 @@ def _collect_tool_usage_blocks(payload: Any) -> list[dict[str, Any]]:
 
 
 def _extract_tool_name(payload: dict[str, Any]) -> str | None:
-    event_type = str(payload.get("type") or "").strip().lower().replace("-", "_")
+    event_type = _normalize_event_type(payload.get("type")) or ""
     if event_type in {"tool_result", "tool_result_delta"}:
         return None
+    if event_type == "command_execution":
+        return "Bash"
 
     direct_name = _pick_tool_string(payload, ("tool_name", "toolName", "name"))
     if event_type in {"tool_use", "tool_use_delta", "server_tool_use", "tool_call", "toolcall"}:
@@ -1432,7 +2311,7 @@ def _normalize_tool_name(value: str | None) -> str | None:
 def _normalize_event_type(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    text = value.strip().lower().replace("-", "_")
+    text = value.strip().lower().replace("-", "_").replace(".", "_")
     return text or None
 
 
@@ -1444,10 +2323,26 @@ def _extract_tool_use_id(payload: dict[str, Any]) -> str | None:
     event_id = payload.get("id")
     if isinstance(event_id, str) and event_id.strip().startswith("toolu_"):
         return event_id.strip()
+    event_type = _normalize_event_type(payload.get("type"))
+    if event_type == "command_execution":
+        if isinstance(event_id, str) and event_id.strip():
+            return event_id.strip()
     return None
 
 
 def _extract_tool_input_payload(payload: dict[str, Any]) -> Any:
+    event_type = _normalize_event_type(payload.get("type"))
+    if event_type == "command_execution":
+        command = payload.get("command")
+        if isinstance(command, str) and command.strip():
+            command_payload: dict[str, Any] = {"command": command.strip()}
+            status = payload.get("status")
+            if isinstance(status, str) and status.strip():
+                command_payload["status"] = status.strip()
+            exit_code = payload.get("exit_code")
+            if isinstance(exit_code, int):
+                command_payload["exit_code"] = exit_code
+            return command_payload
     if "input" in payload:
         return payload.get("input")
     if "arguments" in payload:
@@ -1493,6 +2388,12 @@ def _is_tool_use_invocation(payload: dict[str, Any]) -> bool:
     has_input = input_payload not in (None, "", {})
     if not has_input:
         return False
+
+    if event_type == "command_execution":
+        status = str(payload.get("status") or "").strip().lower()
+        if status and status != "completed":
+            return False
+        return True
 
     if event_type in {"tool_use", "server_tool_use", "tool_call", "toolcall"}:
         return True

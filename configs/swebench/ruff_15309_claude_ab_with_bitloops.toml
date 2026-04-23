@@ -9,18 +9,19 @@ include_instance_ids = ["astral-sh__ruff-15309"]
 max_instances = 1
 attempts = 1
 max_workers = 1
-timeout_seconds = 1200
+timeout_seconds = 7200
 output_root = "runs"
 prepare_workspace = true
 repo_url_template = "https://github.com/{repo}.git"
 git_bin = "git"
 workspace_root = "datasets/workspaces/rust_all"
-workspace_timeout_seconds = 600
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "claude_code"
 command = ["python3", "scripts/agents/claude_code_wrapper.py"]
-extra_args = ["--bitloops-init"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 
 [model]
 provider = "anthropic"

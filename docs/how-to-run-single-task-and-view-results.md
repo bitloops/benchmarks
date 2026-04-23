@@ -9,6 +9,7 @@ Required:
 - `git`
 - Docker Desktop running
 - `claude` CLI installed and authenticated
+- `codex` CLI installed and authenticated (for Codex runs)
 - `bitloops` CLI installed (only for `with_bitloops` runs)
 
 Install dependencies once:
@@ -26,6 +27,7 @@ Preflight checks (run before benchmark runs):
 ```bash
 python -c "import datasets, swebench; print('python deps ok')"
 command -v claude
+command -v codex
 command -v bitloops
 docker info
 claude auth status
@@ -76,35 +78,45 @@ If you already have `datasets/swebench_multilingual.test.all.jsonl`, skip this s
   --overwrite
 ```
 
-## 5) Create a single-task config
+## 5) Canonical Claude + Bitloops config
 
-Use `include_instance_ids` for exact task targeting.
+The primary multi-repo Claude + Bitloops run is defined in:
 
-Example file: `configs/swebench/single_task_claude.toml`
+`configs/swebench/rust_all_repos_claude_with_bitloops.toml`
+
+It matches the current pattern: `with_bitloops`, per-task Bitloops sandbox, platform embeddings, Bedrock model map, and long enough timeouts for index setup.
 
 ```toml
 [run]
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
+include_repos = [
+  "tokio-rs/tokio",
+  "uutils/coreutils",
+  "nushell/nushell",
+  "tokio-rs/axum",
+  "burntsushi/ripgrep",
+  "sharkdp/bat",
+  "astral-sh/ruff",
+]
 split = "test"
 language = ""
-condition = "baseline"
-include_repos = ["uutils/coreutils"]
-include_instance_ids = ["uutils__coreutils-6682"]
+condition = "with_bitloops"
 attempts = 1
-max_workers = 1
-timeout_seconds = 1200
+max_workers = 5
+timeout_seconds = 7200
 output_root = "runs"
 prepare_workspace = true
 repo_url_template = "https://github.com/{repo}.git"
 git_bin = "git"
-workspace_root = "datasets/workspaces/single_task"
-workspace_timeout_seconds = 600
+workspace_root = "datasets/workspaces/rust_all"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "claude_code"
 command = ["python3", "scripts/agents/claude_code_wrapper.py"]
-extra_args = []
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 
 [model]
 provider = "anthropic"
@@ -117,38 +129,72 @@ max_tokens = 32000
 
 [evaluation]
 enabled = true
-python_bin = "./.venv/bin/python"
+python_bin = "python3"
 dataset_name = "SWE-bench/SWE-bench_Multilingual"
 split = "test"
-max_workers = 6
+max_workers = 2
 timeout_seconds = 7200
 command_template = []
 extra_args = []
 ```
 
 Notes:
-- Keep `evaluation.python_bin = "./.venv/bin/python"` to avoid evaluator failures with system Python.
+- Prefer `evaluation.python_bin = "./.venv/bin/python"` in a local copy if system `python3` is not your venv (avoids evaluator import issues).
 
-### Optional: run the same task with Bitloops
+### Narrowing to one task (optional)
 
-If you want `with_bitloops` instead of baseline, update only these fields:
+Use `include_instance_ids` for exact task targeting. Copy the canonical file (for example to `configs/swebench/single_task_claude_platform_bitloops.toml`) and set:
+
+```toml
+include_instance_ids = ["uutils__coreutils-6682"]
+include_repos = ["uutils/coreutils"]
+max_workers = 1
+```
+
+### Codex variant (same task)
+
+For Codex runs, use:
+
+```toml
+[agent]
+id = "codex"
+command = ["python3", "scripts/agents/codex_wrapper.py"]
+extra_args = []
+
+[model]
+provider = "openai"
+name = "gpt-5.4"
+temperature = 0.0
+max_tokens = 32000
+
+[model_map.codex]
+"gpt-5.4" = "gpt-5.4"
+```
+
+### Optional: baseline variant
+
+If you want a plain Claude baseline instead, use a separate config such as
+`configs/swebench/single_task_claude_baseline.toml` and update these fields:
 
 ```toml
 [run]
-condition = "with_bitloops"
+condition = "baseline"
+workspace_timeout_seconds = 600
 
 [agent]
-extra_args = ["--bitloops-init"]
+extra_args = []
 ```
 
-`--bitloops-init` starts/bootstraps the daemon and runs
-`bitloops init --install-default-daemon --sync=true` (with `--ingest=false`).
+The canonical config uses the current Claude + Bitloops setup:
+- isolated per-task Bitloops sandboxing
+- `bitloops init --agent claude-code --telemetry=false --sync=true --ingest=false --embeddings-runtime platform`
+- the same Bedrock model mapping pattern used by the other Claude configs
 
 ## 6) Verify selected tasks before run
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli plan \
-  --config configs/swebench/single_task_claude.toml
+  --config configs/swebench/rust_all_repos_claude_with_bitloops.toml
 ```
 
 Check that:
@@ -159,11 +205,11 @@ Check that:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/single_task_claude.toml \
-  --appendix-output-dir reports/appendix/single_task
+  --config configs/swebench/rust_all_repos_claude_with_bitloops.toml \
+  --appendix-output-dir reports/appendix/rust_all_repos_claude_with_bitloops
 ```
 
-If you run a Bitloops variant config, use the same command with that config path.
+If you run a single-task copy or the baseline variant instead, use that config path and a distinct `--appendix-output-dir` (for example `reports/appendix/single_task_claude_baseline`).
 
 ## 8) Where to find outputs
 
@@ -186,7 +232,7 @@ Inside run folder:
 
 ### Appendix outputs
 
-In `reports/appendix/single_task/`:
+In `reports/appendix/rust_all_repos_claude_with_bitloops/` (when using the canonical config above):
 - `appendix_minimal_per_task_log.csv`
 - `appendix_minimal_results_table.csv`
 - `appendix_per_attempt_breakdown.md`

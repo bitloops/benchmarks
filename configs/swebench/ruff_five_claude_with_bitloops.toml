@@ -1,26 +1,26 @@
 [run]
 benchmark = "swebench_multilingual"
-dataset_path = "datasets/swebench_multilingual.dev.jsonl"
-split = "dev"
-language = "rust"
-condition = "baseline"
-include_repos = []
+dataset_path = "datasets/swebench_multilingual.test.ruff.jsonl"
+split = "test"
+language = ""
+condition = "with_bitloops"
 include_instance_ids = []
-# instance_ids_file = "tokio_task_ids.txt"
-max_instances = 20
-attempts = 3
-timeout_seconds = 900
+max_instances = 5
+attempts = 1
+max_workers = 5
+timeout_seconds = 7200
 output_root = "runs"
-prepare_workspace = false
+prepare_workspace = true
 repo_url_template = "https://github.com/{repo}.git"
 git_bin = "git"
-# workspace_root = "runs/workspaces"
-workspace_timeout_seconds = 600
+workspace_root = "datasets/workspaces/rust_all"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "claude_code"
 command = ["python3", "scripts/agents/claude_code_wrapper.py"]
-extra_args = []
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 
 [model]
 provider = "anthropic"
@@ -32,13 +32,11 @@ max_tokens = 32000
 "opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
 
 [evaluation]
-enabled = false
+enabled = true
 python_bin = "python3"
-swebench_repo = ""
 dataset_name = "SWE-bench/SWE-bench_Multilingual"
-split = "dev"
-max_workers = 4
+split = "test"
+max_workers = 6
 timeout_seconds = 7200
 command_template = []
-# result_json_path_template = "{attempt_dir}/eval_results.json"
 extra_args = []

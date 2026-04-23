@@ -40,14 +40,17 @@ Use `mock_agent.py` as a minimal reference implementation.
 
 - `claude_code_wrapper.py`
 - `cursor_wrapper.py`
+- `codex_wrapper.py`
 
-Both wrappers:
+All wrappers:
 
 1. Read the benchmark payload from stdin.
 2. Build a strict patch-only prompt.
 3. Call the respective CLI in non-interactive print mode.
 4. Parse output and extract a unified diff patch.
 5. Print JSON response with `patch` and `metadata`.
+
+`codex_wrapper.py` follows the same contract and metadata shape.
 
 For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also includes:
 - `tool_invocations_raw` (exact per-call tool-use events)
@@ -64,11 +67,23 @@ Optional wrapper argument:
 
 - `--bitloops-init`: runs non-interactive Bitloops setup in the task workspace
   before invoking the agent CLI:
-  - checks daemon status
-  - starts daemon (`bitloops start --detached`)
-  - if needed, bootstraps daemon config (`bitloops start --create-default-config --telemetry=false --detached`)
+  - resolves the task-local Bitloops sandbox/runtime
+  - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
-  - runs `bitloops init --agent <agent> --telemetry=false --install-default-daemon --sync=true --ingest=false`
+  - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=false`
+- `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime used during `bitloops init`
+
+Current Claude + Bitloops configs use:
+
+```toml
+[run]
+condition = "with_bitloops"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
+
+[agent]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
+```
 
 ## Claude Wrapper
 
@@ -117,6 +132,30 @@ Typical non-interactive setting:
 export CURSOR_EXTRA_ARGS="--force --trust"
 ```
 
+## Codex Wrapper
+
+Command shape:
+
+```bash
+codex exec --json --model <model> --cd <workspace> --full-auto "<prompt>"
+```
+
+Env vars:
+
+- `CODEX_BIN` (default: `codex`)
+- `CODEX_MODEL` (fallback model if payload.model.name is empty; default wrapper fallback: `gpt-5.4`)
+- `CODEX_EXTRA_ARGS` (extra CLI args, shell-split)
+- `CODEX_TIMEOUT_SECONDS` (default: `900`)
+- `CODEX_FULL_AUTO` (default: `true`; set false to use explicit sandbox mode below)
+- `CODEX_SANDBOX` (default: `workspace-write`; used only when `CODEX_FULL_AUTO=false`)
+- `CODEX_SKIP_GIT_REPO_CHECK` (default: `false`)
+
+Typical non-interactive setting:
+
+```bash
+export CODEX_EXTRA_ARGS="--ephemeral"
+```
+
 ## Config Examples
 
 Claude:
@@ -133,4 +172,12 @@ Cursor:
 [agent]
 id = "cursor"
 command = ["python3", "scripts/agents/cursor_wrapper.py"]
+```
+
+Codex:
+
+```toml
+[agent]
+id = "codex"
+command = ["python3", "scripts/agents/codex_wrapper.py"]
 ```

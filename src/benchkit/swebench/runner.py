@@ -142,6 +142,7 @@ def execute_run(
                     workspace_cache=workspace_cache,
                     workspace_in_flight=workspace_in_flight,
                     workspace_lock=workspace_lock,
+                    workspace_isolation_mode=config.workspace_isolation_mode,
                 )
                 predictions_slots[item_index] = prediction_row
                 trace_slots[item_index] = trace_row
@@ -167,6 +168,7 @@ def execute_run(
                         workspace_cache=workspace_cache,
                         workspace_in_flight=workspace_in_flight,
                         workspace_lock=workspace_lock,
+                        workspace_isolation_mode=config.workspace_isolation_mode,
                     )
                     for instance_index, instance in enumerate(selected_instances, start=1)
                 ]
@@ -212,6 +214,9 @@ def execute_run(
         "run_id": layout.run_id,
         "benchmark": config.benchmark,
         "condition": config.condition,
+        "bitloops_enabled": config.bitloops_enabled,
+        "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
+        "workspace_isolation_mode": config.workspace_isolation_mode,
         "dataset_path": str(config.dataset_path),
         "split": config.split,
         "language": config.language,
@@ -275,6 +280,8 @@ def _build_manifest(
         "split": config.split,
         "language": config.language,
         "condition": config.condition,
+        "bitloops_enabled": config.bitloops_enabled,
+        "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
         "prompt_context": config.prompt_context,
         "include_repos": config.include_repos,
         "include_instance_ids": config.include_instance_ids,
@@ -296,6 +303,7 @@ def _build_manifest(
         "model_map": config.model_map,
         "workspace": {
             "prepare_workspace": config.prepare_workspace,
+            "isolation_mode": config.workspace_isolation_mode,
             "repo_url_template": config.repo_url_template,
             "git_bin": config.git_bin,
             "workspace_root": str(config.workspace_root) if config.workspace_root else None,
@@ -343,6 +351,7 @@ def _run_instance(
     workspace_cache: dict[str, WorkspacePrepResult],
     workspace_in_flight: dict[str, threading.Event],
     workspace_lock: threading.Lock,
+    workspace_isolation_mode: str,
 ) -> tuple[int, dict[str, Any], dict[str, Any], bool]:
     status = "ok"
     patch = ""
@@ -358,11 +367,19 @@ def _run_instance(
         config=config,
         layout_run_root=layout_run_root,
         instance=instance,
+        run_id=run_id,
         cache=workspace_cache,
         in_flight=workspace_in_flight,
         cache_lock=workspace_lock,
+        isolation_mode=workspace_isolation_mode,
     )
     workspace_metadata = {"workspace": workspace_result.to_metadata()}
+    bitloops_sandbox = _build_bitloops_task_sandbox(
+        config=config,
+        workspace_path=workspace_result.workspace_path,
+    )
+    if bitloops_sandbox is not None:
+        workspace_metadata["bitloops_sandbox"] = bitloops_sandbox
 
     run_context = RunContext(
         attempt=attempt,
@@ -372,7 +389,9 @@ def _run_instance(
         canonical_model_name=canonical_model_name,
         run_id=run_id,
         benchmark=config.benchmark,
+        condition=config.condition,
         prompt_context=config.prompt_context,
+        bitloops_sandbox=bitloops_sandbox,
     )
 
     if workspace_result.status == "error":
@@ -424,9 +443,11 @@ def _resolve_workspace(
     config: RunConfig,
     layout_run_root: Path,
     instance: BenchmarkInstance,
+    run_id: str,
     cache: dict[str, WorkspacePrepResult],
     in_flight: dict[str, threading.Event],
     cache_lock: threading.Lock,
+    isolation_mode: str,
 ) -> WorkspacePrepResult:
     if not config.prepare_workspace:
         return WorkspacePrepResult(
@@ -434,10 +455,15 @@ def _resolve_workspace(
             workspace_path=Path.cwd(),
             repo_url=None,
             elapsed_ms=0,
+            isolation_mode=isolation_mode,
             error=None,
         )
 
-    key = f"{instance.repo}@{instance.base_commit}"
+    key = _workspace_cache_key(
+        instance=instance,
+        run_id=run_id,
+        isolation_mode=isolation_mode,
+    )
     while True:
         wait_event: threading.Event | None = None
         is_owner = False
@@ -461,6 +487,8 @@ def _resolve_workspace(
                     git_bin=config.git_bin,
                     timeout_seconds=config.workspace_timeout_seconds,
                     workspace_root=config.workspace_root,
+                    isolation_mode=isolation_mode,
+                    run_id=run_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 result = WorkspacePrepResult(
@@ -468,6 +496,7 @@ def _resolve_workspace(
                     workspace_path=None,
                     repo_url=None,
                     elapsed_ms=0,
+                    isolation_mode=isolation_mode,
                     error=str(exc),
                 )
 
@@ -479,6 +508,43 @@ def _resolve_workspace(
 
         assert wait_event is not None
         wait_event.wait()
+
+
+def _workspace_cache_key(
+    *,
+    instance: BenchmarkInstance,
+    run_id: str,
+    isolation_mode: str,
+) -> str:
+    if isolation_mode == "task_scoped":
+        return f"{run_id}@{instance.instance_id}"
+    return f"{instance.repo}@{instance.base_commit}"
+
+
+def _build_bitloops_task_sandbox(
+    *,
+    config: RunConfig,
+    workspace_path: Path | None,
+) -> dict[str, Any] | None:
+    if not config.bitloops_enabled or config.bitloops_sandbox_mode != "per_task_daemon":
+        return None
+    if workspace_path is None:
+        return None
+
+    sandbox_root = workspace_path.parent / f"{workspace_path.name}__bitloops"
+    home_root = sandbox_root / "home"
+    return {
+        "mode": config.bitloops_sandbox_mode,
+        "sandbox_root": str(sandbox_root),
+        "workspace_root": str(workspace_path),
+        "home_root": str(home_root),
+        "daemon_host": "127.0.0.1",
+        "xdg_config_home": str(home_root / "xdg"),
+        "xdg_state_home": str(home_root / "xdg-state"),
+        "xdg_cache_home": str(home_root / "xdg-cache"),
+        "xdg_data_home": str(home_root / "xdg-data"),
+        "daemon_stderr_log_path": str(sandbox_root / "daemon.stderr.log"),
+    }
 
 
 def _log_progress(message: str) -> None:

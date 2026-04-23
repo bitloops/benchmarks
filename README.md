@@ -6,7 +6,7 @@ Scaffold for agent-focused benchmarking with SWE-bench Multilingual first, then 
 
 - SWE-bench Multilingual integration scaffold
 - Rust-first task filtering
-- Agent adapters (Claude Code, Cursor, noop)
+- Agent adapters (Claude Code, Cursor, Codex, noop)
 - Run artifacts and metadata for reproducibility
 
 ## Environment Setup
@@ -19,6 +19,7 @@ Run these before `./scripts/swebench/phase1_tokio_run.sh`.
    - Docker Desktop / Docker daemon running
    - `claude` CLI installed and authenticated
    - `cursor-agent` CLI installed and authenticated
+   - `codex` CLI installed and authenticated
    - `bitloops` CLI installed (required for `with_bitloops` runs)
 2. Create and activate a virtual environment:
 
@@ -41,6 +42,7 @@ python -m pip install swebench
 python -c "import datasets, swebench; print('python deps ok')"
 command -v claude
 command -v cursor-agent
+command -v codex
 docker info
 ```
 
@@ -50,7 +52,7 @@ docker info
 ./scripts/swebench/phase1_tokio_run.sh
 ```
 
-By default, Phase 1 now runs Claude and Cursor baselines in parallel and runs up to
+By default, Phase 1 now runs Claude, Cursor, and Codex baselines in parallel and runs up to
 2 tasks concurrently per baseline (`RUN_MAX_WORKERS=2`).
 
 If needed, you can force the script to use a specific interpreter:
@@ -62,7 +64,7 @@ PYTHON_BIN=python ./scripts/swebench/phase1_tokio_run.sh
 Tuning parallelism:
 
 ```bash
-# Disable parallel Claude/Cursor baseline runs
+# Disable parallel baseline runs
 RUN_AGENTS_IN_PARALLEL=0 ./scripts/swebench/phase1_tokio_run.sh
 
 # Keep agents parallel, but change per-run task concurrency
@@ -75,9 +77,13 @@ RUN_MAX_WORKERS=3 ./scripts/swebench/phase1_tokio_run.sh
    - `configs/swebench/rust_canary.toml` (mock agent)
    - `configs/swebench/rust_claude_code.toml` (Claude Code wrapper)
    - `configs/swebench/rust_cursor.toml` (Cursor wrapper)
+   - `configs/swebench/rust_codex.toml` (Codex wrapper)
    - `configs/swebench/rust_tokio_phase1_claude.toml` (Tokio Phase 1)
+   - `configs/swebench/rust_all_repos_claude_with_bitloops.toml` (multi-repo Rust subset + Claude + Bitloops)
    - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
    - `configs/swebench/rust_tokio_phase1_cursor.toml` (Tokio Phase 1)
+   - `configs/swebench/rust_tokio_phase1_codex.toml` (Tokio Phase 1)
+   - `configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
 2. Export SWE-bench Multilingual data into local JSONL:
 
 ```bash
@@ -151,11 +157,15 @@ python3 -m benchkit.swebench.cli appendix \
 Phase 1 (2-3 Tokio tasks) flow:
 1. Copy `configs/swebench/tokio_task_ids.sample.txt` to `configs/swebench/tokio_task_ids.txt` and keep only your selected task IDs.
 2. Run `plan` with one of the `rust_tokio_phase1_*.toml` configs.
-3. Run `run` for Claude and Cursor baselines.
-4. Run `appendix` on both run roots to generate appendix files.
+3. Run `run` for Claude, Cursor, and Codex baselines.
+4. Run `appendix` on all run roots to generate appendix files.
 
 Use `model_map` in config if an agent expects a different CLI model ID than the
 canonical benchmark model name.
+
+For Codex baseline defaults:
+- canonical model: `gpt-5.4`
+- resolved model: `gpt-5.4` (via `[model_map.codex]`)
 
 `plan` and `run` now perform strict agent/model normalization checks and fail
 fast on mismatches (example: Cursor with `claude-opus-4-6` will error and suggest
@@ -186,21 +196,25 @@ APPENDIX_DIR=reports/appendix/tokio_claude_bitloops_ab \
 RUN_MAX_WORKERS=2 ./scripts/swebench/run_ab_compare.sh
 ```
 
-Bitloops-enabled configs opt in at wrapper level:
+Bitloops-enabled Claude configs now use the same wrapper setup pattern:
 
 ```toml
 [run]
 condition = "with_bitloops"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
-extra_args = ["--bitloops-init"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 ```
 
-With `--bitloops-init`, the wrapper performs daemon bootstrap/setup and then runs
-`bitloops init --install-default-daemon --sync=true` (with `--ingest=false`).
+With this setup, the wrapper brings up an isolated task-local Bitloops runtime and runs
+`bitloops init --agent <agent> --telemetry=false --sync=true --ingest=false --embeddings-runtime platform`.
 
 Use the same `extra_args` pattern for Cursor configs to compare `baseline` vs
 `with_bitloops` under the `cursor` agent as well.
+Use the same pattern for Codex with
+`configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml`.
 
 ## Dataset viewer
 

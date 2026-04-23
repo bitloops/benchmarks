@@ -16,6 +16,7 @@ class WorkspacePrepResult:
     workspace_path: Path | None
     repo_url: str | None
     elapsed_ms: int
+    isolation_mode: str = "shared_repo_commit"
     error: str | None = None
 
     def to_metadata(self) -> dict[str, str | int | None]:
@@ -24,6 +25,7 @@ class WorkspacePrepResult:
             "workspace_path": str(self.workspace_path) if self.workspace_path else None,
             "repo_url": self.repo_url,
             "elapsed_ms": self.elapsed_ms,
+            "isolation_mode": self.isolation_mode,
             "error": self.error,
         }
 
@@ -35,6 +37,8 @@ def prepare_instance_workspace(
     git_bin: str,
     timeout_seconds: int,
     workspace_root: Path | None = None,
+    isolation_mode: str = "shared_repo_commit",
+    run_id: str | None = None,
 ) -> WorkspacePrepResult:
     start = time.time()
     base = workspace_root.resolve() if workspace_root else (run_root / "workspaces").resolve()
@@ -42,7 +46,14 @@ def prepare_instance_workspace(
 
     repo_slug = _sanitize_repo_slug(instance.repo)
     commit_slug = _sanitize_commit(instance.base_commit)
-    target = base / repo_slug / commit_slug
+    target = _resolve_workspace_target(
+        base=base,
+        repo_slug=repo_slug,
+        commit_slug=commit_slug,
+        instance_id=instance.instance_id,
+        isolation_mode=isolation_mode,
+        run_id=run_id,
+    )
     repo_url = _resolve_repo_url(instance.repo, repo_url_template)
 
     try:
@@ -52,6 +63,7 @@ def prepare_instance_workspace(
                 workspace_path=target,
                 repo_url=repo_url,
                 elapsed_ms=int((time.time() - start) * 1000),
+                isolation_mode=isolation_mode,
             )
 
         if target.exists():
@@ -66,6 +78,7 @@ def prepare_instance_workspace(
             workspace_path=target,
             repo_url=repo_url,
             elapsed_ms=int((time.time() - start) * 1000),
+            isolation_mode=isolation_mode,
         )
     except Exception as exc:  # noqa: BLE001
         return WorkspacePrepResult(
@@ -73,8 +86,25 @@ def prepare_instance_workspace(
             workspace_path=None,
             repo_url=repo_url,
             elapsed_ms=int((time.time() - start) * 1000),
+            isolation_mode=isolation_mode,
             error=str(exc),
         )
+
+
+def _resolve_workspace_target(
+    *,
+    base: Path,
+    repo_slug: str,
+    commit_slug: str,
+    instance_id: str,
+    isolation_mode: str,
+    run_id: str | None,
+) -> Path:
+    if isolation_mode == "task_scoped":
+        run_slug = _sanitize_path_segment(run_id, fallback="unknown_run")
+        instance_slug = _sanitize_path_segment(instance_id, fallback="unknown_instance")
+        return base / "_isolated" / run_slug / repo_slug / commit_slug / instance_slug
+    return base / repo_slug / commit_slug
 
 
 def _checkout_commit(path: Path, commit: str, git_bin: str, timeout_seconds: int) -> None:
@@ -121,6 +151,11 @@ def _sanitize_repo_slug(repo: str) -> str:
 def _sanitize_commit(commit: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]", "", commit.strip())
     return cleaned[:40] if cleaned else "unknown_commit"
+
+
+def _sanitize_path_segment(value: str | None, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or "").strip())
+    return cleaned[:120] if cleaned else fallback
 
 
 def _run(

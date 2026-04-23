@@ -43,6 +43,9 @@ class RunConfig:
     timeout_seconds: int
     output_root: Path
     prepare_workspace: bool
+    workspace_isolation_mode: str
+    bitloops_enabled: bool
+    bitloops_sandbox_mode: str
     repo_url_template: str
     git_bin: str
     workspace_root: Path | None
@@ -108,6 +111,8 @@ def load_run_config(config_path: Path) -> RunConfig:
     max_workers = int(run.get("max_workers", DEFAULT_MAX_WORKERS))
     timeout_seconds = int(run.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
     prepare_workspace = bool(run.get("prepare_workspace", DEFAULT_PREPARE_WORKSPACE))
+    workspace_isolation_mode_raw = str(run.get("workspace_isolation_mode", "")).strip().lower()
+    bitloops_sandbox_mode_raw = str(run.get("bitloops_sandbox_mode", "")).strip().lower()
     repo_url_template = str(
         run.get("repo_url_template", "https://github.com/{repo}.git")
     ).strip()
@@ -145,6 +150,15 @@ def load_run_config(config_path: Path) -> RunConfig:
     prompt_context = (
         str(prompt_context_raw).strip() if isinstance(prompt_context_raw, str) and prompt_context_raw.strip() else None
     )
+    bitloops_enabled = _detect_bitloops_enabled(condition=condition, agent=agent_cfg)
+    workspace_isolation_mode = _resolve_workspace_isolation_mode(
+        requested=workspace_isolation_mode_raw,
+        bitloops_enabled=bitloops_enabled,
+    )
+    bitloops_sandbox_mode = _resolve_bitloops_sandbox_mode(
+        requested=bitloops_sandbox_mode_raw,
+        bitloops_enabled=bitloops_enabled,
+    )
 
     model_map = _parse_model_map(model_map_raw)
     evaluation_cfg = _parse_evaluation_config(evaluation, split=split, benchmark=benchmark)
@@ -163,6 +177,9 @@ def load_run_config(config_path: Path) -> RunConfig:
         timeout_seconds=timeout_seconds,
         output_root=output_root,
         prepare_workspace=prepare_workspace,
+        workspace_isolation_mode=workspace_isolation_mode,
+        bitloops_enabled=bitloops_enabled,
+        bitloops_sandbox_mode=bitloops_sandbox_mode,
         repo_url_template=repo_url_template,
         git_bin=git_bin,
         workspace_root=workspace_root,
@@ -174,6 +191,38 @@ def load_run_config(config_path: Path) -> RunConfig:
         evaluation=evaluation_cfg,
         source_path=config_path,
     )
+
+
+def _detect_bitloops_enabled(*, condition: str, agent: AgentConfig) -> bool:
+    if condition == "with_bitloops":
+        return True
+    return any(str(arg).strip() == "--bitloops-init" for arg in agent.extra_args)
+
+
+def _resolve_workspace_isolation_mode(*, requested: str, bitloops_enabled: bool) -> str:
+    if requested:
+        if requested not in {"shared_repo_commit", "task_scoped"}:
+            raise ValueError(
+                "run.workspace_isolation_mode must be one of: "
+                "'shared_repo_commit', 'task_scoped'"
+            )
+        return requested
+    if bitloops_enabled:
+        return "task_scoped"
+    return "shared_repo_commit"
+
+
+def _resolve_bitloops_sandbox_mode(*, requested: str, bitloops_enabled: bool) -> str:
+    if requested:
+        if requested not in {"disabled", "shared_daemon", "per_task_daemon"}:
+            raise ValueError(
+                "run.bitloops_sandbox_mode must be one of: "
+                "'disabled', 'shared_daemon', 'per_task_daemon'"
+            )
+        return requested
+    if bitloops_enabled:
+        return "per_task_daemon"
+    return "disabled"
 
 
 def _parse_model_map(raw: Any) -> dict[str, dict[str, str]]:

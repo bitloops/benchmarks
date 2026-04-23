@@ -1,18 +1,63 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from benchkit.common.config import AgentConfig, ModelConfig
 from benchkit.swebench.agents.base import (
+    JsonCommandAgentAdapter,
+    RunContext,
     _heartbeat_interval_seconds,
     _resolve_relative_command_paths,
     _summarize_failed_adapter_stdout,
 )
+from benchkit.swebench.types import BenchmarkInstance
 
 
 class AgentBaseTests(unittest.TestCase):
+    def test_json_command_adapter_includes_run_timeout_in_payload(self) -> None:
+        adapter = JsonCommandAgentAdapter(
+            AgentConfig(id="claude_code", command=["python3", "wrapper.py"])
+        )
+        instance = BenchmarkInstance(
+            instance_id="ruff__1",
+            repo="astral-sh/ruff",
+            base_commit="abc123",
+            problem_statement="Fix the failing lint behavior.",
+            language="rust",
+            metadata={},
+        )
+        context = RunContext(
+            attempt=2,
+            timeout_seconds=3600,
+            workspace_root=Path("/tmp/workspace"),
+            model=ModelConfig(provider="anthropic", name="opus-4-6"),
+            canonical_model_name="opus-4-6",
+            run_id="run-123",
+            benchmark="swebench_multilingual",
+            condition="with_bitloops",
+        )
+        captured_payload: dict[str, object] = {}
+
+        def fake_run(*args, **kwargs):
+            del args
+            captured_payload.update(json.loads(kwargs["input"]))
+
+            class Completed:
+                returncode = 0
+                stdout = '{"patch":"","metadata":{}}'
+                stderr = ""
+
+            return Completed()
+
+        with patch("benchkit.swebench.agents.base.subprocess.run", side_effect=fake_run):
+            adapter.generate_patch(instance, context)
+
+        self.assertEqual(captured_payload["run"]["timeout_seconds"], 3600)
+
     def test_resolves_relative_script_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)

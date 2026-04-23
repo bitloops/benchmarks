@@ -7,7 +7,7 @@ condition = "baseline"
 include_repos = []
 include_instance_ids = ["astral-sh__ruff-15309"]
 max_instances = 1
-attempts = 2
+attempts = 1
 max_workers = 1
 timeout_seconds = 1200
 output_root = "runs"
@@ -24,12 +24,12 @@ extra_args = []
 
 [model]
 provider = "anthropic"
-name = "claude-sonnet-4-6"
+name = "opus-4-6"
 temperature = 0.0
 max_tokens = 32000
 
 [model_map.claude_code]
-"opus-4-6" = "claude-sonnet-4-6"
+"opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
 
 [evaluation]
 enabled = true

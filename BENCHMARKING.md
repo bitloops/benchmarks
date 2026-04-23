@@ -1,7 +1,7 @@
 # Benchmarking Guide
 
 End-to-end instructions for running SWE-bench Multilingual benchmarks on Rust tasks
-with the Claude Code agent on Amazon Bedrock.
+with Claude Code, Cursor, and Codex agents.
 
 ## Prerequisites
 
@@ -16,6 +16,8 @@ python -m pip install swebench
 You also need:
 - Docker Desktop running (`docker info` should succeed)
 - `claude` CLI installed and authenticated (`claude --version`)
+- `cursor-agent` CLI installed and authenticated (`cursor-agent --version`)
+- `codex` CLI installed and authenticated (`codex --version`)
 - `bitloops` CLI installed (`bitloops --version`) for `with_bitloops` runs
 - Git
 
@@ -87,6 +89,16 @@ See [`configs/swebench/ruff_15309_claude.toml`](configs/swebench/ruff_15309_clau
 See [`configs/swebench/ruff_15309_claude_with_context.toml`](configs/swebench/ruff_15309_claude_with_context.toml)
 — same task but with `prompt_context` injected and condition `with_testlens_context`.
 
+**Codex baseline**:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/rust_tokio_phase1_codex.toml
+```
+
+See [`configs/swebench/rust_tokio_phase1_codex.toml`](configs/swebench/rust_tokio_phase1_codex.toml)
+for the default Codex baseline.
+
 Other single-task configs available:
 
 | Config | Task | Condition |
@@ -100,10 +112,17 @@ Other single-task configs available:
 
 Use a config with:
 - `condition = "with_bitloops"`
-- `[agent].extra_args = ["--bitloops-init"]`
+- `workspace_timeout_seconds = 1800`
+- `bitloops_sandbox_mode = "per_task_daemon"`
+- `[agent].extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`
+
+Canonical multi-repo Claude + Bitloops (Rust selection across repos):
+
+- [`rust_all_repos_claude_with_bitloops.toml`](configs/swebench/rust_all_repos_claude_with_bitloops.toml)
 
 Example Tokio config:
 - [`rust_tokio_phase1_claude_with_bitloops.toml`](configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml)
+- [`rust_tokio_phase1_codex_with_bitloops.toml`](configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml)
 
 ### Key TOML fields
 
@@ -113,7 +132,7 @@ Example Tokio config:
 | `attempts` | How many times to run each task |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
 | `prompt_context` | Extra text appended to the agent's prompt |
-| `agent.extra_args` | Wrapper toggles (for Bitloops use `["--bitloops-init"]`) |
+| `agent.extra_args` | Wrapper toggles (for Claude + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
 
 ### Override attempts from the CLI
 
@@ -169,6 +188,16 @@ name = "opus-4-6"
 `[model].name` is the canonical label used in reports and the `model_version` CSV
 column. `model_map` maps it to the actual `--model` CLI flag value passed to the
 `claude` command.
+
+**Codex default**:
+
+```toml
+[model]
+name = "gpt-5.4"
+
+[model_map.codex]
+"gpt-5.4" = "gpt-5.4"
+```
 
 ## 5. Generate reports
 

@@ -48,13 +48,15 @@ PER_TASK_FIELDS = [
     "runtime_sec",
     "token_input",
     "token_output",
+    "cached_input_tokens",
+    "cached_output_tokens",
+    "token_input_uncached",
+    "token_output_uncached",
     "estimated_cost",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
     "cache_creation_ephemeral_5m_input_tokens",
     "cache_creation_ephemeral_1h_input_tokens",
-    "bedrock_quota_tokens",
-    "bedrock_cost_usd",
     "tool_calls",
     "shell_commands",
     "file_reads",
@@ -193,6 +195,46 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     instance_metadata,
                     ("repo_label", "repo_owner", "owner"),
                 ) or _derive_repo_label(str(repo or ""))
+                model_version = (
+                    manifest.get("model", {}).get("resolved_name")
+                    or manifest.get("model", {}).get("canonical_name")
+                )
+                token_input = _pick_number(metadata, ("token_input", "input_tokens"))
+                token_output = _pick_number(metadata, ("token_output", "output_tokens"))
+                cached_input_tokens = _pick_number(
+                    metadata,
+                    ("cached_input_tokens", "cachedInputTokens"),
+                )
+                cached_output_tokens = _pick_number(
+                    metadata,
+                    ("cached_output_tokens", "cachedOutputTokens"),
+                )
+                token_input_uncached = _pick_number(
+                    metadata,
+                    ("token_input_uncached",),
+                )
+                if token_input_uncached is None:
+                    token_input_uncached = _derive_uncached_tokens(
+                        total_tokens=token_input,
+                        cached_tokens=cached_input_tokens,
+                    )
+                token_output_uncached = _pick_number(
+                    metadata,
+                    ("token_output_uncached",),
+                )
+                if token_output_uncached is None:
+                    token_output_uncached = _derive_uncached_tokens(
+                        total_tokens=token_output,
+                        cached_tokens=cached_output_tokens,
+                    )
+                estimated_cost = _pick_number(metadata, ("estimated_cost", "cost_usd"))
+                if estimated_cost is None:
+                    estimated_cost = _compute_openai_cost_usd(
+                        model_version=model_version,
+                        token_input=token_input,
+                        token_output=token_output,
+                        cached_input_tokens=cached_input_tokens,
+                    )
 
                 row = {
                     "task_id": instance_id,
@@ -203,14 +245,17 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     "repo_label": repo_label,
                     "language": instance.get("language", manifest.get("language")),
                     "agent": manifest.get("agent", {}).get("id"),
-                    "model_version": manifest.get("model", {}).get("resolved_name")
-                    or manifest.get("model", {}).get("canonical_name"),
+                    "model_version": model_version,
                     "condition": manifest.get("condition", "baseline"),
                     "status": status,
                     "runtime_sec": _ms_to_sec(_pick_number(metadata, ("elapsed_ms",))),
-                    "token_input": _pick_number(metadata, ("token_input", "input_tokens")),
-                    "token_output": _pick_number(metadata, ("token_output", "output_tokens")),
-                    "estimated_cost": _pick_number(metadata, ("estimated_cost", "cost_usd")),
+                    "token_input": token_input,
+                    "token_output": token_output,
+                    "cached_input_tokens": cached_input_tokens,
+                    "cached_output_tokens": cached_output_tokens,
+                    "token_input_uncached": token_input_uncached,
+                    "token_output_uncached": token_output_uncached,
+                    "estimated_cost": estimated_cost,
                     "cache_creation_input_tokens": _pick_number(
                         metadata, ("cache_creation_input_tokens",)
                     ),
@@ -222,16 +267,6 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     ),
                     "cache_creation_ephemeral_1h_input_tokens": _pick_number(
                         metadata, ("cache_creation_ephemeral_1h_input_tokens",)
-                    ),
-                    "bedrock_quota_tokens": _compute_bedrock_quota_tokens(
-                        manifest.get("model", {}).get("resolved_name")
-                        or manifest.get("model", {}).get("canonical_name"),
-                        metadata,
-                    ),
-                    "bedrock_cost_usd": _compute_bedrock_cost_usd(
-                        manifest.get("model", {}).get("resolved_name")
-                        or manifest.get("model", {}).get("canonical_name"),
-                        metadata,
                     ),
                     "tool_calls": _pick_number(
                         metadata,
@@ -285,6 +320,8 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         "metadata_metrics": {
                             "token_input": metadata.get("token_input"),
                             "token_output": metadata.get("token_output"),
+                            "cached_input_tokens": metadata.get("cached_input_tokens"),
+                            "cached_output_tokens": metadata.get("cached_output_tokens"),
                             "estimated_cost": metadata.get("estimated_cost"),
                             "cache_creation_input_tokens": metadata.get("cache_creation_input_tokens"),
                             "cache_read_input_tokens": metadata.get("cache_read_input_tokens"),
@@ -297,8 +334,7 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         },
                         "computed_metrics": {
                             "runtime_sec": row["runtime_sec"],
-                            "bedrock_quota_tokens": row["bedrock_quota_tokens"],
-                            "bedrock_cost_usd": row["bedrock_cost_usd"],
+                            "token_input_uncached": row["token_input_uncached"],
                             "estimated_cost": row["estimated_cost"],
                         },
                     },
@@ -308,82 +344,122 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
     return rows
 
 
-def _compute_bedrock_quota_tokens(
-    model_version: Any,
-    metadata: dict[str, Any],
-) -> int | float | None:
-    if not _is_bedrock_anthropic_model(model_version):
+def _derive_uncached_tokens(
+    total_tokens: int | float | None,
+    cached_tokens: int | float | None,
+) -> int | None:
+    if total_tokens is None:
         return None
-
-    token_input = _pick_number(metadata, ("token_input", "input_tokens"))
-    token_output = _pick_number(metadata, ("token_output", "output_tokens"))
-    cache_creation_input_tokens = _pick_number(metadata, ("cache_creation_input_tokens",))
-    if token_input is None or token_output is None or cache_creation_input_tokens is None:
-        return None
-    return token_input + cache_creation_input_tokens + (5 * token_output)
+    if cached_tokens is None:
+        return int(float(total_tokens))
+    return max(0, int(float(total_tokens) - float(cached_tokens)))
 
 
-def _compute_bedrock_cost_usd(
+def _compute_openai_cost_usd(
+    *,
     model_version: Any,
-    metadata: dict[str, Any],
+    token_input: int | float | None,
+    token_output: int | float | None,
+    cached_input_tokens: int | float | None,
 ) -> float | None:
-    pricing = _bedrock_pricing(model_version)
+    pricing = _openai_text_pricing(model_version)
     if pricing is None:
         return None
-
-    token_input = _pick_number(metadata, ("token_input", "input_tokens"))
-    token_output = _pick_number(metadata, ("token_output", "output_tokens"))
-    cache_read_input_tokens = _pick_number(metadata, ("cache_read_input_tokens",))
-    cache_creation_ephemeral_5m_input_tokens = _pick_number(
-        metadata, ("cache_creation_ephemeral_5m_input_tokens",)
-    )
-    cache_creation_ephemeral_1h_input_tokens = _pick_number(
-        metadata, ("cache_creation_ephemeral_1h_input_tokens",)
-    )
-
-    if (
-        token_input is None
-        or token_output is None
-        or cache_read_input_tokens is None
-        or cache_creation_ephemeral_5m_input_tokens is None
-        or cache_creation_ephemeral_1h_input_tokens is None
-    ):
+    if token_input is None or token_output is None:
         return None
 
+    uncached_input_tokens = _derive_uncached_tokens(token_input, cached_input_tokens)
+    if uncached_input_tokens is None:
+        return None
+    cached = int(float(cached_input_tokens)) if cached_input_tokens is not None else 0
+
     return (
-        (float(token_input) * pricing["input"])
-        + (float(cache_creation_ephemeral_5m_input_tokens) * pricing["cache_write_5m"])
-        + (float(cache_creation_ephemeral_1h_input_tokens) * pricing["cache_write_1h"])
-        + (float(cache_read_input_tokens) * pricing["cache_read"])
+        (float(uncached_input_tokens) * pricing["input"])
+        + (float(cached) * pricing["cached_input"])
         + (float(token_output) * pricing["output"])
     )
 
 
-def _bedrock_pricing(model_version: Any) -> dict[str, float] | None:
-    if not _is_opus_4_6_bedrock_model(model_version):
-        return None
-    per_million = 1_000_000.0
-    return {
-        "input": 5.0 / per_million,
-        "cache_write_5m": 6.25 / per_million,
-        "cache_write_1h": 10.0 / per_million,
-        "cache_read": 0.50 / per_million,
-        "output": 25.0 / per_million,
-    }
-
-
-def _is_bedrock_anthropic_model(model_version: Any) -> bool:
+def _openai_text_pricing(model_version: Any) -> dict[str, float] | None:
     if not isinstance(model_version, str):
-        return False
+        return None
     normalized = model_version.strip().lower()
-    return normalized.startswith(("eu.anthropic.", "us.anthropic.", "anthropic."))
+    if not normalized:
+        return None
+
+    per_million = 1_000_000.0
+
+    if _matches_model_prefix(
+        normalized,
+        prefixes=(
+            "gpt-5.4-mini",
+            "gpt-5-4-mini",
+        ),
+    ):
+        return {
+            "input": 0.75 / per_million,
+            "cached_input": 0.075 / per_million,
+            "output": 4.5 / per_million,
+        }
+    if _matches_model_prefix(
+        normalized,
+        prefixes=(
+            "gpt-5.4-nano",
+            "gpt-5-4-nano",
+        ),
+    ):
+        return {
+            "input": 0.20 / per_million,
+            "cached_input": 0.02 / per_million,
+            "output": 1.25 / per_million,
+        }
+    if _matches_model_prefix(
+        normalized,
+        prefixes=(
+            "gpt-5.4",
+            "gpt-5-4",
+        ),
+    ):
+        return {
+            "input": 2.50 / per_million,
+            "cached_input": 0.25 / per_million,
+            "output": 15.0 / per_million,
+        }
+    if _matches_model_prefix(
+        normalized,
+        prefixes=(
+            "gpt-5.2",
+            "gpt-5-2",
+        ),
+    ):
+        return {
+            "input": 1.75 / per_million,
+            "cached_input": 0.175 / per_million,
+            "output": 14.0 / per_million,
+        }
+    if _matches_model_prefix(
+        normalized,
+        prefixes=(
+            "gpt-5.1",
+            "gpt-5-1",
+            "gpt-5",
+        ),
+    ):
+        return {
+            "input": 1.25 / per_million,
+            "cached_input": 0.125 / per_million,
+            "output": 10.0 / per_million,
+        }
+    return None
 
 
-def _is_opus_4_6_bedrock_model(model_version: Any) -> bool:
-    if not _is_bedrock_anthropic_model(model_version):
-        return False
-    normalized = str(model_version).strip().lower()
-    return "claude-opus-4-6" in normalized
+def _matches_model_prefix(normalized_model: str, *, prefixes: tuple[str, ...]) -> bool:
+    for prefix in prefixes:
+        if normalized_model == prefix:
+            return True
+        if normalized_model.startswith(prefix + "-"):
+            return True
+    return False
 
 
 def _build_results_rows(per_task_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
