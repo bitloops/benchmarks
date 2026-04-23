@@ -48,6 +48,8 @@ PER_TASK_FIELDS = [
     "runtime_sec",
     "token_input",
     "token_output",
+    "reasoning_output_tokens",
+    "total_tokens",
     "cached_input_tokens",
     "cached_output_tokens",
     "token_input_uncached",
@@ -201,6 +203,16 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                 )
                 token_input = _pick_number(metadata, ("token_input", "input_tokens"))
                 token_output = _pick_number(metadata, ("token_output", "output_tokens"))
+                reasoning_output_tokens = _pick_number(
+                    metadata,
+                    ("reasoning_output_tokens", "reasoningOutputTokens"),
+                )
+                total_tokens = _pick_number(
+                    metadata,
+                    ("total_tokens", "totalTokens"),
+                )
+                if total_tokens is None and token_input is not None and token_output is not None:
+                    total_tokens = int(float(token_input) + float(token_output))
                 cached_input_tokens = _pick_number(
                     metadata,
                     ("cached_input_tokens", "cachedInputTokens"),
@@ -251,6 +263,8 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     "runtime_sec": _ms_to_sec(_pick_number(metadata, ("elapsed_ms",))),
                     "token_input": token_input,
                     "token_output": token_output,
+                    "reasoning_output_tokens": reasoning_output_tokens,
+                    "total_tokens": total_tokens,
                     "cached_input_tokens": cached_input_tokens,
                     "cached_output_tokens": cached_output_tokens,
                     "token_input_uncached": token_input_uncached,
@@ -320,6 +334,8 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         "metadata_metrics": {
                             "token_input": metadata.get("token_input"),
                             "token_output": metadata.get("token_output"),
+                            "reasoning_output_tokens": metadata.get("reasoning_output_tokens"),
+                            "total_tokens": metadata.get("total_tokens"),
                             "cached_input_tokens": metadata.get("cached_input_tokens"),
                             "cached_output_tokens": metadata.get("cached_output_tokens"),
                             "estimated_cost": metadata.get("estimated_cost"),
@@ -335,6 +351,7 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         "computed_metrics": {
                             "runtime_sec": row["runtime_sec"],
                             "token_input_uncached": row["token_input_uncached"],
+                            "total_tokens": row["total_tokens"],
                             "estimated_cost": row["estimated_cost"],
                         },
                     },

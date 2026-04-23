@@ -22,6 +22,8 @@ import urllib.request
 CANONICAL_METRIC_KEYS: tuple[str, ...] = (
     "token_input",
     "token_output",
+    "reasoning_output_tokens",
+    "total_tokens",
     "cached_input_tokens",
     "cached_output_tokens",
     "token_input_uncached",
@@ -294,6 +296,10 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
     if original_home:
         env.setdefault("CARGO_HOME", str(Path(original_home) / ".cargo"))
         env.setdefault("RUSTUP_HOME", str(Path(original_home) / ".rustup"))
+        # Keep Codex auth/session state anchored to the user's real Codex home.
+        # In per-task sandbox mode, HOME is rewritten for Bitloops isolation.
+        # Without CODEX_HOME, Codex falls back to sandbox HOME and loses auth.
+        env.setdefault("CODEX_HOME", str(Path(original_home) / ".codex"))
         # Keep AWS SDK credential discovery anchored to the user's real home.
         # The task sandbox rewrites HOME/XDG roots for Bitloops, but Bedrock auth
         # still needs access to ~/.aws/{config,credentials}.
@@ -814,6 +820,12 @@ def _run_bitloops_init(
     init_stderr = ""
     init_code = 1
     init_elapsed_ms = 0
+    init_db_lock_retry_count = 0
+    max_db_lock_retries = max(0, int(os.environ.get("BITLOOPS_INIT_DB_LOCK_RETRIES", "3")))
+    db_lock_retry_delay_ms = max(
+        0,
+        int(os.environ.get("BITLOOPS_INIT_DB_LOCK_RETRY_DELAY_MS", "500")),
+    )
     runtime_ready_shortcut_metadata: dict[str, Any] | None = None
 
     while True:
@@ -881,6 +893,17 @@ def _run_bitloops_init(
             fallback_applied = True
 
         if not fallback_applied:
+            if (
+                _bitloops_init_hit_database_lock(init_stdout, init_stderr)
+                and init_db_lock_retry_count < max_db_lock_retries
+            ):
+                init_db_lock_retry_count += 1
+                sleep_seconds = (
+                    db_lock_retry_delay_ms * (2 ** (init_db_lock_retry_count - 1))
+                ) / 1000.0
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
+                continue
             break
         init_fallback_used = True
 
@@ -900,6 +923,8 @@ def _run_bitloops_init(
         "bitloops_init_command": init_command,
         "bitloops_init_fallback_used": init_fallback_used,
         "bitloops_init_elapsed_ms": init_elapsed_ms,
+        "bitloops_init_db_lock_retry_count": init_db_lock_retry_count,
+        "bitloops_init_db_lock_retry_used": init_db_lock_retry_count > 0,
         "bitloops_init_runtime_ready_shortcut_used": runtime_ready_shortcut_metadata is not None,
         "bitloops_init_runtime_ready_shortcut": runtime_ready_shortcut_metadata,
     }
@@ -1181,6 +1206,15 @@ def _bitloops_init_rejects_install_default_daemon_flag(
     return "unexpected argument '--install-default-daemon'" in text
 
 
+def _bitloops_init_hit_database_lock(stdout: str, stderr: str) -> bool:
+    text = "\n".join((stdout, stderr)).strip().lower()
+    return (
+        "database is locked" in text
+        or "error code 5" in text
+        or "sqlite_busy" in text
+    )
+
+
 def _ensure_git_branch_for_bitloops_sync(
     *,
     timeout_seconds: int,
@@ -1409,6 +1443,24 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("modelUsage", "*", "outputTokens"),
         ("model_usage", "*", "output_tokens"),
     ]
+    reasoning_output_paths = [
+        ("usage", "reasoning_output_tokens"),
+        ("usage", "reasoningOutputTokens"),
+        ("reasoning_output_tokens",),
+        ("reasoningOutputTokens",),
+        ("usage", "output_tokens_details", "reasoning_tokens"),
+        ("usage", "outputTokensDetails", "reasoningTokens"),
+        ("output_tokens_details", "reasoning_tokens"),
+        ("outputTokensDetails", "reasoningTokens"),
+    ]
+    total_tokens_paths = [
+        ("usage", "total_tokens"),
+        ("usage", "totalTokens"),
+        ("total_tokens",),
+        ("totalTokens",),
+        ("modelUsage", "*", "totalTokens"),
+        ("model_usage", "*", "total_tokens"),
+    ]
     estimated_cost_paths = [
         ("total_cost_usd",),
         ("totalCostUsd",),
@@ -1528,6 +1580,8 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
 
     token_input, token_input_source = _extract_number_with_source(payload, token_input_paths)
     token_output, token_output_source = _extract_number_with_source(payload, token_output_paths)
+    reasoning_output_tokens, _ = _extract_number_with_source(payload, reasoning_output_paths)
+    total_tokens, _ = _extract_number_with_source(payload, total_tokens_paths)
     estimated_cost, _ = _extract_number_with_source(payload, estimated_cost_paths)
     cached_input_tokens, _ = _extract_number_with_source(payload, cached_input_paths)
     cached_output_tokens, _ = _extract_number_with_source(payload, cached_output_paths)
@@ -1567,6 +1621,10 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         metrics["token_input"] = token_input
     if token_output is not None:
         metrics["token_output"] = token_output
+    if reasoning_output_tokens is not None:
+        metrics["reasoning_output_tokens"] = reasoning_output_tokens
+    if total_tokens is not None:
+        metrics["total_tokens"] = total_tokens
     if estimated_cost is not None:
         metrics["estimated_cost"] = estimated_cost
     if cached_input_tokens is not None:
@@ -1609,12 +1667,18 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
             0,
             int(float(token_output) - float(cached_output_tokens)),
         )
+    if total_tokens is None and token_input is not None and token_output is not None:
+        metrics["total_tokens"] = int(float(token_input) + float(token_output))
 
     candidate_keys = {
         "input_tokens",
         "inputTokens",
         "output_tokens",
         "outputTokens",
+        "reasoning_output_tokens",
+        "reasoningOutputTokens",
+        "total_tokens",
+        "totalTokens",
         "total_cost_usd",
         "totalCostUsd",
         "estimated_cost",
@@ -1670,6 +1734,28 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
                         ("model_usage", "*", "output_tokens"),
                         ("output_tokens",),
                         ("outputTokens",),
+                    ],
+                ),
+                "reasoning_output_tokens": _collect_metric_sources(
+                    payload,
+                    paths=[
+                        ("usage", "reasoning_output_tokens"),
+                        ("usage", "reasoningOutputTokens"),
+                        ("usage", "output_tokens_details", "reasoning_tokens"),
+                        ("usage", "outputTokensDetails", "reasoningTokens"),
+                        ("reasoning_output_tokens",),
+                        ("reasoningOutputTokens",),
+                    ],
+                ),
+                "total_tokens": _collect_metric_sources(
+                    payload,
+                    paths=[
+                        ("usage", "total_tokens"),
+                        ("usage", "totalTokens"),
+                        ("modelUsage", "*", "totalTokens"),
+                        ("model_usage", "*", "total_tokens"),
+                        ("total_tokens",),
+                        ("totalTokens",),
                     ],
                 ),
                 "estimated_cost": _collect_metric_sources(
@@ -1876,6 +1962,8 @@ def merge_metric_metadata(*metric_sources: dict[str, Any] | None) -> dict[str, f
                     for key in (
                         "token_input",
                         "token_output",
+                        "reasoning_output_tokens",
+                        "total_tokens",
                         "estimated_cost",
                         "cache_creation_input_tokens",
                         "cache_read_input_tokens",

@@ -70,6 +70,8 @@ class AppendixTests(unittest.TestCase):
                 metadata = {
                     "token_input": str(1000 + index),
                     "token_output": 220 + index,
+                    "reasoning_output_tokens": 30 + index,
+                    "total_tokens": 1300 + index,
                     "cache_creation_input_tokens": 10 + index,
                     "cache_read_input_tokens": 20 + index,
                     "cache_creation_ephemeral_5m_input_tokens": 7 + index,
@@ -163,6 +165,8 @@ class AppendixTests(unittest.TestCase):
             self.assertEqual(per_task[0]["status"], "solved")
             self.assertEqual(per_task[0]["token_input"], 1001)
             self.assertEqual(per_task[0]["token_output"], 221)
+            self.assertEqual(per_task[0]["reasoning_output_tokens"], 31)
+            self.assertEqual(per_task[0]["total_tokens"], 1301)
             self.assertEqual(per_task[0]["estimated_cost"], 0.04)
             self.assertEqual(per_task[0]["cache_creation_input_tokens"], 11)
             self.assertEqual(per_task[0]["cache_read_input_tokens"], 21)
@@ -359,6 +363,8 @@ class AppendixTests(unittest.TestCase):
             ]
             self.assertIsNone(per_task[0]["cache_creation_input_tokens"])
             self.assertIsNone(per_task[0]["cache_read_input_tokens"])
+            self.assertIsNone(per_task[0]["reasoning_output_tokens"])
+            self.assertEqual(per_task[0]["total_tokens"], 13)
             self.assertEqual(per_task[0]["token_input_uncached"], 10)
             self.assertEqual(per_task[0]["token_output_uncached"], 3)
             self.assertAlmostEqual(per_task[0]["estimated_cost"], 0.00007)
@@ -436,6 +442,7 @@ class AppendixTests(unittest.TestCase):
             ]
             self.assertEqual(per_task[0]["cached_input_tokens"], 4)
             self.assertEqual(per_task[0]["cached_output_tokens"], 1)
+            self.assertEqual(per_task[0]["total_tokens"], 13)
             self.assertEqual(per_task[0]["token_input_uncached"], 6)
             self.assertEqual(per_task[0]["token_output_uncached"], 2)
             self.assertEqual(per_task[0]["cache_creation_input_tokens"], 2)

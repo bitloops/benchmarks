@@ -13,6 +13,7 @@ TOKIO_DATASET="${TOKIO_DATASET:-datasets/swebench_multilingual.test.tokio.jsonl}
 TOKIO_TASK_IDS="${TOKIO_TASK_IDS:-configs/swebench/tokio_task_ids.txt}"
 CLAUDE_CONFIG="${CLAUDE_CONFIG:-configs/swebench/rust_tokio_phase1_claude.toml}"
 CURSOR_CONFIG="${CURSOR_CONFIG:-configs/swebench/rust_tokio_phase1_cursor.toml}"
+CODEX_CONFIG="${CODEX_CONFIG:-configs/swebench/rust_tokio_phase1_codex.toml}"
 APPENDIX_DIR="${APPENDIX_DIR:-reports/appendix/phase1_tokio}"
 RUN_AGENTS_IN_PARALLEL="${RUN_AGENTS_IN_PARALLEL:-1}"
 RUN_MAX_WORKERS="${RUN_MAX_WORKERS:-2}"
@@ -60,10 +61,11 @@ is_truthy() {
   esac
 }
 
-echo "[0/7] Preflight checks"
+echo "[0/8] Preflight checks"
 require_file "$TOKIO_TASK_IDS"
 require_file "$CLAUDE_CONFIG"
 require_file "$CURSOR_CONFIG"
+require_file "$CODEX_CONFIG"
 
 if ! [[ "$RUN_MAX_WORKERS" =~ ^[0-9]+$ ]] || (( RUN_MAX_WORKERS < 1 )); then
   echo "RUN_MAX_WORKERS must be an integer >= 1 (got: $RUN_MAX_WORKERS)" >&2
@@ -80,18 +82,26 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[1/7] Exporting Tokio dataset subset from Hugging Face"
+if ! command -v codex >/dev/null 2>&1; then
+  echo "Missing Codex CLI in PATH. Install/enable codex and retry." >&2
+  exit 1
+fi
+
+echo "[1/8] Exporting Tokio dataset subset from Hugging Face"
 run_cli export-hf \
   --split "$SPLIT" \
   --repo "$REPO" \
   --output "$TOKIO_DATASET" \
   --overwrite
 
-echo "[2/7] Validating Claude config/model mapping"
+echo "[2/8] Validating Claude config/model mapping"
 run_cli plan --config "$CLAUDE_CONFIG" --show 3
 
-echo "[3/7] Validating Cursor config/model mapping"
+echo "[3/8] Validating Cursor config/model mapping"
 run_cli plan --config "$CURSOR_CONFIG" --show 3
+
+echo "[4/8] Validating Codex config/model mapping"
+run_cli plan --config "$CODEX_CONFIG" --show 3
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/benchkit-phase1.XXXXXX")"
 cleanup() {
@@ -101,33 +111,41 @@ trap cleanup EXIT
 
 CLAUDE_LOG="$TMP_DIR/claude_run.log"
 CURSOR_LOG="$TMP_DIR/cursor_run.log"
+CODEX_LOG="$TMP_DIR/codex_run.log"
 
-echo "[4/7] Running baselines (agents_parallel=$RUN_AGENTS_IN_PARALLEL, run_max_workers=$RUN_MAX_WORKERS)"
+echo "[5/8] Running baselines (agents_parallel=$RUN_AGENTS_IN_PARALLEL, run_max_workers=$RUN_MAX_WORKERS)"
 if is_truthy "$RUN_AGENTS_IN_PARALLEL"; then
   run_baseline "$CLAUDE_CONFIG" "$CLAUDE_LOG" &
   CLAUDE_PID=$!
   run_baseline "$CURSOR_CONFIG" "$CURSOR_LOG" &
   CURSOR_PID=$!
+  run_baseline "$CODEX_CONFIG" "$CODEX_LOG" &
+  CODEX_PID=$!
 
   CLAUDE_STATUS=0
   CURSOR_STATUS=0
+  CODEX_STATUS=0
   wait "$CLAUDE_PID" || CLAUDE_STATUS=$?
   wait "$CURSOR_PID" || CURSOR_STATUS=$?
+  wait "$CODEX_PID" || CODEX_STATUS=$?
 
-  if (( CLAUDE_STATUS != 0 || CURSOR_STATUS != 0 )); then
+  if (( CLAUDE_STATUS != 0 || CURSOR_STATUS != 0 || CODEX_STATUS != 0 )); then
     echo "One or more baseline runs failed." >&2
     echo "--- Claude run output ---" >&2
     cat "$CLAUDE_LOG" >&2 || true
     echo "--- Cursor run output ---" >&2
     cat "$CURSOR_LOG" >&2 || true
+    echo "--- Codex run output ---" >&2
+    cat "$CODEX_LOG" >&2 || true
     exit 1
   fi
 else
   run_baseline "$CLAUDE_CONFIG" "$CLAUDE_LOG"
   run_baseline "$CURSOR_CONFIG" "$CURSOR_LOG"
+  run_baseline "$CODEX_CONFIG" "$CODEX_LOG"
 fi
 
-echo "[5/7] Collecting baseline outputs"
+echo "[6/8] Collecting baseline outputs"
 echo "--- Claude baseline ---"
 CLAUDE_OUTPUT="$(cat "$CLAUDE_LOG")"
 printf "%s\n" "$CLAUDE_OUTPUT"
@@ -138,14 +156,21 @@ CURSOR_OUTPUT="$(cat "$CURSOR_LOG")"
 printf "%s\n" "$CURSOR_OUTPUT"
 CURSOR_RUN_ROOT="$(extract_run_root "$CURSOR_OUTPUT")"
 
-echo "[6/7] Generating appendix files"
+echo "--- Codex baseline ---"
+CODEX_OUTPUT="$(cat "$CODEX_LOG")"
+printf "%s\n" "$CODEX_OUTPUT"
+CODEX_RUN_ROOT="$(extract_run_root "$CODEX_OUTPUT")"
+
+echo "[7/8] Generating appendix files"
 APPENDIX_OUTPUT="$(run_cli appendix \
   --run-root "$CLAUDE_RUN_ROOT" \
   --run-root "$CURSOR_RUN_ROOT" \
+  --run-root "$CODEX_RUN_ROOT" \
   --output-dir "$APPENDIX_DIR")"
 printf "%s\n" "$APPENDIX_OUTPUT"
 
-echo "[7/7] Done"
+echo "[8/8] Done"
 echo "Claude run root: $CLAUDE_RUN_ROOT"
 echo "Cursor run root: $CURSOR_RUN_ROOT"
+echo "Codex run root: $CODEX_RUN_ROOT"
 echo "Appendix output dir: $APPENDIX_DIR"

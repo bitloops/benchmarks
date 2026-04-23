@@ -132,6 +132,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("cache_creation_ephemeral_1h_input_tokens"), 333)
         self.assertEqual(metrics.get("search_actions"), 2)
         self.assertEqual(metrics.get("tool_calls"), 5)
+        self.assertEqual(metrics.get("total_tokens"), 1555)
 
     def test_extract_usage_metrics_from_cursor_style_json(self) -> None:
         payload = [
@@ -316,6 +317,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     "input_tokens": 12024,
                     "cached_input_tokens": 3456,
                     "output_tokens": 27,
+                    "reasoning_output_tokens": 11,
+                    "total_tokens": 12051,
                 },
             },
         ]
@@ -326,6 +329,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("token_output"), 27)
         self.assertEqual(metrics.get("cached_input_tokens"), 3456)
         self.assertEqual(metrics.get("token_input_uncached"), 8568)
+        self.assertEqual(metrics.get("reasoning_output_tokens"), 11)
+        self.assertEqual(metrics.get("total_tokens"), 12051)
         self.assertEqual(metrics.get("token_metrics_source"), "result_usage")
 
     def test_extract_codex_command_execution_as_tool_invocation(self) -> None:
@@ -761,6 +766,46 @@ class AgentWrapperCommonTests(unittest.TestCase):
             ],
         )
 
+    def test_setup_bitloops_retries_on_database_locked(self) -> None:
+        responses = [
+            ("Bitloops daemon: running\n", "", 0, 4),
+            ("", "database is locked", 1, 9),
+            ("", "Error code 5: database is locked", 1, 10),
+            ("Bitloops init completed", "", 0, 13),
+        ]
+        with patch.dict(
+            common.os.environ,
+            {
+                "BITLOOPS_INIT_DB_LOCK_RETRIES": "3",
+                "BITLOOPS_INIT_DB_LOCK_RETRY_DELAY_MS": "1",
+            },
+            clear=False,
+        ), patch.object(
+            common,
+            "_ensure_git_branch_for_bitloops_sync",
+            return_value=(False, False, None, None, 0),
+        ), patch.object(
+            common.time,
+            "sleep",
+        ) as mock_sleep, patch.object(
+            common,
+            "call_command",
+            side_effect=responses,
+        ) as mock_call:
+            metadata = common.setup_bitloops_for_workspace(
+                agent_name="codex",
+                bitloops_bin="bitloops",
+                timeout_seconds=30,
+            )
+
+        self.assertEqual(metadata["bitloops_init_db_lock_retry_count"], 2)
+        self.assertTrue(metadata["bitloops_init_db_lock_retry_used"])
+        self.assertEqual(metadata["bitloops_init_elapsed_ms"], 32)
+        self.assertEqual(mock_call.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertAlmostEqual(float(mock_sleep.call_args_list[0].args[0]), 0.001)
+        self.assertAlmostEqual(float(mock_sleep.call_args_list[1].args[0]), 0.002)
+
     def test_setup_bitloops_supports_sync_ingest_embeddings_and_semantic_modes(self) -> None:
         responses = [
             ("Bitloops daemon: running\n", "", 0, 5),
@@ -892,6 +937,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(env["XDG_DATA_HOME"], sandbox["xdg_data_home"])
         self.assertEqual(env["CARGO_HOME"], "/Users/tester/.cargo")
         self.assertEqual(env["RUSTUP_HOME"], "/Users/tester/.rustup")
+        self.assertEqual(env["CODEX_HOME"], "/Users/tester/.codex")
         self.assertEqual(env["AWS_CONFIG_FILE"], "/Users/tester/.aws/config")
         self.assertEqual(
             env["AWS_SHARED_CREDENTIALS_FILE"],
@@ -924,6 +970,29 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(env["HOME"], sandbox["home_root"])
         self.assertEqual(env["CARGO_HOME"], "/shared/cargo")
         self.assertEqual(env["RUSTUP_HOME"], "/shared/rustup")
+
+    def test_build_bitloops_task_environment_preserves_existing_codex_home(self) -> None:
+        sandbox = {
+            "mode": "per_task_daemon",
+            "home_root": "/tmp/benchkit/home",
+            "xdg_config_home": "/tmp/benchkit/home/xdg",
+            "xdg_state_home": "/tmp/benchkit/home/xdg-state",
+            "xdg_cache_home": "/tmp/benchkit/home/xdg-cache",
+            "xdg_data_home": "/tmp/benchkit/home/xdg-data",
+        }
+        with patch.dict(
+            common.os.environ,
+            {
+                "HOME": "/Users/tester",
+                "CODEX_HOME": "/custom/codex-home",
+            },
+            clear=True,
+        ):
+            env = common.build_bitloops_task_environment(sandbox)
+
+        assert env is not None
+        self.assertEqual(env["HOME"], sandbox["home_root"])
+        self.assertEqual(env["CODEX_HOME"], "/custom/codex-home")
 
     def test_build_bitloops_task_environment_preserves_existing_aws_env(self) -> None:
         sandbox = {

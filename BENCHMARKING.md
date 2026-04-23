@@ -329,6 +329,8 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 | runtime_sec | trace metadata | Agent wall-clock time in seconds |
 | token_input | Claude JSON | Input tokens consumed |
 | token_output | Claude JSON | Output tokens generated |
+| reasoning_output_tokens | Codex JSON (when available) | Reasoning output tokens reported by agent runtime |
+| total_tokens | Codex JSON / derived | Total tokens excluding reasoning output (or `token_input + token_output` fallback) |
 | estimated_cost | Claude JSON | Total cost in USD (reported by Claude CLI) |
 | tool_calls | Claude JSON `num_turns` | Number of agentic tool-use turns |
 | shell_commands | Claude JSON | Bash tool invocations |
