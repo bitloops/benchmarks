@@ -54,7 +54,7 @@ source .venv/bin/activate
 3. Login from terminal:
 
 ```bash
-aws sso login --profile default
+aws login
 ```
 
 Set Bedrock environment:
