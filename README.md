@@ -208,8 +208,18 @@ bitloops_sandbox_mode = "per_task_daemon"
 extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 ```
 
+Field reference:
+- `run.max_instances`: Optional cap on how many instances are selected after repo/language/ID filters. Omit it to run all matched instances. Must be `>= 1` when set.
+- `agent.extra_args`: Extra CLI args appended to `agent.command` in order. For Claude/Cursor/Codex wrappers, this is where Bitloops flags are passed.
+
 With this setup, the wrapper brings up an isolated task-local Bitloops runtime and runs
 `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=false --embeddings-runtime platform`.
+
+Bitloops flags via `extra_args` (wrapper defaults in parentheses):
+- `--bitloops-init`: enable Bitloops setup before the agent command.
+- `--bitloops-sync true|false` (`true`): queue sync during `bitloops init`.
+- `--bitloops-ingest true|false` (`false`): queue ingest during `bitloops init`.
+- `--bitloops-embeddings-runtime local|platform`: choose embeddings runtime.
 
 Use the same `extra_args` pattern for Cursor configs to compare `baseline` vs
 `with_bitloops` under the `cursor` agent as well.

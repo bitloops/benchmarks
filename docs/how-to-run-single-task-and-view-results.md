@@ -54,7 +54,7 @@ source .venv/bin/activate
 3. Login from terminal:
 
 ```bash
-aws login
+aws login --region eu-central-1
 ```
 
 Set Bedrock environment:
@@ -138,8 +138,12 @@ command_template = []
 extra_args = []
 ```
 
+There is also `run.max_instances` (optional), which sets how many tasks will run.
+
 Notes:
 - Prefer `evaluation.python_bin = "./.venv/bin/python"` in a local copy if system `python3` is not your venv (avoids evaluator import issues).
+- `run.max_instances` is optional and limits selected tasks after filters (`include_repos`, `include_instance_ids`, etc.). Omit it to run all matches; when set it must be `>= 1`.
+- `agent.extra_args` is passed through to the wrapper command in order. Use it for Bitloops wrapper flags such as `--bitloops-init`, `--bitloops-sync true|false` (default `true`), and `--bitloops-ingest true|false` (default `false`).
 
 ### Narrowing to one task (optional)
 
