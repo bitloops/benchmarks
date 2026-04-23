@@ -1,4 +1,4 @@
-# How To Run One Specific SWE-bench Task And View Results
+# Benchmark run guide (single task or small slice)
 
 This guide is for running a single task (or a small set of tasks) and quickly finding results.
 
@@ -174,7 +174,7 @@ max_tokens = 32000
 [model_map.codex]
 "gpt-5.4" = "gpt-5.4"
 ```
-test
+
 ### Optional: baseline variant
 
 If you want a plain Claude baseline instead, use a separate config such as
