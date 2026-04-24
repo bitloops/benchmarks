@@ -2,7 +2,7 @@
 
 ## Goal
 
-Use SWE-bench Multilingual as the first benchmark suite, but evaluate **agents** (Claude Code, Cursor, Codex, and enhanced variants) instead of directly evaluating model APIs.
+Use SWE-bench Multilingual as the first benchmark suite, but evaluate **agents** (Claude Code, Cursor, OpenCode, Codex, and enhanced variants) instead of directly evaluating model APIs.
 
 ## Why This Structure
 
@@ -27,6 +27,7 @@ Use SWE-bench Multilingual as the first benchmark suite, but evaluate **agents**
 - Implementations:
   - `ClaudeCodeAdapter`
   - `CursorAdapter`
+  - `OpencodeAdapter`
   - `CodexAdapter`
   - `NoopAgentAdapter` (dry-run/testing)
 
@@ -70,6 +71,9 @@ name = "opus-4-6"
 [model_map.cursor]
 "opus-4-6" = "opus-4.6"
 
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+
 [model_map.codex]
 "gpt-5.4" = "gpt-5.4"
 ```
@@ -109,7 +113,7 @@ Use:
 ```
 
 This script runs export -> config validation -> Claude baseline -> Cursor
-baseline -> appendix generation.
+baseline -> OpenCode baseline -> appendix generation.
 
 ## Current Agent Wrapper Contract
 
@@ -127,6 +131,7 @@ Runner sends JSON on stdin:
     "name": "eu.anthropic.claude-opus-4-6-v1",
     "canonical_name": "opus-4-6",
     "temperature": 0.0,
+    "seed": 4242,
     "max_tokens": 32000
   }
 }

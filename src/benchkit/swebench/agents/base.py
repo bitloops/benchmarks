@@ -93,6 +93,7 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 "canonical_name": context.canonical_model_name,
                 "temperature": context.model.temperature,
                 "max_tokens": context.model.max_tokens,
+                "seed": context.model.seed,
             },
             "run": {
                 "run_id": context.run_id,

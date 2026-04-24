@@ -299,6 +299,7 @@ def _build_manifest(
             "resolution_source": model_resolution["source"],
             "temperature": config.model.temperature,
             "max_tokens": config.model.max_tokens,
+            "seed": config.model.seed,
         },
         "model_map": config.model_map,
         "workspace": {

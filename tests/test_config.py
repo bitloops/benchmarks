@@ -98,6 +98,44 @@ name = "opus-4-6"
             self.assertEqual(cfg.workspace_isolation_mode, "task_scoped")
             self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
 
+    def test_load_run_config_supports_opencode_agent_and_model_map(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            raw = """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+condition = "baseline"
+
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
+
+[model]
+provider = "openai"
+name = "gpt-5"
+temperature = 0.15
+seed = 4242
+
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+            """.strip()
+            path = temp_root / "config.toml"
+            path.write_text(raw, encoding="utf-8")
+
+            cfg = load_run_config(path)
+
+            self.assertEqual(cfg.agent.id, "opencode")
+            self.assertEqual(
+                cfg.agent.command,
+                ["python3", "scripts/agents/opencode_wrapper.py"],
+            )
+            self.assertEqual(cfg.model.provider, "openai")
+            self.assertEqual(cfg.model.name, "gpt-5")
+            self.assertEqual(cfg.model.temperature, 0.15)
+            self.assertEqual(cfg.model.seed, 4242)
+            self.assertEqual(cfg.model_map["opencode"]["gpt-5"], "openai/gpt-5")
+
 
 if __name__ == "__main__":
     unittest.main()

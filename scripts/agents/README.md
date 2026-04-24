@@ -17,7 +17,9 @@ Input shape:
   "model": {
     "provider": "...",
     "name": "...",
+    "canonical_name": "...",
     "temperature": 0.0,
+    "seed": 4242,
     "max_tokens": 32000
   }
 }
@@ -40,6 +42,7 @@ Use `mock_agent.py` as a minimal reference implementation.
 
 - `claude_code_wrapper.py`
 - `cursor_wrapper.py`
+- `opencode_wrapper.py`
 - `codex_wrapper.py`
 
 All wrappers:
@@ -51,6 +54,7 @@ All wrappers:
 5. Print JSON response with `patch` and `metadata`.
 
 `codex_wrapper.py` follows the same contract and metadata shape.
+`opencode_wrapper.py` follows the same contract and metadata shape.
 
 For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also includes:
 - `tool_invocations_raw` (exact per-call tool-use events)
@@ -156,6 +160,33 @@ Typical non-interactive setting:
 export CODEX_EXTRA_ARGS="--ephemeral"
 ```
 
+## OpenCode Wrapper
+
+Command shape:
+
+```bash
+opencode run --format json --model <provider/model> --agent <agent> --dangerously-skip-permissions "<prompt>"
+```
+
+Env vars:
+
+- `OPENCODE_BIN` (default: `opencode`)
+- `OPENCODE_MODEL` (fallback model if payload.model.name is empty; default wrapper fallback: `openai/gpt-5`)
+- `OPENCODE_AGENT` (default: `build`)
+- `OPENCODE_EXTRA_ARGS` (extra CLI args, shell-split)
+- `OPENCODE_TIMEOUT_SECONDS` (default: `900`)
+
+OpenCode-specific notes:
+
+- Provider credentials are expected in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
+- The wrapper maps benchmark `[model].temperature` and optional `[model].seed` into `OPENCODE_CONFIG_CONTENT` at runtime, merging with any existing inline OpenCode config instead of writing project config files.
+
+Typical non-interactive setting:
+
+```bash
+export OPENCODE_AGENT="build"
+```
+
 ## Config Examples
 
 Claude:
@@ -180,4 +211,12 @@ Codex:
 [agent]
 id = "codex"
 command = ["python3", "scripts/agents/codex_wrapper.py"]
+```
+
+OpenCode:
+
+```toml
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
 ```

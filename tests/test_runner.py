@@ -82,6 +82,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(summary["max_workers"], 1)
             self.assertEqual(manifest["workspace"]["isolation_mode"], "shared_repo_commit")
             self.assertEqual(manifest["bitloops_sandbox_mode"], "disabled")
+            self.assertEqual(manifest["model"]["seed"], 1234)
 
     def test_execute_run_records_task_scoped_isolation_for_bitloops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -146,7 +147,7 @@ def _make_config(root: Path, max_workers: int, condition: str = "baseline") -> R
         workspace_root=None,
         workspace_timeout_seconds=60,
         agent=AgentConfig(id="noop", command=[], extra_args=[]),
-        model=ModelConfig(provider="test", name="test-model"),
+        model=ModelConfig(provider="test", name="test-model", seed=1234),
         prompt_context=None,
         model_map={},
         evaluation=EvaluationConfig(enabled=False),

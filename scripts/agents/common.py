@@ -421,6 +421,108 @@ def _load_runtime_document(
     return payload if isinstance(payload, dict) else None
 
 
+def _embeddings_gate_config_path_candidates(
+    latest_session: dict[str, Any],
+    *,
+    repo_root: str,
+) -> list[str]:
+    candidates: list[str] = []
+
+    daemon_config_root = str(latest_session.get("daemon_config_root", "")).strip()
+    if daemon_config_root:
+        candidates.append(str((Path(daemon_config_root) / "config.toml").resolve()))
+
+    candidates.append(str((Path(repo_root) / "config.toml").resolve()))
+    candidates.append(str((Path(repo_root) / ".bitloops" / "config.toml").resolve()))
+    return list(dict.fromkeys(candidates))
+
+
+def _resolve_embeddings_gate_entry(
+    embeddings_state: dict[str, Any] | None,
+    *,
+    latest_session: dict[str, Any],
+    repo_root: str,
+) -> dict[str, Any] | None:
+    if not isinstance(embeddings_state, dict):
+        return None
+
+    entries = embeddings_state.get("entries")
+    if not isinstance(entries, dict) or not entries:
+        return None
+
+    candidates = set(
+        _embeddings_gate_config_path_candidates(
+            latest_session,
+            repo_root=repo_root,
+        )
+    )
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_config_path = str(entry.get("config_path", "")).strip()
+        entry_key = str(key).strip()
+        if entry_config_path in candidates or entry_key in candidates:
+            return entry
+
+    if len(entries) == 1:
+        only_entry = next(iter(entries.values()))
+        return only_entry if isinstance(only_entry, dict) else None
+
+    return None
+
+
+def _bitloops_embeddings_ready_for_session(
+    latest_session: dict[str, Any],
+    *,
+    embeddings_state: dict[str, Any] | None,
+    repo_root: str,
+) -> tuple[bool, dict[str, Any]]:
+    selections = latest_session.get("selections", {})
+    embeddings_requested = False
+    if isinstance(selections, dict):
+        embeddings_requested = bool(selections.get("embeddings_bootstrap"))
+
+    completion_seq = latest_session.get("embeddings_bootstrap_completion_seq")
+    active_task_id = latest_session.get("embeddings_bootstrap_task_id")
+    if not embeddings_requested:
+        embeddings_requested = completion_seq is not None or bool(active_task_id)
+
+    metadata: dict[str, Any] = {
+        "embeddings_bootstrap_requested": embeddings_requested,
+        "embeddings_bootstrap_completion_seq": completion_seq,
+        "embeddings_bootstrap_task_id": active_task_id,
+    }
+    if not embeddings_requested:
+        metadata["embeddings_gate_readiness"] = "not_requested"
+        metadata["embeddings_gate_blocked"] = False
+        return True, metadata
+
+    gate_entry = _resolve_embeddings_gate_entry(
+        embeddings_state,
+        latest_session=latest_session,
+        repo_root=repo_root,
+    )
+    if gate_entry is None:
+        gate_ready = completion_seq is not None
+        metadata["embeddings_gate_readiness"] = "ready" if gate_ready else "unknown"
+        metadata["embeddings_gate_blocked"] = not gate_ready
+        metadata["embeddings_gate_last_error"] = None
+        metadata["embeddings_gate_profile_name"] = None
+        metadata["embeddings_gate_last_updated_unix"] = None
+        metadata["embeddings_gate_source"] = "completion_seq_fallback" if gate_ready else "missing"
+        return gate_ready, metadata
+
+    readiness = str(gate_entry.get("readiness", "")).strip().lower()
+    metadata["embeddings_gate_readiness"] = readiness or None
+    metadata["embeddings_gate_blocked"] = readiness != "ready"
+    metadata["embeddings_gate_last_error"] = gate_entry.get("last_error")
+    metadata["embeddings_gate_profile_name"] = gate_entry.get("profile_name")
+    metadata["embeddings_gate_last_updated_unix"] = gate_entry.get("last_updated_unix")
+    metadata["embeddings_gate_active_task_id"] = gate_entry.get("active_task_id")
+    metadata["embeddings_gate_source"] = "embeddings_bootstrap_state"
+    return readiness == "ready", metadata
+
+
 def _bitloops_init_ready_via_runtime_state(
     *,
     runtime_db_path: Path | None,
@@ -441,6 +543,10 @@ def _bitloops_init_ready_via_runtime_state(
     enrichment_state = _load_runtime_document(
         runtime_db_path,
         document_kind="enrichment_queue_state",
+    )
+    embeddings_state = _load_runtime_document(
+        runtime_db_path,
+        document_kind="embeddings_bootstrap_state",
     )
     if queue_state is None or init_state is None:
         return False, None
@@ -499,6 +605,12 @@ def _bitloops_init_ready_via_runtime_state(
         if isinstance(jobs, list):
             no_background_jobs = len(jobs) == 0
 
+    embeddings_ready, embeddings_metadata = _bitloops_embeddings_ready_for_session(
+        latest_session,
+        embeddings_state=embeddings_state,
+        repo_root=repo_root_value,
+    )
+
     ready = (
         sync_complete
         and no_follow_up_sync
@@ -508,6 +620,7 @@ def _bitloops_init_ready_via_runtime_state(
             or bool(selections.get("run_sync", False))
         )
         and no_background_jobs
+        and embeddings_ready
     )
     if not ready:
         return False, None
@@ -528,6 +641,7 @@ def _bitloops_init_ready_via_runtime_state(
         "sync_success": result_value.get("success"),
         "follow_up_sync_required": latest_session.get("follow_up_sync_required"),
         "initial_sync_completion_seq": latest_session.get("initial_sync_completion_seq"),
+        **embeddings_metadata,
     }
     return True, metadata
 
@@ -1357,10 +1471,64 @@ def _extract_terminal_agent_message(payload: Any) -> str:
             text = first_non_empty_text(item.get("text"))
             if text:
                 return text
+        if event_type == "message_updated":
+            text = _extract_message_updated_text(event)
+            if text:
+                return text
         if event_type == "result":
             text = first_non_empty_text(event.get("result"))
             if text:
                 return text
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if _normalize_event_type(event.get("type")) != "message_part_updated":
+            continue
+        text = _extract_message_part_text(event)
+        if text:
+            return text
+    return ""
+
+
+def _extract_message_updated_text(event: dict[str, Any]) -> str:
+    properties = event.get("properties")
+    if not isinstance(properties, dict):
+        return ""
+    message = properties.get("info")
+    if not isinstance(message, dict):
+        return ""
+    message_info = message.get("info")
+    if not isinstance(message_info, dict):
+        return ""
+    role = str(message_info.get("role") or "").strip().lower()
+    if role != "assistant":
+        return ""
+    return _extract_message_parts_text(message.get("parts"))
+
+
+def _extract_message_part_text(event: dict[str, Any]) -> str:
+    properties = event.get("properties")
+    if not isinstance(properties, dict):
+        return ""
+    part = properties.get("part")
+    if not isinstance(part, dict):
+        return ""
+    if _normalize_event_type(part.get("type")) != "text":
+        return ""
+    return first_non_empty_text(part.get("text"))
+
+
+def _extract_message_parts_text(parts: Any) -> str:
+    if not isinstance(parts, list):
+        return ""
+    for part in reversed(parts):
+        if not isinstance(part, dict):
+            continue
+        if _normalize_event_type(part.get("type")) != "text":
+            continue
+        text = first_non_empty_text(part.get("text"))
+        if text:
+            return text
     return ""
 
 
@@ -1427,6 +1595,9 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("usage", "prompt_tokens"),
         ("usage", "promptTokens"),
         ("usage", "tokensIn",),
+        ("properties", "info", "info", "tokens", "input"),
+        ("info", "info", "tokens", "input"),
+        ("tokens", "input"),
         ("input_tokens",),
         ("inputTokens",),
         ("modelUsage", "*", "inputTokens"),
@@ -1438,6 +1609,9 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("usage", "completion_tokens"),
         ("usage", "completionTokens"),
         ("usage", "tokensOut",),
+        ("properties", "info", "info", "tokens", "output"),
+        ("info", "info", "tokens", "output"),
+        ("tokens", "output"),
         ("output_tokens",),
         ("outputTokens",),
         ("modelUsage", "*", "outputTokens"),
@@ -1471,18 +1645,25 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("costUSD",),
         ("usage", "cost_usd"),
         ("usage", "costUSD"),
+        ("properties", "info", "info", "cost"),
+        ("info", "info", "cost"),
+        ("cost",),
         ("modelUsage", "*", "costUSD"),
         ("model_usage", "*", "cost_usd"),
     ]
     cache_creation_input_paths = [
         ("usage", "cache_creation_input_tokens"),
         ("usage", "cacheCreationInputTokens"),
+        ("properties", "info", "info", "tokens", "cache", "write"),
+        ("info", "info", "tokens", "cache", "write"),
         ("cache_creation_input_tokens",),
         ("cacheCreationInputTokens",),
     ]
     cached_input_paths = [
         ("usage", "cached_input_tokens"),
         ("usage", "cachedInputTokens"),
+        ("properties", "info", "info", "tokens", "cache", "read"),
+        ("info", "info", "tokens", "cache", "read"),
         ("cached_input_tokens",),
         ("cachedInputTokens",),
         ("usage", "input_tokens_details", "cached_tokens"),
@@ -1503,6 +1684,8 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
     cache_read_input_paths = [
         ("usage", "cache_read_input_tokens"),
         ("usage", "cacheReadInputTokens"),
+        ("properties", "info", "info", "tokens", "cache", "read"),
+        ("info", "info", "tokens", "cache", "read"),
         ("cache_read_input_tokens",),
         ("cacheReadInputTokens",),
     ]
@@ -2373,8 +2556,8 @@ def _extract_tool_name(payload: dict[str, Any]) -> str | None:
     if event_type == "command_execution":
         return "Bash"
 
-    direct_name = _pick_tool_string(payload, ("tool_name", "toolName", "name"))
-    if event_type in {"tool_use", "tool_use_delta", "server_tool_use", "tool_call", "toolcall"}:
+    direct_name = _pick_tool_string(payload, ("tool", "tool_name", "toolName", "name"))
+    if event_type in {"tool", "tool_use", "tool_use_delta", "server_tool_use", "tool_call", "toolcall"}:
         return _normalize_tool_name(direct_name)
 
     if _pick_tool_string(payload, ("tool_use_id", "toolUseId")) and direct_name:
@@ -2393,6 +2576,17 @@ def _normalize_tool_name(value: str | None) -> str | None:
     text = value.strip()
     if not text:
         return None
+    normalized = {
+        "bash": "Bash",
+        "read": "Read",
+        "edit": "Edit",
+        "grep": "Grep",
+        "glob": "Glob",
+        "webfetch": "WebFetch",
+        "websearch": "WebSearch",
+    }.get(text.lower())
+    if normalized:
+        return normalized
     return text
 
 
@@ -2404,7 +2598,7 @@ def _normalize_event_type(value: Any) -> str | None:
 
 
 def _extract_tool_use_id(payload: dict[str, Any]) -> str | None:
-    for key in ("tool_use_id", "toolUseId"):
+    for key in ("tool_use_id", "toolUseId", "callID", "call_id"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -2431,6 +2625,10 @@ def _extract_tool_input_payload(payload: dict[str, Any]) -> Any:
             if isinstance(exit_code, int):
                 command_payload["exit_code"] = exit_code
             return command_payload
+    if event_type == "tool":
+        state = payload.get("state")
+        if isinstance(state, dict) and isinstance(state.get("input"), dict):
+            return state.get("input")
     if "input" in payload:
         return payload.get("input")
     if "arguments" in payload:
@@ -2443,6 +2641,7 @@ def _extract_tool_input_payload(payload: dict[str, Any]) -> Any:
 def _collect_tool_use_events(payload: Any) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
+    opencode_tool_indexes: dict[str, int] = {}
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
@@ -2451,7 +2650,19 @@ def _collect_tool_use_events(payload: Any) -> list[dict[str, Any]]:
                 return
             seen_ids.add(node_id)
             if _is_tool_use_invocation(node):
-                output.append(node)
+                if _normalize_event_type(node.get("type")) == "tool":
+                    tool_use_id = _extract_tool_use_id(node)
+                    if tool_use_id:
+                        existing_index = opencode_tool_indexes.get(tool_use_id)
+                        if existing_index is not None:
+                            output[existing_index] = node
+                        else:
+                            opencode_tool_indexes[tool_use_id] = len(output)
+                            output.append(node)
+                    else:
+                        output.append(node)
+                else:
+                    output.append(node)
             for value in node.values():
                 walk(value)
             return
@@ -2482,6 +2693,13 @@ def _is_tool_use_invocation(payload: dict[str, Any]) -> bool:
         if status and status != "completed":
             return False
         return True
+
+    if event_type == "tool":
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            return False
+        status = str(state.get("status") or "").strip().lower()
+        return status not in {"", "pending", "error"}
 
     if event_type in {"tool_use", "server_tool_use", "tool_call", "toolcall"}:
         return True
@@ -2557,8 +2775,8 @@ def _populate_edit_curated(record: dict[str, Any], input_payload: dict[str, Any]
     if isinstance(path, str) and path.strip():
         record["path"] = path.strip()
 
-    old_text = _pick_from_dict(input_payload, ("old_string", "oldText", "old"))
-    new_text = _pick_from_dict(input_payload, ("new_string", "newText", "new"))
+    old_text = _pick_from_dict(input_payload, ("old_string", "oldString", "oldText", "old"))
+    new_text = _pick_from_dict(input_payload, ("new_string", "newString", "newText", "new"))
     if isinstance(old_text, str):
         record["old_chars"] = len(old_text)
     if isinstance(new_text, str):

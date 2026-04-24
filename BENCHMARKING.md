@@ -1,7 +1,7 @@
 # Benchmarking Guide
 
 End-to-end instructions for running SWE-bench Multilingual benchmarks on Rust tasks
-with Claude Code, Cursor, and Codex agents.
+with Claude Code, Cursor, OpenCode, and Codex agents.
 
 ## Prerequisites
 
@@ -18,6 +18,7 @@ You also need:
 - `claude` CLI installed and authenticated (`claude --version`)
 - `cursor-agent` CLI installed and authenticated (`cursor-agent --version`)
 - `codex` CLI installed and authenticated (`codex --version`)
+- `opencode` CLI installed and authenticated (`opencode --version`)
 - `bitloops` CLI installed (`bitloops --version`) for `with_bitloops` runs
 - Git
 
@@ -99,6 +100,16 @@ See [`configs/swebench/ruff_15309_claude_with_context.toml`](configs/swebench/ru
 See [`configs/swebench/rust_tokio_phase1_codex.toml`](configs/swebench/rust_tokio_phase1_codex.toml)
 for the default Codex baseline.
 
+**OpenCode baseline**:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/rust_tokio_phase1_opencode.toml
+```
+
+See [`configs/swebench/rust_tokio_phase1_opencode.toml`](configs/swebench/rust_tokio_phase1_opencode.toml)
+for the default OpenCode baseline.
+
 Other single-task configs available:
 
 | Config | Task | Condition |
@@ -132,7 +143,7 @@ Example Tokio config:
 | `attempts` | How many times to run each task |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
 | `prompt_context` | Extra text appended to the agent's prompt |
-| `agent.extra_args` | Wrapper toggles (for Claude + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
+| `agent.extra_args` | Wrapper toggles (for Claude/OpenCode + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
 
 ### Override attempts from the CLI
 
@@ -197,6 +208,34 @@ name = "gpt-5.4"
 
 [model_map.codex]
 "gpt-5.4" = "gpt-5.4"
+```
+
+**OpenCode default**:
+
+```toml
+[model]
+name = "gpt-5"
+temperature = 0.0
+# seed = 4242
+
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+```
+
+OpenCode auth and runtime behavior:
+- provider credentials live in `~/.local/share/opencode/auth.json`
+- benchmark config stays in TOML: set `[model].name`, `temperature`, and optional `seed`
+- the wrapper injects `temperature` and `seed` into OpenCode via runtime config overrides, so no repo-local `opencode.json` file is needed
+
+Example provider credential file:
+
+```json
+{
+  "fireworks": {
+    "type": "api",
+    "key": "YOUR_API_KEY"
+  }
+}
 ```
 
 ## 5. Generate reports

@@ -90,6 +90,40 @@ class AgentWrapperCommonTests(unittest.TestCase):
         parsed_text = common.parse_agent_output(raw)
         self.assertEqual(parsed_text, "Final answer with patch summary")
 
+    def test_parse_agent_output_prefers_final_opencode_assistant_message(self) -> None:
+        payload = [
+            {
+                "type": "message.updated",
+                "properties": {
+                    "info": {
+                        "info": {"role": "assistant"},
+                        "parts": [
+                            {"id": "part_1", "type": "text", "text": "Initial status"},
+                        ],
+                    }
+                },
+            },
+            {
+                "type": "message.updated",
+                "properties": {
+                    "info": {
+                        "info": {"role": "assistant"},
+                        "parts": [
+                            {
+                                "id": "part_2",
+                                "type": "text",
+                                "text": "Final answer with patch summary",
+                            },
+                        ],
+                    }
+                },
+            },
+        ]
+
+        raw = "\n".join(json.dumps(item) for item in payload)
+        parsed_text = common.parse_agent_output(raw)
+        self.assertEqual(parsed_text, "Final answer with patch summary")
+
     def test_extract_git_patch_from_markdown_fence(self) -> None:
         raw = """Here is the fix:\n```diff\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n```\n"""
         patch, source = common.extract_git_patch(raw)
@@ -333,6 +367,34 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("total_tokens"), 12051)
         self.assertEqual(metrics.get("token_metrics_source"), "result_usage")
 
+    def test_extract_usage_metrics_from_opencode_assistant_message(self) -> None:
+        payload = [
+            {
+                "type": "message.updated",
+                "properties": {
+                    "info": {
+                        "info": {
+                            "role": "assistant",
+                            "cost": 0.12,
+                            "tokens": {
+                                "input": 2222,
+                                "output": 444,
+                                "reasoning": 51,
+                                "cache": {"read": 111, "write": 22},
+                            },
+                        },
+                        "parts": [],
+                    }
+                },
+            },
+        ]
+
+        metrics = common.extract_usage_metrics(payload)
+
+        self.assertEqual(metrics.get("token_input"), 2222)
+        self.assertEqual(metrics.get("token_output"), 444)
+        self.assertEqual(metrics.get("estimated_cost"), 0.12)
+
     def test_extract_codex_command_execution_as_tool_invocation(self) -> None:
         payload = [
             {
@@ -368,6 +430,72 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(curated[0]["command"], "/bin/zsh -lc 'ls -1'")
         self.assertEqual(metrics.get("tool_calls"), 1)
         self.assertEqual(metrics.get("shell_commands"), 1)
+
+    def test_extract_opencode_tool_parts_as_tool_invocations(self) -> None:
+        payload = [
+            {
+                "type": "message.updated",
+                "properties": {
+                    "info": {
+                        "info": {"role": "assistant"},
+                        "parts": [
+                            {
+                                "id": "part_bash",
+                                "type": "tool",
+                                "tool": "bash",
+                                "callID": "call_1",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {"command": "ls -1"},
+                                },
+                            },
+                            {
+                                "id": "part_read",
+                                "type": "tool",
+                                "tool": "read",
+                                "callID": "call_2",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {
+                                        "file": "src/lib.rs",
+                                        "offset": 10,
+                                        "limit": 20,
+                                    },
+                                },
+                            },
+                            {
+                                "id": "part_edit",
+                                "type": "tool",
+                                "tool": "edit",
+                                "callID": "call_3",
+                                "state": {
+                                    "status": "completed",
+                                    "input": {
+                                        "file": "src/lib.rs",
+                                        "oldString": "a",
+                                        "newString": "abc",
+                                    },
+                                },
+                            },
+                        ],
+                    }
+                },
+            }
+        ]
+
+        raw = common.extract_tool_invocations_raw(payload)
+        curated = common.extract_tool_invocations_curated(raw)
+        metrics = common.extract_usage_metrics(payload)
+
+        self.assertEqual([row["tool"] for row in raw], ["Bash", "Read", "Edit"])
+        self.assertEqual([row["tool_use_id"] for row in raw], ["call_1", "call_2", "call_3"])
+        self.assertEqual(curated[0]["command"], "ls -1")
+        self.assertEqual(curated[1]["path"], "src/lib.rs")
+        self.assertEqual(curated[2]["old_chars"], 1)
+        self.assertEqual(curated[2]["new_chars"], 3)
+        self.assertEqual(metrics.get("tool_calls"), 3)
+        self.assertEqual(metrics.get("shell_commands"), 1)
+        self.assertEqual(metrics.get("file_reads"), 1)
 
     def test_extract_tool_usage_breakdown_from_usage_blocks(self) -> None:
         payload = {
@@ -1164,7 +1292,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
                             "follow_up_sync_required": False,
                             "initial_sync_completion_seq": 1,
                             "submitted_at_unix": 100,
-                            "selections": {"run_sync": True},
+                            "selections": {
+                                "run_sync": True,
+                                "embeddings_bootstrap": None,
+                            },
                         }
                     ],
                 }
@@ -1231,6 +1362,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(ready["sync_phase"], "complete")
         self.assertEqual(ready["paths_completed"], 10)
         self.assertEqual(ready["paths_remaining"], 0)
+        self.assertFalse(ready["embeddings_bootstrap_requested"])
+        self.assertEqual(ready["embeddings_gate_readiness"], "not_requested")
 
     def test_debug_log_does_not_post_without_opt_in(self) -> None:
         with patch.object(common, "DEBUG_LOG_PATH", Path("/dev/null/debug.log")), patch.object(
@@ -1244,6 +1377,227 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 data={"k": "v"},
             )
         mock_urlopen.assert_not_called()
+
+    def test_bitloops_runtime_ready_waits_for_embeddings_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            state_root = home / ".local" / "state" / "bitloops" / "daemon"
+            state_root.mkdir(parents=True)
+            runtime_db = state_root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {
+                                    "phase": "complete",
+                                    "pathsTotal": 10,
+                                    "pathsCompleted": 10,
+                                    "pathsRemaining": 0,
+                                    "parseErrors": 0,
+                                },
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        }
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(workspace / ".bitloops"),
+                            "embeddings_bootstrap_task_id": "bootstrap-task-1",
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "embeddings_bootstrap": {
+                                    "config_path": str(workspace / ".bitloops" / "config.toml"),
+                                    "profile_name": "platform_default",
+                                    "mode": "platform",
+                                },
+                            },
+                        }
+                    ],
+                }
+                enrichment_payload = {
+                    "version": 1,
+                    "jobs": [],
+                    "last_action": "completed",
+                }
+                embeddings_payload = {
+                    "version": 1,
+                    "entries": {
+                        str((workspace / ".bitloops" / "config.toml").resolve()): {
+                            "config_path": str((workspace / ".bitloops" / "config.toml").resolve()),
+                            "profile_name": "platform_default",
+                            "readiness": "pending",
+                            "active_task_id": "bootstrap-task-1",
+                            "last_error": None,
+                            "last_updated_unix": 123,
+                        }
+                    },
+                    "last_action": "embeddings_bootstrap_gate_updated",
+                    "updated_at_unix": 123,
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", enrichment_payload),
+                    ("embeddings_bootstrap_state", embeddings_payload),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertFalse(ready)
+        self.assertIsNone(metadata)
+
+    def test_bitloops_runtime_ready_allows_ready_embeddings_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            state_root = home / ".local" / "state" / "bitloops" / "daemon"
+            state_root.mkdir(parents=True)
+            runtime_db = state_root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            daemon_config_root.mkdir()
+            config_path = (daemon_config_root / "config.toml").resolve()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {
+                                    "phase": "complete",
+                                    "pathsTotal": 10,
+                                    "pathsCompleted": 10,
+                                    "pathsRemaining": 0,
+                                    "parseErrors": 0,
+                                },
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        }
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "embeddings_bootstrap_task_id": "bootstrap-task-1",
+                            "embeddings_bootstrap_completion_seq": 2,
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "embeddings_bootstrap": {
+                                    "config_path": str(config_path),
+                                    "profile_name": "platform_default",
+                                    "mode": "platform",
+                                },
+                            },
+                        }
+                    ],
+                }
+                enrichment_payload = {
+                    "version": 1,
+                    "jobs": [],
+                    "last_action": "completed",
+                }
+                embeddings_payload = {
+                    "version": 1,
+                    "entries": {
+                        str(config_path): {
+                            "config_path": str(config_path),
+                            "profile_name": "platform_default",
+                            "readiness": "ready",
+                            "active_task_id": None,
+                            "last_error": None,
+                            "last_updated_unix": 124,
+                        }
+                    },
+                    "last_action": "embeddings_bootstrap_gate_updated",
+                    "updated_at_unix": 124,
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", enrichment_payload),
+                    ("embeddings_bootstrap_state", embeddings_payload),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertTrue(ready)
+        assert isinstance(metadata, dict)
+        self.assertTrue(metadata["embeddings_bootstrap_requested"])
+        self.assertEqual(metadata["embeddings_gate_readiness"], "ready")
+        self.assertFalse(metadata["embeddings_gate_blocked"])
 
     def test_debug_log_posts_when_http_fallback_opted_in(self) -> None:
         with patch.dict(common.os.environ, {"BENCHKIT_DEBUG_HTTP_FALLBACK": "1"}), patch.object(

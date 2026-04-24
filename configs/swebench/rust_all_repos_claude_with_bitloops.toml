@@ -15,7 +15,8 @@ split = "test"
 language = ""
 condition = "with_bitloops"
 attempts = 1
-max_workers = 5
+max_instances = 2
+max_workers = 2
 timeout_seconds = 7200
 output_root = "runs"
 prepare_workspace = true
@@ -41,7 +42,7 @@ max_tokens = 32000
 
 [evaluation]
 enabled = true
-python_bin = "python3"
+python_bin = "./.venv/bin/python"
 dataset_name = "SWE-bench/SWE-bench_Multilingual"
 split = "test"
 max_workers = 2

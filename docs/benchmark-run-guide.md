@@ -10,6 +10,7 @@ Required:
 - Docker Desktop running
 - `claude` CLI installed and authenticated
 - `codex` CLI installed and authenticated (for Codex runs)
+- `opencode` CLI installed and authenticated (for OpenCode runs)
 - `bitloops` CLI installed (only for `with_bitloops` runs)
 
 Install dependencies once:
@@ -28,6 +29,7 @@ Preflight checks (run before benchmark runs):
 python -c "import datasets, swebench; print('python deps ok')"
 command -v claude
 command -v codex
+command -v opencode
 command -v bitloops
 docker info
 claude auth status
@@ -175,6 +177,31 @@ max_tokens = 32000
 "gpt-5.4" = "gpt-5.4"
 ```
 
+<<<<<<< Updated upstream:docs/benchmark-run-guide.md
+=======
+### OpenCode variant (same task)
+
+```toml
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
+extra_args = []
+
+[model]
+provider = "openai"
+name = "gpt-5"
+temperature = 0.0
+# seed = 4242
+max_tokens = 32000
+
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+```
+
+OpenCode provider credentials are managed separately from benchmark TOML. Keep
+them in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
+
+>>>>>>> Stashed changes:docs/how-to-run-single-task-and-view-results.md
 ### Optional: baseline variant
 
 If you want a plain Claude baseline instead, use a separate config such as

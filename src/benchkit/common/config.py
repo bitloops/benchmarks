@@ -19,6 +19,7 @@ class ModelConfig:
     name: str
     temperature: float = DEFAULT_TEMPERATURE
     max_tokens: int = DEFAULT_MAX_TOKENS
+    seed: int | None = None
 
 
 @dataclass(slots=True)
@@ -145,6 +146,7 @@ def load_run_config(config_path: Path) -> RunConfig:
         name=str(_require(model, "name", "model")),
         temperature=float(model.get("temperature", DEFAULT_TEMPERATURE)),
         max_tokens=int(model.get("max_tokens", DEFAULT_MAX_TOKENS)),
+        seed=None if model.get("seed") is None else int(model.get("seed")),
     )
     prompt_context_raw = run.get("prompt_context")
     prompt_context = (
