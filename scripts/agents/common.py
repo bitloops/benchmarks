@@ -1392,6 +1392,11 @@ def setup_bitloops_for_workspace(
         env=env,
         cwd=cwd,
     )
+    repo_config_path = _apply_bitloops_repo_semantic_modes(
+        summary_mode=summary_mode,
+        embedding_mode=embedding_mode,
+        cwd=cwd,
+    )
 
     daemon_metadata: dict[str, Any]
     init_metadata: dict[str, Any]
@@ -1529,11 +1534,6 @@ def setup_bitloops_for_workspace(
         daemon_metadata.setdefault("bitloops_task_xdg_cache_home", None)
         daemon_metadata.setdefault("bitloops_task_xdg_data_home", None)
 
-    repo_config_path = _apply_bitloops_repo_semantic_modes(
-        summary_mode=summary_mode,
-        embedding_mode=embedding_mode,
-    )
-
     return {
         "bitloops_enabled": True,
         "bitloops_agent": agent_name,
@@ -1560,6 +1560,7 @@ def _apply_bitloops_repo_semantic_modes(
     *,
     summary_mode: str | None,
     embedding_mode: str | None,
+    cwd: str | None = None,
 ) -> Path | None:
     updates = {
         key: value
@@ -1572,7 +1573,8 @@ def _apply_bitloops_repo_semantic_modes(
     if not updates:
         return None
 
-    config_path = Path.cwd() / "config.toml"
+    workspace_root = Path(cwd).expanduser() if isinstance(cwd, str) and cwd.strip() else Path.cwd()
+    config_path = workspace_root / "config.toml"
     content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     content = _upsert_toml_table_values(content, "semantic_clones", updates)
     config_path.write_text(content, encoding="utf-8")

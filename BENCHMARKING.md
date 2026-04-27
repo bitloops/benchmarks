@@ -224,8 +224,10 @@ temperature = 0.0
 
 OpenCode auth and runtime behavior:
 - provider credentials live in `~/.local/share/opencode/auth.json`
+- committed benchmark OpenCode defaults live in `configs/opencode/opencode.json`
 - benchmark config stays in TOML: set `[model].name`, `temperature`, and optional `seed`
-- the wrapper injects `temperature` and `seed` into OpenCode via runtime config overrides, so no repo-local `opencode.json` file is needed
+- the wrapper injects the committed repo config and benchmark runtime overrides through `OPENCODE_CONFIG_CONTENT`
+- benchmark `temperature` and `seed` still come from the TOML runtime overrides, so TOML remains the final source for those knobs
 
 Example provider credential file:
 

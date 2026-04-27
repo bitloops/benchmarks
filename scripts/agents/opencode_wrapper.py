@@ -233,6 +233,28 @@ def _build_opencode_runtime_config(
     }
 
 
+def _resolve_repo_opencode_config_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "configs" / "opencode" / "opencode.json"
+
+
+def _decode_opencode_config_content(
+    raw_content: str,
+    *,
+    source_name: str,
+) -> dict[str, object]:
+    loaded = json.loads(raw_content)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{source_name} must decode to a JSON object")
+    return loaded
+
+
+def _load_opencode_config_file(config_path: Path) -> dict[str, object]:
+    return _decode_opencode_config_content(
+        config_path.read_text(encoding="utf-8"),
+        source_name=str(config_path),
+    )
+
+
 def _deep_merge_dicts(base: dict[str, object], overlay: dict[str, object]) -> dict[str, object]:
     merged: dict[str, object] = deepcopy(base)
     for key, value in overlay.items():
@@ -251,10 +273,34 @@ def _merge_opencode_config_content(
     if not existing_content.strip():
         return deepcopy(runtime_config)
 
-    loaded = json.loads(existing_content)
-    if not isinstance(loaded, dict):
-        raise ValueError("OPENCODE_CONFIG_CONTENT must decode to a JSON object")
+    loaded = _decode_opencode_config_content(
+        existing_content,
+        source_name="OPENCODE_CONFIG_CONTENT",
+    )
     return _deep_merge_dicts(loaded, runtime_config)
+
+
+def _build_opencode_invocation_config(
+    *,
+    existing_content: str,
+    repo_config_path: Path,
+    runtime_config: dict[str, object] | None,
+) -> dict[str, object] | None:
+    merged: dict[str, object] | None = None
+    if existing_content.strip():
+        merged = _decode_opencode_config_content(
+            existing_content,
+            source_name="OPENCODE_CONFIG_CONTENT",
+        )
+
+    if repo_config_path.exists():
+        repo_config = _load_opencode_config_file(repo_config_path)
+        merged = _deep_merge_dicts(merged or {}, repo_config)
+
+    if runtime_config is not None:
+        merged = _deep_merge_dicts(merged or {}, runtime_config)
+
+    return merged
 
 
 def _resolve_attempt_dir(payload: dict[str, object]) -> Path | None:
@@ -417,20 +463,30 @@ def main() -> None:
     command.append(prompt)
     timeout_seconds = _resolve_opencode_timeout_seconds(payload)
     command_env = bitloops_env
-    if runtime_config is not None:
-        existing_config_content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
+    repo_config_path = _resolve_repo_opencode_config_path()
+    existing_config_content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
+    try:
+        invocation_config = _build_opencode_invocation_config(
+            existing_content=existing_config_content,
+            repo_config_path=repo_config_path,
+            runtime_config=runtime_config,
+        )
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        fatal_error(
+            "invalid OpenCode config",
+            details={"error": str(exc)},
+        )
+
+    if invocation_config is not None:
         try:
-            merged_runtime_config = _merge_opencode_config_content(
-                existing_config_content,
-                runtime_config,
-            )
-        except (ValueError, json.JSONDecodeError) as exc:
+            encoded_invocation_config = json.dumps(invocation_config)
+        except (TypeError, ValueError) as exc:
             fatal_error(
-                "invalid OPENCODE_CONFIG_CONTENT",
+                "invalid OpenCode config",
                 details={"error": str(exc)},
             )
         command_env = dict(bitloops_env) if bitloops_env is not None else dict(os.environ)
-        command_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(merged_runtime_config)
+        command_env["OPENCODE_CONFIG_CONTENT"] = encoded_invocation_config
 
     try:
         stdout, stderr, return_code, elapsed_ms = call_command(

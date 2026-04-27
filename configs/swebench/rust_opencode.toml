@@ -7,7 +7,7 @@ condition = "with_bitloops"
 include_repos = []
 include_instance_ids = []
 # instance_ids_file = "tokio_task_ids.txt"
-max_instances = 1
+max_instances = 2
 attempts = 1
 timeout_seconds = 900
 output_root = "runs"
@@ -21,7 +21,7 @@ bitloops_sandbox_mode = "per_task_daemon"
 [agent]
 id = "opencode"
 command = ["python3", "scripts/agents/opencode_wrapper.py"]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "off"]
 
 [model]
 provider = "fireworks-ai"

@@ -226,6 +226,107 @@ class OpencodeWrapperTests(unittest.TestCase):
             7,
         )
 
+    def test_load_opencode_config_file_reads_json_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "opencode.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "fireworks/accounts/fireworks/models/qwen3p6-plus",
+                        "agent": {
+                            "build": {
+                                "temperature": 0.0,
+                                "seed": 42,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = wrapper._load_opencode_config_file(config_path)
+
+        self.assertEqual(
+            loaded,
+            {
+                "model": "fireworks/accounts/fireworks/models/qwen3p6-plus",
+                "agent": {
+                    "build": {
+                        "temperature": 0.0,
+                        "seed": 42,
+                    }
+                },
+            },
+        )
+
+    def test_build_invocation_config_merges_existing_repo_and_runtime_layers(self) -> None:
+        runtime_config = {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "fireworks-ai": {
+                    "models": {
+                        "accounts/fireworks/models/qwen3p6-plus": {
+                            "options": {
+                                "temperature": 0.0,
+                                "seed": 7,
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_config_path = Path(temp_dir) / "opencode.json"
+            repo_config_path.write_text(
+                json.dumps(
+                    {
+                        "model": "fireworks/accounts/fireworks/models/qwen3p6-plus",
+                        "provider": {
+                            "fireworks-ai": {
+                                "models": {
+                                    "accounts/fireworks/models/qwen3p6-plus": {
+                                        "options": {
+                                            "temperature": 0.4,
+                                            "seed": 42,
+                                            "max_tokens": 32768,
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merged = wrapper._build_opencode_invocation_config(
+                existing_content=json.dumps({"small_model": "fireworks/accounts/fireworks/models/qwen3p6-plus"}),
+                repo_config_path=repo_config_path,
+                runtime_config=runtime_config,
+            )
+
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        self.assertEqual(
+            merged["small_model"],
+            "fireworks/accounts/fireworks/models/qwen3p6-plus",
+        )
+        self.assertEqual(
+            merged["model"],
+            "fireworks/accounts/fireworks/models/qwen3p6-plus",
+        )
+        self.assertEqual(
+            merged["provider"]["fireworks-ai"]["models"][
+                "accounts/fireworks/models/qwen3p6-plus"
+            ]["options"],
+            {
+                "temperature": 0.0,
+                "seed": 7,
+                "max_tokens": 32768,
+            },
+        )
+
     def test_build_runtime_config_returns_none_when_no_overrides_present(self) -> None:
         payload = {"model": {"provider": "openai"}}
         config = wrapper._build_opencode_runtime_config(

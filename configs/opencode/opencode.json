@@ -1,0 +1,156 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
+  "small_model": "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
+  "agent": {
+    "build": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "parallel_tool_calls": false,
+      "context_length_exceeded_behavior": "error",
+      "steps": 150,
+      "permission": {
+        "task": {
+          "*": "deny"
+        }
+      }
+    },
+    "plan": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "parallel_tool_calls": false,
+      "context_length_exceeded_behavior": "error",
+      "steps": 150,
+      "permission": {
+        "task": {
+          "*": "deny"
+        }
+      }
+    },
+    "general": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "parallel_tool_calls": false,
+      "context_length_exceeded_behavior": "error",
+      "steps": 150
+    },
+    "explore": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "parallel_tool_calls": false,
+      "context_length_exceeded_behavior": "error",
+      "steps": 150
+    },
+    "summary": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "context_length_exceeded_behavior": "error"
+    },
+    "title": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "context_length_exceeded_behavior": "error"
+    },
+    "compaction": {
+      "temperature": 0.0,
+      "top_k": 1,
+      "top_p": 1,
+      "min_p": 0,
+      "typical_p": 1,
+      "frequency_penalty": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 42,
+      "n": 1,
+      "max_tokens": 32768,
+      "context_length_exceeded_behavior": "error"
+    }
+  },
+  "provider": {
+    "fireworks-ai": {
+      "name": "Fireworks.ai",
+      "options": {
+        "baseURL": "https://api.fireworks.ai/inference/v1"
+      },
+      "models": {
+        "accounts/fireworks/models/qwen3p6-plus": {
+          "name": "Qwen 3.6 Plus",
+          "temperature": true,
+          "options": {
+            "temperature": 0.0,
+            "top_k": 1,
+            "top_p": 1,
+            "min_p": 0,
+            "typical_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "repetition_penalty": 1,
+            "seed": 42,
+            "n": 1,
+            "max_tokens": 32768,
+            "parallel_tool_calls": false,
+            "context_length_exceeded_behavior": "error"
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 32768
+          }
+        }
+      }
+    }
+  }
+}

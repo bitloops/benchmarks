@@ -179,7 +179,8 @@ Env vars:
 OpenCode-specific notes:
 
 - Provider credentials are expected in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
-- The wrapper maps benchmark `[model].temperature` and optional `[model].seed` into `OPENCODE_CONFIG_CONTENT` at runtime, merging with any existing inline OpenCode config instead of writing project config files.
+- The wrapper loads committed repo defaults from `configs/opencode/opencode.json`.
+- The wrapper maps benchmark `[model].temperature` and optional `[model].seed` into `OPENCODE_CONFIG_CONTENT` at runtime, layering benchmark overrides on top of any committed repo defaults and existing inline OpenCode config.
 
 Typical non-interactive setting:
 

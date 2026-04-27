@@ -956,23 +956,30 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertAlmostEqual(float(mock_sleep.call_args_list[1].args[0]), 0.002)
 
     def test_setup_bitloops_supports_sync_ingest_embeddings_and_semantic_modes(self) -> None:
-        responses = [
-            ("Bitloops daemon: running\n", "", 0, 5),
-            ("Bitloops init completed", "", 0, 16),
-        ]
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             config_path = workspace / "config.toml"
             config_path.write_text("[semantic_clones]\nsummary_mode = \"auto\"\n", encoding="utf-8")
+            call_log: list[list[str]] = []
+
+            def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
+                del timeout_seconds, env
+                call_log.append(list(command))
+                if command[:2] == ["bitloops", "status"]:
+                    return "Bitloops daemon: running\n", "", 0, 5
+                if command[:2] == ["bitloops", "init"]:
+                    rendered = config_path.read_text(encoding="utf-8")
+                    self.assertIn('summary_mode = "off"', rendered)
+                    self.assertIn('embedding_mode = "deterministic"', rendered)
+                    self.assertEqual(cwd, str(workspace))
+                    return "Bitloops init completed", "", 0, 16
+                raise AssertionError(f"Unexpected command: {command}")
+
             with patch.object(
                 common,
                 "_ensure_git_branch_for_bitloops_sync",
                 return_value=(False, False, None, None, 0),
-            ), patch.object(common, "call_command", side_effect=responses) as mock_call, patch.object(
-                common.Path,
-                "cwd",
-                return_value=workspace,
-            ):
+            ), patch.object(common, "call_command", side_effect=fake_call_command):
                 metadata = common.setup_bitloops_for_workspace(
                     agent_name="claude-code",
                     bitloops_bin="bitloops",
@@ -981,11 +988,12 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     embeddings_runtime="local",
                     summary_mode="off",
                     embedding_mode="deterministic",
+                    cwd=str(workspace),
                 )
                 rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
-            mock_call.call_args_list[1].args[0],
+            call_log[1],
             [
                 "bitloops",
                 "init",
@@ -1008,17 +1016,21 @@ class AgentWrapperCommonTests(unittest.TestCase):
             ("Bitloops daemon: running\n", "", 0, 5),
             ("Bitloops init completed", "", 0, 16),
         ]
-        with patch.object(
-            common,
-            "_ensure_git_branch_for_bitloops_sync",
-            return_value=(False, False, None, None, 0),
-        ), patch.object(common, "call_command", side_effect=responses) as mock_call:
-            metadata = common.setup_bitloops_for_workspace(
-                agent_name="claude-code",
-                bitloops_bin="bitloops",
-                timeout_seconds=30,
-                no_embeddings=True,
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config_path = workspace / "config.toml"
+            with patch.object(
+                common,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(common, "call_command", side_effect=responses) as mock_call:
+                metadata = common.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    no_embeddings=True,
+                    cwd=str(workspace),
+                )
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1034,6 +1046,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
             ],
         )
         self.assertTrue(metadata["bitloops_no_embeddings"])
+        self.assertFalse(config_path.exists())
 
     def test_setup_bitloops_records_global_lock_wait_metadata(self) -> None:
         responses = [
