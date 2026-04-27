@@ -944,17 +944,22 @@ def _run_command_with_init_status_shortcut(
             elapsed_ms = int((time.time() - start) * 1000)
             return stdout, stderr, int(process.returncode or 0), elapsed_ms, None
 
-        (
-            status_stdout,
-            status_stderr,
-            status_code,
-            _status_elapsed_ms,
-        ) = call_command(
-            status_command,
-            status_poll_timeout_seconds,
-            env=env,
-            cwd=cwd,
-        )
+        try:
+            (
+                status_stdout,
+                status_stderr,
+                status_code,
+                _status_elapsed_ms,
+            ) = call_command(
+                status_command,
+                status_poll_timeout_seconds,
+                env=env,
+                cwd=cwd,
+            )
+        except subprocess.TimeoutExpired:
+            status_stdout = ""
+            status_stderr = ""
+            status_code = -1
         if status_code == 0:
             last_status_payload = _parse_bitloops_init_status_payload(status_stdout)
             session = (

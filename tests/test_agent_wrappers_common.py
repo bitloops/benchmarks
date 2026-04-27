@@ -1644,6 +1644,77 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(first_call, ["bitloops", "init", "status", "--json"])
         self.assertEqual(mock_sleep.call_count, 1)
 
+    def test_run_command_with_init_status_shortcut_tolerates_status_poll_timeout(self) -> None:
+        class _HangingProcess:
+            def __init__(self) -> None:
+                self.returncode = None
+                self.terminated = False
+
+            def poll(self) -> int | None:
+                return None if not self.terminated else 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = 0
+
+            def kill(self) -> None:
+                self.terminated = True
+                self.returncode = -9
+
+            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+                _ = timeout
+                return "", ""
+
+        status_payload = {
+            "repoId": "repo-1",
+            "requestedSessionId": None,
+            "currentInitSessionId": "init-session-1",
+            "session": {
+                "initSessionId": "init-session-1",
+                "status": "completed",
+                "statusLabel": "Completed",
+                "followUpSyncRequired": False,
+                "summaryText": "Setup tasks completed",
+                "terminalError": None,
+                "lanes": [],
+            },
+        }
+        process = _HangingProcess()
+        status_timeout = common.subprocess.TimeoutExpired(
+            cmd=["bitloops", "init", "status", "--json"],
+            timeout=10,
+        )
+
+        with patch.object(common.subprocess, "Popen", return_value=process), patch.object(
+            common,
+            "call_command",
+            side_effect=[
+                status_timeout,
+                (json.dumps(status_payload), "", 0, 4),
+            ],
+        ) as mock_call, patch.object(common.time, "sleep") as mock_sleep:
+            stdout, stderr, return_code, elapsed_ms, metadata = (
+                common._run_command_with_init_status_shortcut(
+                    command=["bitloops", "init", "--agent", "opencode"],
+                    timeout_seconds=30,
+                    env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
+                    cwd="/tmp/workspace",
+                )
+            )
+
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(return_code, 0)
+        self.assertGreaterEqual(elapsed_ms, 0)
+        self.assertTrue(process.terminated)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["current_init_session_id"], "init-session-1")
+        session = metadata["session"]
+        assert isinstance(session, dict)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(mock_call.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
     def test_run_command_with_init_status_shortcut_tolerates_invalid_utf8_output(self) -> None:
         status_payload = {
             "repoId": "repo-1",
