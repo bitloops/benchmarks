@@ -18,6 +18,92 @@ from benchkit.swebench.types import BenchmarkInstance
 
 
 class AgentBaseTests(unittest.TestCase):
+    def test_json_command_adapter_extends_wrapper_timeout_for_bitloops_runs(self) -> None:
+        adapter = JsonCommandAgentAdapter(
+            AgentConfig(
+                id="opencode",
+                command=["python3", "wrapper.py"],
+                extra_args=["--bitloops-init"],
+            )
+        )
+        instance = BenchmarkInstance(
+            instance_id="tokio__1",
+            repo="tokio-rs/tokio",
+            base_commit="abc123",
+            problem_statement="Fix the failing behavior.",
+            language="rust",
+            metadata={},
+        )
+        context = RunContext(
+            attempt=1,
+            timeout_seconds=900,
+            workspace_root=Path("/tmp/workspace"),
+            model=ModelConfig(provider="openai", name="openai/gpt-5"),
+            canonical_model_name="gpt-5",
+            run_id="run-123",
+            benchmark="swebench_multilingual",
+            condition="with_bitloops",
+        )
+        captured_timeout: int | None = None
+
+        def fake_run(*args, **kwargs):
+            del args
+            nonlocal captured_timeout
+            captured_timeout = kwargs["timeout"]
+
+            class Completed:
+                returncode = 0
+                stdout = '{"patch":"","metadata":{}}'
+                stderr = ""
+
+            return Completed()
+
+        with patch("benchkit.swebench.agents.base.subprocess.run", side_effect=fake_run):
+            adapter.generate_patch(instance, context)
+
+        self.assertEqual(captured_timeout, 2400)
+
+    def test_json_command_adapter_keeps_baseline_wrapper_timeout_unchanged(self) -> None:
+        adapter = JsonCommandAgentAdapter(
+            AgentConfig(id="opencode", command=["python3", "wrapper.py"])
+        )
+        instance = BenchmarkInstance(
+            instance_id="tokio__1",
+            repo="tokio-rs/tokio",
+            base_commit="abc123",
+            problem_statement="Fix the failing behavior.",
+            language="rust",
+            metadata={},
+        )
+        context = RunContext(
+            attempt=1,
+            timeout_seconds=900,
+            workspace_root=Path("/tmp/workspace"),
+            model=ModelConfig(provider="openai", name="openai/gpt-5"),
+            canonical_model_name="gpt-5",
+            run_id="run-123",
+            benchmark="swebench_multilingual",
+            condition="baseline",
+        )
+        captured_timeout: int | None = None
+
+        def fake_run(*args, **kwargs):
+            del args
+            nonlocal captured_timeout
+            captured_timeout = kwargs["timeout"]
+
+            class Completed:
+                returncode = 0
+                stdout = '{"patch":"","metadata":{}}'
+                stderr = ""
+
+            return Completed()
+
+        with patch("benchkit.swebench.agents.base.subprocess.run", side_effect=fake_run):
+            adapter.generate_patch(instance, context)
+
+        self.assertEqual(captured_timeout, 900)
+
     def test_json_command_adapter_includes_run_timeout_in_payload(self) -> None:
         adapter = JsonCommandAgentAdapter(
             AgentConfig(id="claude_code", command=["python3", "wrapper.py"])
