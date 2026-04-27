@@ -28,9 +28,11 @@ class AppendixTests(unittest.TestCase):
             write_json(
                 run_root / "run_manifest.json",
                 {
+                    "run_id": "run-1",
                     "benchmark": "swebench_multilingual",
                     "dataset_path": "datasets/sample.jsonl",
                     "split": "dev",
+                    "language": "rust",
                     "condition": "baseline",
                     "agent": {"id": "claude_code"},
                     "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},

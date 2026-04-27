@@ -94,7 +94,9 @@ Authenticate the `codex` CLI normally. No Bedrock or AWS setup is needed.
 
 Authenticate OpenCode normally. Provider credentials typically live in
 `~/.local/share/opencode/auth.json`. No Bedrock or AWS setup is needed unless
-your chosen model provider separately requires it.
+your chosen model provider separately requires it. Committed benchmark defaults
+for OpenCode live in `configs/opencode/opencode.json`, while per-run
+`[model].name`, `temperature`, and optional `seed` stay in the benchmark TOML.
 
 ## 4) Export the dataset once (if needed)
 
@@ -295,3 +297,19 @@ Inside your appendix directory:
 - `appendix_per_attempt_breakdown.md`
 - `appendix_prompt_tool_breakdown.md`
 - `appendix_tool_invocation_breakdown.md`
+
+## 11) Inspect Bitloops init progress
+
+For `with_bitloops` runs, use
+[`docs/bitloops-init-status-guide.md`](./bitloops-init-status-guide.md) to
+inspect task-local init state, embeddings, mailbox counts, and workplane jobs.
+
+Quick example:
+
+```bash
+./.venv/bin/python scripts/swebench/bitloops_init_status.py \
+  --run-id 20260427_103024_a73844 \
+  --repo tokio-rs/axum \
+  --instance-id tokio-rs__axum-1119 \
+  --watch
+```
