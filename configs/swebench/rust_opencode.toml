@@ -27,8 +27,8 @@ extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "-
 provider = "fireworks-ai"
 name = "qwen3.6-plus"
 temperature = 0.0
-seed = 4242
-max_tokens = 32000
+seed = 42
+max_tokens = 32768
 
 [model_map.opencode]
 "qwen3.6-plus" = "fireworks-ai/accounts/fireworks/models/qwen3p6-plus"
