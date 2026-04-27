@@ -98,6 +98,49 @@ class AgentBaseTests(unittest.TestCase):
 
         self.assertEqual(captured_payload["model"]["seed"], 1234)
 
+    def test_json_command_adapter_includes_attempt_dir_in_payload(self) -> None:
+        adapter = JsonCommandAgentAdapter(
+            AgentConfig(id="opencode", command=["python3", "wrapper.py"])
+        )
+        instance = BenchmarkInstance(
+            instance_id="tokio__1",
+            repo="tokio-rs/tokio",
+            base_commit="abc123",
+            problem_statement="Fix the failing behavior.",
+            language="rust",
+            metadata={},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            attempt_dir = Path(temp_dir) / "attempt-01"
+            context = RunContext(
+                attempt=1,
+                timeout_seconds=900,
+                workspace_root=Path("/tmp/workspace"),
+                attempt_dir=attempt_dir,
+                model=ModelConfig(provider="openai", name="openai/gpt-5"),
+                canonical_model_name="gpt-5",
+                run_id="run-123",
+                benchmark="swebench_multilingual",
+                condition="with_bitloops",
+            )
+            captured_payload: dict[str, object] = {}
+
+            def fake_run(*args, **kwargs):
+                del args
+                captured_payload.update(json.loads(kwargs["input"]))
+
+                class Completed:
+                    returncode = 0
+                    stdout = '{"patch":"","metadata":{}}'
+                    stderr = ""
+
+                return Completed()
+
+            with patch("benchkit.swebench.agents.base.subprocess.run", side_effect=fake_run):
+                adapter.generate_patch(instance, context)
+
+        self.assertEqual(captured_payload["run"]["attempt_dir"], str(attempt_dir.resolve()))
+
     def test_resolves_relative_script_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)

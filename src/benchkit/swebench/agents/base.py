@@ -27,6 +27,7 @@ class RunContext:
     condition: str | None = None
     prompt_context: str | None = None
     bitloops_sandbox: dict[str, Any] | None = None
+    attempt_dir: Path | None = None
 
 
 @dataclass(slots=True)
@@ -102,6 +103,11 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 "condition": context.condition,
                 "timeout_seconds": context.timeout_seconds,
                 "workspace_root": str(context.workspace_root),
+                "attempt_dir": (
+                    str(context.attempt_dir.resolve())
+                    if isinstance(context.attempt_dir, Path)
+                    else None
+                ),
                 "bitloops_sandbox": context.bitloops_sandbox,
             },
         }

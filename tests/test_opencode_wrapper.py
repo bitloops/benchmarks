@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import importlib.util
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -28,7 +29,98 @@ wrapper = _load_wrapper_module()
 
 
 class OpencodeWrapperTests(unittest.TestCase):
-    def test_build_runtime_config_includes_temperature_and_seed(self) -> None:
+    def test_resolve_raw_output_paths_uses_attempt_dir_and_instance_id(self) -> None:
+        payload = {
+            "instance_id": "tokio-rs__axum-1119",
+            "run": {
+                "attempt_dir": "/tmp/attempt-01",
+            },
+        }
+
+        stdout_path, stderr_path = wrapper._resolve_raw_output_paths(payload)
+
+        self.assertEqual(
+            stdout_path,
+            Path("/tmp/attempt-01/agent_raw/tokio-rs__axum-1119.opencode.stdout.jsonl"),
+        )
+        self.assertEqual(
+            stderr_path,
+            Path("/tmp/attempt-01/agent_raw/tokio-rs__axum-1119.opencode.stderr.log"),
+        )
+
+    def test_persist_raw_output_writes_attempt_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload = {
+                "instance_id": "tokio-rs__axum-1119",
+                "run": {
+                    "attempt_dir": temp_dir,
+                },
+            }
+
+            stdout_path, stderr_path = wrapper._persist_raw_opencode_output(
+                payload=payload,
+                stdout='{"type":"message.updated"}\n',
+                stderr="migration complete\n",
+            )
+
+            self.assertEqual(
+                Path(stdout_path),
+                Path(temp_dir) / "agent_raw" / "tokio-rs__axum-1119.opencode.stdout.jsonl",
+            )
+            self.assertEqual(
+                Path(stderr_path),
+                Path(temp_dir) / "agent_raw" / "tokio-rs__axum-1119.opencode.stderr.log",
+            )
+            self.assertEqual(Path(stdout_path).read_text(encoding="utf-8"), '{"type":"message.updated"}\n')
+            self.assertEqual(Path(stderr_path).read_text(encoding="utf-8"), "migration complete\n")
+
+    def test_should_require_tool_invocations_defaults_on_for_bitloops_condition(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        with patch.dict(wrapper.os.environ, {}, clear=False):
+            self.assertTrue(wrapper._should_require_tool_invocations(payload))
+
+    def test_should_require_tool_invocations_respects_explicit_env_override(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        with patch.dict(
+            wrapper.os.environ,
+            {"BENCHKIT_REQUIRE_OPENCODE_TOOL_EVENTS": "false"},
+            clear=False,
+        ):
+            self.assertFalse(wrapper._should_require_tool_invocations(payload))
+
+    def test_resolve_missing_tool_capture_error_requires_tools_for_bitloops_runs(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+
+        message = wrapper._resolve_missing_tool_capture_error(
+            payload=payload,
+            tool_invocations_raw=[],
+            tool_usage_breakdown={},
+        )
+
+        self.assertIsInstance(message, str)
+        assert isinstance(message, str)
+        self.assertIn("tool invocations", message.lower())
+
+    def test_resolve_missing_tool_capture_error_allows_captured_tools(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+
+        message = wrapper._resolve_missing_tool_capture_error(
+            payload=payload,
+            tool_invocations_raw=[{"tool": "Bash"}],
+            tool_usage_breakdown={},
+        )
+
+        self.assertIsNone(message)
+
+    def test_normalize_model_reference_rewrites_legacy_fireworks_prefix(self) -> None:
+        self.assertEqual(
+            wrapper._normalize_opencode_model_reference(
+                "fireworks/accounts/fireworks/models/qwen3p6-plus"
+            ),
+            "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
+        )
+
+    def test_build_runtime_config_normalizes_legacy_fireworks_provider_alias(self) -> None:
         payload = {
             "model": {
                 "provider": "fireworks",
@@ -47,7 +139,7 @@ class OpencodeWrapperTests(unittest.TestCase):
             {
                 "$schema": "https://opencode.ai/config.json",
                 "provider": {
-                    "fireworks": {
+                    "fireworks-ai": {
                         "models": {
                             "accounts/firefunction-v2": {
                                 "options": {
@@ -164,6 +256,17 @@ class OpencodeWrapperTests(unittest.TestCase):
         with patch.dict(wrapper.os.environ, {}, clear=True):
             timeout = wrapper._resolve_opencode_timeout_seconds({})
         self.assertEqual(timeout, 900)
+
+    def test_resolve_bitloops_setup_timeout_uses_25_minute_floor_for_short_runs(self) -> None:
+        payload = {"run": {"timeout_seconds": 900}}
+        with patch.dict(wrapper.os.environ, {}, clear=True):
+            timeout = wrapper._resolve_bitloops_setup_timeout_seconds(payload)
+        self.assertEqual(timeout, 1500)
+
+    def test_resolve_bitloops_setup_timeout_uses_default_when_missing(self) -> None:
+        with patch.dict(wrapper.os.environ, {}, clear=True):
+            timeout = wrapper._resolve_bitloops_setup_timeout_seconds({})
+        self.assertEqual(timeout, 1500)
 
 
 if __name__ == "__main__":

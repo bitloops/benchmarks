@@ -64,7 +64,7 @@ def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
         except (TypeError, ValueError):
             run_value = 0
 
-    return max(env_value, run_value, 180)
+    return max(env_value, run_value, 1500)
 
 
 def main() -> None:

@@ -74,7 +74,7 @@ Optional wrapper argument:
   - resolves the task-local Bitloops sandbox/runtime
   - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
-  - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=false`
+  - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true`
 - `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime used during `bitloops init`
 
 Current Claude + Bitloops configs use:

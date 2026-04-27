@@ -128,6 +128,7 @@ def execute_run(
                     succeeded,
                 ) = _run_instance(
                     attempt=attempt,
+                    attempt_dir=attempt_dir,
                     attempts_count=attempts_count,
                     instance_index=instance_index,
                     total_instances=len(selected_instances),
@@ -154,6 +155,7 @@ def execute_run(
                     executor.submit(
                         _run_instance,
                         attempt=attempt,
+                        attempt_dir=attempt_dir,
                         attempts_count=attempts_count,
                         instance_index=instance_index,
                         total_instances=len(selected_instances),
@@ -338,6 +340,7 @@ def _build_manifest(
 def _run_instance(
     *,
     attempt: int,
+    attempt_dir: Path,
     attempts_count: int,
     instance_index: int,
     total_instances: int,
@@ -386,6 +389,7 @@ def _run_instance(
         attempt=attempt,
         timeout_seconds=config.timeout_seconds,
         workspace_root=workspace_result.workspace_path or Path.cwd(),
+        attempt_dir=attempt_dir,
         model=resolved_model,
         canonical_model_name=canonical_model_name,
         run_id=run_id,

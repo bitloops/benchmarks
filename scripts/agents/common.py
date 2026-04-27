@@ -237,6 +237,8 @@ def call_command(
     completed = subprocess.run(
         command,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=timeout_seconds,
         env=env,
@@ -282,6 +284,7 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
 
     env = dict(os.environ)
     original_home = str(env.get("HOME", "")).strip()
+    sandbox_config_path = _resolve_bitloops_sandbox_daemon_config_path(sandbox)
     path_map = {
         "HOME": sandbox.get("home_root"),
         "USERPROFILE": sandbox.get("home_root"),
@@ -293,6 +296,8 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
     for key, value in path_map.items():
         if isinstance(value, str) and value.strip():
             env[key] = value.strip()
+    if sandbox_config_path is not None:
+        env["BITLOOPS_DAEMON_CONFIG_PATH_OVERRIDE"] = str(sandbox_config_path)
     if original_home:
         env.setdefault("CARGO_HOME", str(Path(original_home) / ".cargo"))
         env.setdefault("RUSTUP_HOME", str(Path(original_home) / ".rustup"))
@@ -314,6 +319,23 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
                 original_home=Path(original_home),
                 sandbox_home=Path(sandbox_home),
             )
+            _mirror_bitloops_auth_state_into_sandbox(
+                original_home=Path(original_home),
+                sandbox_home=Path(sandbox_home),
+            )
+            _ensure_macos_default_keychain_for_sandbox(
+                original_home=Path(original_home),
+                sandbox_home=Path(sandbox_home),
+            )
+        sandbox_xdg_config_home = str(sandbox.get("xdg_config_home", "")).strip()
+        sandbox_xdg_data_home = str(sandbox.get("xdg_data_home", "")).strip()
+        if sandbox_home and sandbox_xdg_config_home and sandbox_xdg_data_home:
+            _mirror_opencode_state_into_sandbox(
+                original_home=Path(original_home),
+                sandbox_home=Path(sandbox_home),
+                sandbox_xdg_config_home=Path(sandbox_xdg_config_home),
+                sandbox_xdg_data_home=Path(sandbox_xdg_data_home),
+            )
     env["BITLOOPS_BENCHKIT_SANDBOX_MODE"] = mode
     return env
 
@@ -331,6 +353,174 @@ def _mirror_aws_auth_cache_into_sandbox(*, original_home: Path, sandbox_home: Pa
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def _resolve_bitloops_sandbox_daemon_config_path(sandbox: dict[str, Any] | None) -> Path | None:
+    if not isinstance(sandbox, dict):
+        return None
+    home_root = str(sandbox.get("home_root", "")).strip()
+    xdg_config_home = str(sandbox.get("xdg_config_home", "")).strip()
+
+    candidates: list[Path] = []
+    if sys.platform == "darwin" and home_root:
+        candidates.append(
+            Path(home_root) / "Library" / "Application Support" / "bitloops" / "config.toml"
+        )
+    if xdg_config_home:
+        candidates.append(Path(xdg_config_home) / "bitloops" / "config.toml")
+    if home_root:
+        candidates.append(Path(home_root) / ".config" / "bitloops" / "config.toml")
+
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def _mirror_file_if_present(*, source: Path, destinations: tuple[Path, ...]) -> None:
+    if not source.exists() or not source.is_file():
+        return
+    for destination in destinations:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def _mirror_bitloops_auth_state_into_sandbox(*, original_home: Path, sandbox_home: Path) -> None:
+    runtime_state_source = (
+        original_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
+    )
+    if not runtime_state_source.exists() or not runtime_state_source.is_file():
+        return
+
+    runtime_state_destination = (
+        sandbox_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
+    )
+    runtime_state_destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        source_connection = sqlite3.connect(
+            f"file:{runtime_state_source}?mode=ro",
+            uri=True,
+            timeout=1.0,
+        )
+    except sqlite3.Error:
+        return
+
+    try:
+        rows = source_connection.execute(
+            """
+            SELECT document_kind, payload, updated_at
+            FROM runtime_documents
+            WHERE document_kind = ?
+            """,
+            ("workos_auth_session_state",),
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    finally:
+        source_connection.close()
+
+    if not rows:
+        return
+
+    destination_connection = sqlite3.connect(runtime_state_destination)
+    try:
+        destination_connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_documents (
+                document_kind TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        destination_connection.execute("DELETE FROM runtime_documents")
+        destination_connection.executemany(
+            """
+            INSERT OR REPLACE INTO runtime_documents (document_kind, payload, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            rows,
+        )
+        destination_connection.commit()
+    finally:
+        destination_connection.close()
+
+
+def _security_command_env_for_home(home: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    home_text = str(home)
+    env["HOME"] = home_text
+    env["USERPROFILE"] = home_text
+    return env
+
+
+def _parse_security_default_keychain_output(stdout: str) -> str | None:
+    text = str(stdout).strip()
+    if not text:
+        return None
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        text = text[1:-1]
+    return text.strip() or None
+
+
+def _resolve_macos_default_keychain_for_home(home: Path) -> str | None:
+    stdout, _stderr, return_code, _elapsed_ms = call_command(
+        ["security", "default-keychain", "-d", "user"],
+        5,
+        env=_security_command_env_for_home(home),
+    )
+    if return_code != 0:
+        return None
+    return _parse_security_default_keychain_output(stdout)
+
+
+def _ensure_macos_default_keychain_for_sandbox(
+    *,
+    original_home: Path,
+    sandbox_home: Path,
+) -> None:
+    if sys.platform != "darwin":
+        return
+    sandbox_preferences = sandbox_home / "Library" / "Preferences"
+    sandbox_preferences.mkdir(parents=True, exist_ok=True)
+    if _resolve_macos_default_keychain_for_home(sandbox_home):
+        return
+
+    default_keychain = _resolve_macos_default_keychain_for_home(original_home)
+    if not default_keychain:
+        return
+
+    call_command(
+        ["security", "default-keychain", "-d", "user", "-s", default_keychain],
+        5,
+        env=_security_command_env_for_home(sandbox_home),
+    )
+
+
+def _mirror_opencode_state_into_sandbox(
+    *,
+    original_home: Path,
+    sandbox_home: Path,
+    sandbox_xdg_config_home: Path,
+    sandbox_xdg_data_home: Path,
+) -> None:
+    auth_source = original_home / ".local" / "share" / "opencode" / "auth.json"
+    _mirror_file_if_present(
+        source=auth_source,
+        destinations=(
+            sandbox_xdg_data_home / "opencode" / "auth.json",
+            sandbox_home / ".local" / "share" / "opencode" / "auth.json",
+        ),
+    )
+
+    config_source = original_home / ".config" / "opencode" / "opencode.json"
+    _mirror_file_if_present(
+        source=config_source,
+        destinations=(
+            sandbox_xdg_config_home / "opencode" / "opencode.json",
+            sandbox_home / ".config" / "opencode" / "opencode.json",
+        ),
+    )
 
 
 def _ensure_sandbox_directories(sandbox: dict[str, Any]) -> None:
@@ -356,28 +546,30 @@ def _allocate_localhost_port() -> int:
 
 def _wait_for_task_daemon_ready(
     *,
-    binary: str,
     timeout: int,
-    env: dict[str, str],
     port: int,
-    cwd: str | None = None,
+    process: subprocess.Popen[str],
+    stderr_log_path: Path,
 ) -> None:
     deadline = time.time() + timeout
-    status_command = [binary, "status"]
     probe_url = f"http://127.0.0.1:{port}/devql/sdl"
     while time.time() < deadline:
-        status_stdout, _status_stderr, status_code, _status_elapsed = call_command(
-            status_command,
-            timeout,
-            env=env,
-            cwd=cwd,
-        )
-        if status_code == 0 and _bitloops_daemon_is_running(status_stdout):
-            try:
-                with urllib.request.urlopen(probe_url, timeout=1):
-                    return
-            except OSError:
-                pass
+        return_code = process.poll()
+        if return_code is not None:
+            stderr_tail = ""
+            if stderr_log_path.exists():
+                with contextlib.suppress(OSError):
+                    lines = stderr_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    stderr_tail = "\n".join(lines[-20:]).strip()
+            detail = f"; stderr tail:\n{stderr_tail}" if stderr_tail else ""
+            raise RuntimeError(
+                f"task daemon exited before becoming ready (exit={return_code}){detail}"
+            )
+        try:
+            with urllib.request.urlopen(probe_url, timeout=1):
+                return
+        except OSError:
+            pass
         time.sleep(0.2)
     raise TimeoutError(f"timed out waiting for task daemon readiness on port {port}")
 
@@ -658,6 +850,8 @@ def _run_command_with_runtime_ready_shortcut(
     process = subprocess.Popen(
         command,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -684,6 +878,118 @@ def _run_command_with_runtime_ready_shortcut(
                 stdout, stderr = process.communicate()
             elapsed_ms = int((time.time() - start) * 1000)
             return stdout, stderr, 0, elapsed_ms, metadata
+
+        if (time.time() - start) >= timeout_seconds:
+            with contextlib.suppress(OSError):
+                process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    process.kill()
+                stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout_seconds,
+                output=stdout,
+                stderr=stderr,
+            )
+        time.sleep(1.0)
+
+
+def _bitloops_init_status_is_terminal(status: str) -> bool:
+    return status.strip().lower() in {"completed", "completed_with_warnings", "failed"}
+
+
+def _bitloops_init_status_is_success(status: str) -> bool:
+    return status.strip().lower() in {"completed", "completed_with_warnings"}
+
+
+def _parse_bitloops_init_status_payload(stdout: str) -> dict[str, Any] | None:
+    text = str(stdout).strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _run_command_with_init_status_shortcut(
+    *,
+    command: list[str],
+    timeout_seconds: int,
+    env: dict[str, str] | None,
+    cwd: str | None,
+) -> tuple[str, str, int, int, dict[str, Any] | None]:
+    start = time.time()
+    process = subprocess.Popen(
+        command,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+    )
+    status_command = [command[0], "init", "status", "--json"]
+    last_status_payload: dict[str, Any] | None = None
+    status_poll_timeout_seconds = max(1, min(timeout_seconds, 10))
+
+    while True:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            elapsed_ms = int((time.time() - start) * 1000)
+            return stdout, stderr, int(process.returncode or 0), elapsed_ms, None
+
+        (
+            status_stdout,
+            status_stderr,
+            status_code,
+            _status_elapsed_ms,
+        ) = call_command(
+            status_command,
+            status_poll_timeout_seconds,
+            env=env,
+            cwd=cwd,
+        )
+        if status_code == 0:
+            last_status_payload = _parse_bitloops_init_status_payload(status_stdout)
+            session = (
+                last_status_payload.get("session")
+                if isinstance(last_status_payload, dict)
+                else None
+            )
+            if isinstance(session, dict):
+                session_status = str(session.get("status") or "").strip().lower()
+                if _bitloops_init_status_is_terminal(session_status):
+                    with contextlib.suppress(OSError):
+                        process.terminate()
+                    try:
+                        stdout, stderr = process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        with contextlib.suppress(OSError):
+                            process.kill()
+                        stdout, stderr = process.communicate()
+                    elapsed_ms = int((time.time() - start) * 1000)
+                    if not _bitloops_init_status_is_success(session_status):
+                        return_code = int(process.returncode or 1)
+                        terminal_error = str(session.get("terminalError") or "").strip()
+                        if terminal_error and not stderr.strip():
+                            stderr = terminal_error
+                    else:
+                        return_code = 0
+                    metadata = {
+                        "status_command": status_command,
+                        "current_init_session_id": last_status_payload.get(
+                            "currentInitSessionId"
+                        ),
+                        "session": session,
+                        "status_stderr": status_stderr.strip(),
+                    }
+                    return stdout, stderr, return_code, elapsed_ms, metadata
 
         if (time.time() - start) >= timeout_seconds:
             with contextlib.suppress(OSError):
@@ -745,11 +1051,10 @@ def start_bitloops_task_daemon(
 
     try:
         _wait_for_task_daemon_ready(
-            binary=binary,
             timeout=timeout,
-            env=env,
             port=port,
-            cwd=cwd,
+            process=process,
+            stderr_log_path=stderr_log_path,
         )
     except Exception:
         with contextlib.suppress(OSError):
@@ -941,6 +1246,7 @@ def _run_bitloops_init(
         int(os.environ.get("BITLOOPS_INIT_DB_LOCK_RETRY_DELAY_MS", "500")),
     )
     runtime_ready_shortcut_metadata: dict[str, Any] | None = None
+    init_status_shortcut_metadata: dict[str, Any] | None = None
 
     while True:
         init_command = [
@@ -960,20 +1266,19 @@ def _run_bitloops_init(
         if no_embeddings:
             init_command.append("--no-embeddings")
 
-        use_runtime_ready_shortcut = (
-            sync
-            and isinstance(env, dict)
+        use_init_status_shortcut = (
+            isinstance(env, dict)
             and str(env.get("BITLOOPS_BENCHKIT_SANDBOX_MODE", "")).strip().lower()
             == "per_task_daemon"
         )
-        if use_runtime_ready_shortcut:
+        if use_init_status_shortcut:
             (
                 init_stdout,
                 init_stderr,
                 init_code,
                 current_init_elapsed_ms,
-                runtime_ready_shortcut_metadata,
-            ) = _run_command_with_runtime_ready_shortcut(
+                init_status_shortcut_metadata,
+            ) = _run_command_with_init_status_shortcut(
                 command=init_command,
                 timeout_seconds=timeout,
                 env=env,
@@ -1041,6 +1346,13 @@ def _run_bitloops_init(
         "bitloops_init_db_lock_retry_used": init_db_lock_retry_count > 0,
         "bitloops_init_runtime_ready_shortcut_used": runtime_ready_shortcut_metadata is not None,
         "bitloops_init_runtime_ready_shortcut": runtime_ready_shortcut_metadata,
+        "bitloops_init_status_command": (
+            init_status_shortcut_metadata.get("status_command")
+            if isinstance(init_status_shortcut_metadata, dict)
+            else None
+        ),
+        "bitloops_init_status_shortcut_used": init_status_shortcut_metadata is not None,
+        "bitloops_init_status_shortcut": init_status_shortcut_metadata,
     }
 
 
@@ -1050,7 +1362,7 @@ def setup_bitloops_for_workspace(
     bitloops_bin: str | None = None,
     timeout_seconds: int | None = None,
     sync: bool = True,
-    ingest: bool = False,
+    ingest: bool = True,
     install_default_daemon: bool = True,
     embeddings_runtime: str | None = None,
     no_embeddings: bool = False,
@@ -1062,7 +1374,7 @@ def setup_bitloops_for_workspace(
     task_daemon_handle: BitloopsTaskDaemonHandle | None = None,
 ) -> dict[str, Any]:
     binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
-    timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "180"))
+    timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "1500"))
     setup_started = time.time()
     (
         git_detached_head,
@@ -1134,7 +1446,7 @@ def setup_bitloops_for_workspace(
             agent_name=agent_name,
             sync=sync,
             ingest=ingest,
-            install_default_daemon=False,
+            install_default_daemon=install_default_daemon,
             embeddings_runtime=embeddings_runtime,
             no_embeddings=no_embeddings,
             env=sandbox_env,

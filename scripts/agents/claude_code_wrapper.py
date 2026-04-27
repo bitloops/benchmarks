@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bitloops-ingest",
         choices=("true", "false"),
-        default="false",
+        default="true",
         help="Whether Bitloops init should queue ingest.",
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
         except (TypeError, ValueError):
             run_value = 0
 
-    return max(env_value, run_value, 180)
+    return max(env_value, run_value, 1500)
 
 
 def main() -> None:

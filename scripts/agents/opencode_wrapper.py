@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
+import re
 import sys
 from copy import deepcopy
 
@@ -13,6 +15,7 @@ from common import (  # type: ignore[import-not-found]
     capture_workspace_patch,
     emit_success,
     env_args,
+    env_flag,
     extract_git_patch,
     extract_tool_invocation_sequence,
     extract_tool_invocations_curated,
@@ -53,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bitloops-ingest",
         choices=("true", "false"),
-        default="false",
+        default="true",
         help="Whether Bitloops init should queue ingest.",
     )
     parser.add_argument(
@@ -119,7 +122,7 @@ def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
         except (TypeError, ValueError):
             run_value = 0
 
-    return max(env_value, run_value, 180)
+    return max(env_value, run_value, 1500)
 
 
 def _coerce_temperature(model: object) -> float | None:
@@ -146,22 +149,43 @@ def _coerce_seed(model: object) -> int | None:
         return None
 
 
+def _normalize_opencode_provider_id(provider_id: str | None) -> str | None:
+    normalized = str(provider_id or "").strip()
+    if not normalized:
+        return None
+    if normalized == "fireworks":
+        return "fireworks-ai"
+    return normalized
+
+
+def _normalize_opencode_model_reference(model_reference: str) -> str:
+    normalized = model_reference.strip()
+    if not normalized or "/" not in normalized:
+        return normalized
+
+    provider_id, model_id = normalized.split("/", 1)
+    canonical_provider_id = _normalize_opencode_provider_id(provider_id)
+    if not canonical_provider_id:
+        return normalized
+    return f"{canonical_provider_id}/{model_id.strip()}"
+
+
 def _split_opencode_model_reference(
     resolved_model_name: str,
     fallback_provider: str | None,
 ) -> tuple[str | None, str | None]:
-    model_name = resolved_model_name.strip()
+    model_name = _normalize_opencode_model_reference(resolved_model_name)
     if not model_name:
         return None, None
 
     if "/" in model_name:
         provider_id, model_id = model_name.split("/", 1)
-        provider_id = provider_id.strip()
+        provider_id = _normalize_opencode_provider_id(provider_id)
         model_id = model_id.strip()
         if provider_id and model_id:
             return provider_id, model_id
 
-    provider_id = str(fallback_provider or "").strip()
+    provider_id = _normalize_opencode_provider_id(fallback_provider)
     if not provider_id:
         return None, None
     return provider_id, model_name
@@ -233,16 +257,98 @@ def _merge_opencode_config_content(
     return _deep_merge_dicts(loaded, runtime_config)
 
 
+def _resolve_attempt_dir(payload: dict[str, object]) -> Path | None:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return None
+    raw_attempt_dir = run.get("attempt_dir")
+    if not isinstance(raw_attempt_dir, str) or not raw_attempt_dir.strip():
+        return None
+    return Path(raw_attempt_dir).expanduser()
+
+
+def _sanitize_instance_id(instance_id: object) -> str:
+    text = str(instance_id or "").strip()
+    if not text:
+        return "unknown-instance"
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return sanitized or "unknown-instance"
+
+
+def _resolve_raw_output_paths(payload: dict[str, object]) -> tuple[Path | None, Path | None]:
+    attempt_dir = _resolve_attempt_dir(payload)
+    if attempt_dir is None:
+        return None, None
+    raw_dir = attempt_dir / "agent_raw"
+    instance_stem = _sanitize_instance_id(payload.get("instance_id"))
+    return (
+        raw_dir / f"{instance_stem}.opencode.stdout.jsonl",
+        raw_dir / f"{instance_stem}.opencode.stderr.log",
+    )
+
+
+def _persist_raw_opencode_output(
+    *,
+    payload: dict[str, object],
+    stdout: str,
+    stderr: str,
+) -> tuple[str | None, str | None]:
+    stdout_path, stderr_path = _resolve_raw_output_paths(payload)
+    if stdout_path is None or stderr_path is None:
+        return None, None
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    return str(stdout_path), str(stderr_path)
+
+
+def _run_condition(payload: dict[str, object]) -> str:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return ""
+    return str(run.get("condition", "")).strip().lower()
+
+
+def _should_require_tool_invocations(payload: dict[str, object]) -> bool:
+    if "BENCHKIT_REQUIRE_OPENCODE_TOOL_EVENTS" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_OPENCODE_TOOL_EVENTS", default=False)
+    if "BENCHKIT_REQUIRE_EXACT_TOOLS" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_EXACT_TOOLS", default=False)
+    return _run_condition(payload) == "with_bitloops"
+
+
+def _resolve_missing_tool_capture_error(
+    *,
+    payload: dict[str, object],
+    tool_invocations_raw: list[dict[str, object]],
+    tool_usage_breakdown: dict[str, int],
+) -> str | None:
+    if not _should_require_tool_invocations(payload):
+        return None
+    if tool_invocations_raw:
+        return None
+    if tool_usage_breakdown:
+        return (
+            "OpenCode finished a Bitloops run without any captured per-tool invocations, "
+            "even though aggregated tool usage metrics were present."
+        )
+    return (
+        "OpenCode finished a Bitloops run without any captured tool invocations. "
+        "The prompt requires using `bitloops devql` first, so this run should be treated as invalid."
+    )
+
+
 def main() -> None:
     args = parse_args()
     payload = read_payload_from_stdin()
     model = payload.get("model", {})
     canonical_model_name = str(model.get("canonical_name", "")).strip()
-    model_name = (
+    raw_model_name = (
         str(model.get("name", "")).strip()
         or os.environ.get("OPENCODE_MODEL", "").strip()
         or "openai/gpt-5"
     )
+    model_name = _normalize_opencode_model_reference(raw_model_name)
     agent_name = os.environ.get("OPENCODE_AGENT", "").strip() or "build"
     runtime_config = _build_opencode_runtime_config(
         payload=payload,
@@ -335,6 +441,11 @@ def main() -> None:
         )
     finally:
         stop_bitloops_task_daemon(task_daemon_handle)
+    raw_stdout_path, raw_stderr_path = _persist_raw_opencode_output(
+        payload=payload,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
     workspace_patch = capture_workspace_patch(workspace)
 
@@ -348,6 +459,8 @@ def main() -> None:
             details={
                 "return_code": return_code,
                 "command": command,
+                "raw_stdout_path": raw_stdout_path,
+                "raw_stderr_path": raw_stderr_path,
                 **failure_summary,
             },
         )
@@ -366,6 +479,24 @@ def main() -> None:
     tool_invocation_counts = summarize_tool_invocation_counts(tool_invocation_sequence)
     if tool_invocations_raw:
         usage_metrics["tool_calls"] = len(tool_invocations_raw)
+    missing_tool_capture_error = _resolve_missing_tool_capture_error(
+        payload=payload,
+        tool_invocations_raw=tool_invocations_raw,
+        tool_usage_breakdown=tool_usage_breakdown,
+    )
+    if missing_tool_capture_error:
+        fatal_error(
+            "opencode tool capture missing",
+            details={
+                "error": missing_tool_capture_error,
+                "command": command,
+                "workspace": str(workspace),
+                "raw_stdout_path": raw_stdout_path,
+                "raw_stderr_path": raw_stderr_path,
+                "tool_usage_breakdown": tool_usage_breakdown,
+                "parsed_payload_type": type(parsed_payload).__name__ if parsed_payload is not None else None,
+            },
+        )
     hook_metrics = load_hook_metrics(
         (
             "OPENCODE_HOOK_METRICS_PATH",
@@ -393,6 +524,8 @@ def main() -> None:
             "patch_source": patch_source,
             "prompt_text": prompt,
             "stderr": stderr.strip(),
+            "raw_stdout_path": raw_stdout_path,
+            "raw_stderr_path": raw_stderr_path,
             "tool_usage_breakdown": tool_usage_breakdown,
             "tool_invocations_raw": tool_invocations_raw,
             "tool_invocations_curated": tool_invocations_curated,

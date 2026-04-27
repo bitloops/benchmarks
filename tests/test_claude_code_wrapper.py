@@ -68,10 +68,16 @@ class ClaudeCodeWrapperTests(unittest.TestCase):
             timeout = wrapper._resolve_bitloops_setup_timeout_seconds(payload)
         self.assertEqual(timeout, 3600)
 
+    def test_resolve_bitloops_setup_timeout_uses_25_minute_floor_for_short_runs(self) -> None:
+        payload = {"run": {"timeout_seconds": 900}}
+        with patch.dict(wrapper.os.environ, {}, clear=True):
+            timeout = wrapper._resolve_bitloops_setup_timeout_seconds(payload)
+        self.assertEqual(timeout, 1500)
+
     def test_resolve_bitloops_setup_timeout_uses_default_when_missing(self) -> None:
         with patch.dict(wrapper.os.environ, {}, clear=True):
             timeout = wrapper._resolve_bitloops_setup_timeout_seconds({})
-        self.assertEqual(timeout, 180)
+        self.assertEqual(timeout, 1500)
 
 
 if __name__ == "__main__":

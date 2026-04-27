@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bitloops-ingest",
         choices=("true", "false"),
-        default="false",
+        default="true",
         help="Whether Bitloops init should queue ingest.",
     )
     parser.add_argument(
@@ -79,6 +79,27 @@ def parse_args() -> argparse.Namespace:
     )
     args, _ = parser.parse_known_args()
     return args
+
+
+def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
+    env_timeout = os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "").strip()
+    env_value = 0
+    if env_timeout:
+        try:
+            env_value = int(env_timeout)
+        except ValueError:
+            env_value = 0
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        raw_timeout = run.get("timeout_seconds")
+        try:
+            run_value = int(raw_timeout)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            run_value = 0
+
+    return max(env_value, run_value, 1500)
 
 
 def main() -> None:
@@ -106,17 +127,19 @@ def main() -> None:
     bitloops_metadata: dict[str, object] = {}
     task_daemon_handle = None
     if args.bitloops_init:
+        bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
         try:
             if bitloops_env is not None and bitloops_sandbox is not None:
                 task_daemon_handle = start_bitloops_task_daemon(
                     binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
-                    timeout=int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "180")),
+                    timeout=bitloops_setup_timeout_seconds,
                     env=bitloops_env,
                     sandbox=bitloops_sandbox,
                     cwd=str(workspace),
                 )
             bitloops_metadata = setup_bitloops_for_workspace(
                 agent_name="codex",
+                timeout_seconds=bitloops_setup_timeout_seconds,
                 sync=args.bitloops_sync == "true",
                 ingest=args.bitloops_ingest == "true",
                 embeddings_runtime=args.bitloops_embeddings_runtime,

@@ -135,6 +135,27 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(patch, "")
         self.assertEqual(source, "no_patch_found")
 
+    def test_call_command_tolerates_invalid_utf8_output(self) -> None:
+        stdout, stderr, return_code, elapsed_ms = common.call_command(
+            [
+                common.sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.buffer.write(b'\\xe2'); "
+                    "sys.stdout.flush(); "
+                    "sys.stderr.buffer.write(b'\\xff'); "
+                    "sys.stderr.flush()"
+                ),
+            ],
+            5,
+        )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(stdout, "\ufffd")
+        self.assertEqual(stderr, "\ufffd")
+        self.assertGreaterEqual(elapsed_ms, 0)
+
     def test_extract_usage_metrics_from_claude_style_json(self) -> None:
         payload = {
             "type": "result",
@@ -804,7 +825,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--telemetry=false",
                 "--sync=true",
-                "--ingest=false",
+                "--ingest=true",
             ],
         )
         self.assertFalse(metadata["bitloops_install_default_daemon"])
@@ -879,7 +900,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--telemetry=false",
                 "--sync=true",
-                "--ingest=false",
+                "--ingest=true",
             ],
         )
         self.assertEqual(
@@ -1008,7 +1029,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--telemetry=false",
                 "--sync=true",
-                "--ingest=false",
+                "--ingest=true",
                 "--no-embeddings",
             ],
         )
@@ -1070,6 +1091,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(
             env["AWS_SHARED_CREDENTIALS_FILE"],
             "/Users/tester/.aws/credentials",
+        )
+        self.assertEqual(
+            env["BITLOOPS_DAEMON_CONFIG_PATH_OVERRIDE"],
+            "/tmp/benchkit/home/Library/Application Support/bitloops/config.toml",
         )
         self.assertEqual(env["BITLOOPS_BENCHKIT_SANDBOX_MODE"], "per_task_daemon")
         self.assertEqual(env["PATH"], "/usr/bin")
@@ -1180,6 +1205,195 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 self.assertTrue((sandbox_home / ".aws" / "login" / "cache" / "token.json").exists())
                 self.assertTrue((sandbox_home / ".aws" / "sso" / "cache" / "token.json").exists())
 
+    def test_build_bitloops_task_environment_mirrors_opencode_auth_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_home = root / "real-home"
+            sandbox_home = root / "sandbox-home"
+            auth_path = original_home / ".local" / "share" / "opencode" / "auth.json"
+            config_path = original_home / ".config" / "opencode" / "opencode.json"
+            auth_path.parent.mkdir(parents=True)
+            config_path.parent.mkdir(parents=True)
+            auth_path.write_text('{"fireworks-ai":{"type":"api","key":"secret"}}', encoding="utf-8")
+            config_path.write_text('{"model":"fireworks-ai/accounts/fireworks/models/qwen3p6-plus"}', encoding="utf-8")
+            sandbox = {
+                "mode": "per_task_daemon",
+                "home_root": str(sandbox_home),
+                "xdg_config_home": str(sandbox_home / "xdg"),
+                "xdg_state_home": str(sandbox_home / "xdg-state"),
+                "xdg_cache_home": str(sandbox_home / "xdg-cache"),
+                "xdg_data_home": str(sandbox_home / "xdg-data"),
+            }
+            with patch.dict(
+                common.os.environ,
+                {"HOME": str(original_home)},
+                clear=True,
+            ):
+                env = common.build_bitloops_task_environment(sandbox)
+
+            assert env is not None
+            mirrored_auth = sandbox_home / "xdg-data" / "opencode" / "auth.json"
+            mirrored_config = sandbox_home / "xdg" / "opencode" / "opencode.json"
+            self.assertEqual(mirrored_auth.read_text(encoding="utf-8"), auth_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                mirrored_config.read_text(encoding="utf-8"),
+                config_path.read_text(encoding="utf-8"),
+            )
+
+    def test_build_bitloops_task_environment_mirrors_bitloops_auth_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_home = root / "real-home"
+            sandbox_home = root / "sandbox-home"
+            runtime_state_path = (
+                original_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
+            )
+            runtime_state_path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(runtime_state_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE runtime_documents (
+                        document_kind TEXT PRIMARY KEY,
+                        payload TEXT NOT NULL,
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    """
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO runtime_documents (document_kind, payload)
+                    VALUES (?, ?)
+                    """,
+                    [
+                        ("workos_auth_session_state", '{"token":"abc"}'),
+                        ("supervisor_service_metadata", '{"service":"global"}'),
+                    ],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            sandbox = {
+                "mode": "per_task_daemon",
+                "home_root": str(sandbox_home),
+                "xdg_config_home": str(sandbox_home / "xdg"),
+                "xdg_state_home": str(sandbox_home / "xdg-state"),
+                "xdg_cache_home": str(sandbox_home / "xdg-cache"),
+                "xdg_data_home": str(sandbox_home / "xdg-data"),
+            }
+            with patch.dict(
+                common.os.environ,
+                {"HOME": str(original_home)},
+                clear=True,
+            ):
+                env = common.build_bitloops_task_environment(sandbox)
+
+            assert env is not None
+            mirrored_runtime_state = (
+                sandbox_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
+            )
+            mirrored_connection = sqlite3.connect(mirrored_runtime_state)
+            try:
+                rows = mirrored_connection.execute(
+                    """
+                    SELECT document_kind, payload
+                    FROM runtime_documents
+                    ORDER BY document_kind
+                    """
+                ).fetchall()
+            finally:
+                mirrored_connection.close()
+            self.assertEqual(rows, [("workos_auth_session_state", '{"token":"abc"}')])
+
+    def test_wait_for_task_daemon_ready_uses_port_probe_only(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(common.urllib.request, "urlopen", return_value=_Response()) as mock_urlopen:
+            common._wait_for_task_daemon_ready(
+                timeout=1,
+                port=43210,
+                process=process,
+                stderr_log_path=Path("/tmp/nonexistent-daemon.stderr.log"),
+            )
+
+        mock_urlopen.assert_called_once_with("http://127.0.0.1:43210/devql/sdl", timeout=1)
+
+    def test_wait_for_task_daemon_ready_reports_early_process_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stderr_log_path = Path(temp_dir) / "daemon.stderr.log"
+            stderr_log_path.write_text("launch failed", encoding="utf-8")
+            process = SimpleNamespace(poll=lambda: 17)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"task daemon exited before becoming ready \(exit=17\)",
+            ):
+                common._wait_for_task_daemon_ready(
+                    timeout=1,
+                    port=43210,
+                    process=process,
+                    stderr_log_path=stderr_log_path,
+                )
+
+    def test_build_bitloops_task_environment_seeds_macos_keychain_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sandbox_home = root / "sandbox-home"
+            sandbox = {
+                "mode": "per_task_daemon",
+                "home_root": str(sandbox_home),
+                "xdg_config_home": str(sandbox_home / "xdg"),
+                "xdg_state_home": str(sandbox_home / "xdg-state"),
+                "xdg_cache_home": str(sandbox_home / "xdg-cache"),
+                "xdg_data_home": str(sandbox_home / "xdg-data"),
+            }
+
+            responses = iter(
+                [
+                    ("", "missing", 1, 0),
+                    ('"/Users/tester/Library/Keychains/login.keychain-db"\n', "", 0, 0),
+                    ("", "partial-write", 1, 0),
+                ]
+            )
+
+            def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
+                if command[:3] == ["security", "default-keychain", "-d"]:
+                    if len(command) == 4:
+                        return next(responses)
+                    self.assertEqual(
+                        command,
+                        [
+                            "security",
+                            "default-keychain",
+                            "-d",
+                            "user",
+                            "-s",
+                            "/Users/tester/Library/Keychains/login.keychain-db",
+                        ],
+                    )
+                    return next(responses)
+                self.fail(f"unexpected command: {command}")
+
+            with patch.object(common.sys, "platform", "darwin"), patch.dict(
+                common.os.environ,
+                {"HOME": "/Users/tester"},
+                clear=True,
+            ), patch.object(common, "call_command", side_effect=fake_call_command):
+                env = common.build_bitloops_task_environment(sandbox)
+
+            assert env is not None
+            self.assertTrue(
+                (sandbox_home / "Library" / "Preferences").is_dir(),
+                "sandbox preferences directory should be created for macOS keychain lookups",
+            )
+
     def test_setup_bitloops_uses_per_task_sandbox_without_global_lock(self) -> None:
         sandbox = {
             "mode": "per_task_daemon",
@@ -1240,130 +1454,298 @@ class AgentWrapperCommonTests(unittest.TestCase):
             sandbox["xdg_config_home"],
         )
 
-    def test_run_bitloops_init_shortcuts_when_runtime_sync_is_complete(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            workspace = root / "workspace"
-            workspace.mkdir()
-            home = root / "home"
-            runtime_dir = home / ".local" / "state" / "bitloops" / "daemon"
-            runtime_dir.mkdir(parents=True)
-            runtime_db = runtime_dir / "runtime.sqlite"
+    def test_setup_bitloops_per_task_sandbox_honors_install_default_daemon_request(self) -> None:
+        sandbox = {
+            "mode": "per_task_daemon",
+            "sandbox_root": "/tmp/benchkit/sandbox",
+            "home_root": "/tmp/benchkit/home",
+            "xdg_config_home": "/tmp/benchkit/home/xdg",
+            "xdg_state_home": "/tmp/benchkit/home/xdg-state",
+            "xdg_cache_home": "/tmp/benchkit/home/xdg-cache",
+            "xdg_data_home": "/tmp/benchkit/home/xdg-data",
+        }
+        handle = SimpleNamespace(
+            port=43123,
+            process=SimpleNamespace(pid=9981),
+            stderr_log_path=Path("/tmp/benchkit/daemon.stderr.log"),
+        )
 
-            connection = sqlite3.connect(runtime_db)
-            try:
-                connection.execute(
-                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
-                )
-                queue_payload = {
-                    "version": 1,
-                    "tasks": [
-                        {
-                            "task_id": "sync-task-1",
-                            "repo_root": str(workspace),
-                            "source": "init",
-                            "kind": "sync",
-                            "status": "completed",
-                            "init_session_id": "init-session-1",
-                            "submitted_at_unix": 100,
-                            "progress": {
-                                "type": "sync",
-                                "value": {
-                                    "phase": "complete",
-                                    "pathsTotal": 10,
-                                    "pathsCompleted": 10,
-                                    "pathsRemaining": 0,
-                                    "parseErrors": 0,
-                                },
-                            },
-                            "result": {
-                                "type": "sync",
-                                "value": {"success": True},
-                            },
-                        }
-                    ],
-                }
-                init_payload = {
-                    "version": 1,
-                    "sessions": [
-                        {
-                            "init_session_id": "init-session-1",
-                            "repo_root": str(workspace),
-                            "follow_up_sync_required": False,
-                            "initial_sync_completion_seq": 1,
-                            "submitted_at_unix": 100,
-                            "selections": {
-                                "run_sync": True,
-                                "embeddings_bootstrap": None,
-                            },
-                        }
-                    ],
-                }
-                enrichment_payload = {
-                    "version": 1,
-                    "jobs": [],
-                    "last_action": "completed",
-                }
-                for kind, payload in (
-                    ("devql_task_queue_state", queue_payload),
-                    ("init_session_state", init_payload),
-                    ("enrichment_queue_state", enrichment_payload),
-                ):
-                    connection.execute(
-                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
-                        (kind, json.dumps(payload)),
-                    )
-                connection.commit()
-            finally:
-                connection.close()
+        with patch.object(
+            common,
+            "_ensure_git_branch_for_bitloops_sync",
+            return_value=(False, False, None, None, 0),
+        ), patch.object(
+            common,
+            "_run_bitloops_init",
+            return_value={
+                "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
+                "bitloops_install_default_daemon": True,
+                "bitloops_init_fallback_used": False,
+                "bitloops_init_elapsed_ms": 11,
+            },
+        ) as mock_init:
+            common.setup_bitloops_for_workspace(
+                agent_name="claude-code",
+                bitloops_bin="bitloops",
+                timeout_seconds=30,
+                install_default_daemon=True,
+                embeddings_runtime="platform",
+                sandbox=sandbox,
+                env={"HOME": sandbox["home_root"]},
+                cwd="/tmp/workspace",
+                task_daemon_handle=handle,
+            )
 
-            class _HangingProcess:
-                def __init__(self) -> None:
-                    self.returncode = None
-                    self.terminated = False
+        self.assertTrue(mock_init.call_args.kwargs["install_default_daemon"])
+        self.assertEqual(mock_init.call_args.kwargs["embeddings_runtime"], "platform")
 
-                def poll(self) -> int | None:
-                    return None if not self.terminated else 0
+    def test_run_bitloops_init_shortcuts_when_init_status_is_complete(self) -> None:
+        shortcut_metadata = {
+            "status_command": ["bitloops", "init", "status", "--json"],
+            "current_init_session_id": "init-session-1",
+            "session": {
+                "initSessionId": "init-session-1",
+                "status": "completed",
+                "statusLabel": "Completed",
+                "followUpSyncRequired": False,
+                "summaryText": "Setup tasks completed",
+                "terminalError": None,
+                "lanes": [
+                    {
+                        "title": "Sync",
+                        "label": "sync",
+                        "status": "completed",
+                        "statusLabel": "Completed",
+                        "summaryText": "10 / 10 complete",
+                        "queue": {"queued": 0, "running": 0, "failed": 0},
+                        "warnings": [],
+                    }
+                ],
+            },
+        }
+        with patch.object(
+            common,
+            "_run_command_with_init_status_shortcut",
+            return_value=("", "", 0, 19, shortcut_metadata),
+        ) as mock_shortcut:
+            metadata = common._run_bitloops_init(
+                binary="bitloops",
+                timeout=30,
+                agent_name="claude-code",
+                sync=True,
+                ingest=False,
+                install_default_daemon=False,
+                embeddings_runtime=None,
+                no_embeddings=False,
+                env={
+                    "BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon",
+                },
+                cwd="/tmp/workspace",
+            )
 
-                def terminate(self) -> None:
-                    self.terminated = True
-                    self.returncode = 0
-
-                def kill(self) -> None:
-                    self.terminated = True
-                    self.returncode = -9
-
-                def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-                    _ = timeout
-                    return "", ""
-
-            process = _HangingProcess()
-            with patch.object(common.subprocess, "Popen", return_value=process):
-                metadata = common._run_bitloops_init(
-                    binary="bitloops",
-                    timeout=30,
-                    agent_name="claude-code",
-                    sync=True,
-                    ingest=False,
-                    install_default_daemon=False,
-                    embeddings_runtime=None,
-                    no_embeddings=False,
-                    env={
-                        "HOME": str(home),
-                        "BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon",
-                    },
-                    cwd=str(workspace),
-                )
-
-        self.assertTrue(metadata["bitloops_init_runtime_ready_shortcut_used"])
-        self.assertEqual(metadata["bitloops_init_command"][0:4], ["bitloops", "init", "--agent", "claude-code"])
-        ready = metadata["bitloops_init_runtime_ready_shortcut"]
+        mock_shortcut.assert_called_once()
+        self.assertTrue(metadata["bitloops_init_status_shortcut_used"])
+        self.assertEqual(metadata["bitloops_init_status_command"], ["bitloops", "init", "status", "--json"])
+        self.assertFalse(metadata["bitloops_init_runtime_ready_shortcut_used"])
+        ready = metadata["bitloops_init_status_shortcut"]
         assert isinstance(ready, dict)
-        self.assertEqual(ready["sync_phase"], "complete")
-        self.assertEqual(ready["paths_completed"], 10)
-        self.assertEqual(ready["paths_remaining"], 0)
-        self.assertFalse(ready["embeddings_bootstrap_requested"])
-        self.assertEqual(ready["embeddings_gate_readiness"], "not_requested")
+        self.assertEqual(ready["current_init_session_id"], "init-session-1")
+        session = ready["session"]
+        assert isinstance(session, dict)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(session["summaryText"], "Setup tasks completed")
+
+    def test_run_command_with_init_status_shortcut_returns_when_session_completes(self) -> None:
+        class _HangingProcess:
+            def __init__(self) -> None:
+                self.returncode = None
+                self.terminated = False
+
+            def poll(self) -> int | None:
+                return None if not self.terminated else 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = 0
+
+            def kill(self) -> None:
+                self.terminated = True
+                self.returncode = -9
+
+            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+                _ = timeout
+                return "", ""
+
+        status_payloads = [
+            {
+                "repoId": "repo-1",
+                "requestedSessionId": None,
+                "currentInitSessionId": None,
+                "session": None,
+            },
+            {
+                "repoId": "repo-1",
+                "requestedSessionId": None,
+                "currentInitSessionId": "init-session-1",
+                "session": {
+                    "initSessionId": "init-session-1",
+                    "status": "completed",
+                    "statusLabel": "Completed",
+                    "followUpSyncRequired": False,
+                    "summaryText": "Setup tasks completed",
+                    "terminalError": None,
+                    "lanes": [
+                        {
+                            "title": "Code Embeddings",
+                            "label": "code_embeddings",
+                            "status": "completed",
+                            "statusLabel": "Completed",
+                            "summaryText": "Code embeddings complete",
+                            "queue": {"queued": 0, "running": 0, "failed": 0},
+                            "warnings": [],
+                        }
+                    ],
+                },
+            },
+        ]
+        status_calls = [
+            (json.dumps(payload), "", 0, 4)
+            for payload in status_payloads
+        ]
+        process = _HangingProcess()
+
+        with patch.object(common.subprocess, "Popen", return_value=process), patch.object(
+            common,
+            "call_command",
+            side_effect=status_calls,
+        ) as mock_call, patch.object(common.time, "sleep") as mock_sleep:
+            stdout, stderr, return_code, elapsed_ms, metadata = (
+                common._run_command_with_init_status_shortcut(
+                    command=["bitloops", "init", "--agent", "claude-code"],
+                    timeout_seconds=30,
+                    env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
+                    cwd="/tmp/workspace",
+                )
+            )
+
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(return_code, 0)
+        self.assertGreaterEqual(elapsed_ms, 0)
+        self.assertTrue(process.terminated)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["current_init_session_id"], "init-session-1")
+        session = metadata["session"]
+        assert isinstance(session, dict)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(session["statusLabel"], "Completed")
+        self.assertEqual(session["summaryText"], "Setup tasks completed")
+        first_call = mock_call.call_args_list[0].args[0]
+        self.assertEqual(first_call, ["bitloops", "init", "status", "--json"])
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_run_command_with_init_status_shortcut_tolerates_invalid_utf8_output(self) -> None:
+        status_payload = {
+            "repoId": "repo-1",
+            "requestedSessionId": None,
+            "currentInitSessionId": "init-session-1",
+            "session": {
+                "initSessionId": "init-session-1",
+                "status": "completed",
+                "statusLabel": "Completed",
+                "followUpSyncRequired": False,
+                "summaryText": "Setup tasks completed",
+                "terminalError": None,
+                "lanes": [],
+            },
+        }
+
+        def _status_call(*_args, **_kwargs):
+            common.time.sleep(0.1)
+            return json.dumps(status_payload), "", 0, 4
+
+        with patch.object(
+            common,
+            "call_command",
+            side_effect=_status_call,
+        ):
+            stdout, stderr, return_code, elapsed_ms, metadata = (
+                common._run_command_with_init_status_shortcut(
+                    command=[
+                        common.sys.executable,
+                        "-c",
+                        (
+                            "import sys, time; "
+                            "sys.stdout.buffer.write(b'\\xe2'); "
+                            "sys.stdout.flush(); "
+                            "time.sleep(30)"
+                        ),
+                    ],
+                    timeout_seconds=30,
+                    env=None,
+                    cwd=None,
+                )
+            )
+
+        self.assertEqual(stdout, "\ufffd")
+        self.assertEqual(stderr, "")
+        self.assertEqual(return_code, 0)
+        self.assertGreaterEqual(elapsed_ms, 0)
+        self.assertIsInstance(metadata, dict)
+
+    def test_run_bitloops_init_uses_init_status_shortcut_even_when_sync_is_false(self) -> None:
+        shortcut_metadata = {
+            "current_init_session_id": "init-session-1",
+            "session": {
+                "initSessionId": "init-session-1",
+                "status": "completed",
+                "statusLabel": "Completed",
+                "followUpSyncRequired": False,
+                "summaryText": "Setup tasks completed",
+                "terminalError": None,
+                "lanes": [],
+            },
+        }
+        with patch.object(
+            common,
+            "_run_command_with_init_status_shortcut",
+            return_value=("", "", 0, 17, shortcut_metadata),
+            create=True,
+        ) as mock_shortcut, patch.object(
+            common,
+            "call_command",
+            side_effect=AssertionError("plain init execution should not be used"),
+        ):
+            metadata = common._run_bitloops_init(
+                binary="bitloops",
+                timeout=30,
+                agent_name="claude-code",
+                sync=False,
+                ingest=False,
+                install_default_daemon=False,
+                embeddings_runtime=None,
+                no_embeddings=False,
+                env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
+                cwd="/tmp/workspace",
+            )
+
+        mock_shortcut.assert_called_once()
+        self.assertTrue(metadata["bitloops_init_status_shortcut_used"])
+        self.assertEqual(metadata["bitloops_init_elapsed_ms"], 17)
+        self.assertEqual(
+            metadata["bitloops_init_command"],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "claude-code",
+                "--telemetry=false",
+                "--sync=false",
+                "--ingest=false",
+            ],
+        )
+        session = metadata["bitloops_init_status_shortcut"]["session"]
+        self.assertEqual(session["status"], "completed")
 
     def test_debug_log_does_not_post_without_opt_in(self) -> None:
         with patch.object(common, "DEBUG_LOG_PATH", Path("/dev/null/debug.log")), patch.object(
