@@ -6,6 +6,7 @@ quickly finding the results.
 ## 1) Prerequisites and preflight checks
 
 Required:
+
 - Python `>=3.11`
 - `git`
 - Docker Desktop running
@@ -80,6 +81,7 @@ export BENCHKIT_REQUIRE_EXACT_TOOLS=1
 ```
 
 Notes:
+
 - Bedrock auth is not required for Codex or OpenCode runs.
 - Bedrock auth is not required just because you are using Bitloops, embeddings,
   or summaries.
@@ -117,13 +119,16 @@ The canonical multi-repo Claude + Bitloops config is:
 `configs/swebench/rust_all_repos_claude_with_bitloops.toml`
 
 It uses:
+
 - `condition = "with_bitloops"`
 - per-task Bitloops sandboxing
 - platform embeddings runtime
 - the current Claude Bedrock model map
 
 There are also narrower starting points, such as:
+
 - `configs/swebench/rust_opencode.toml` (Use this for OpenCode)
+- `configs/swebench/rust_opencode_baseline.toml` (Use this for OpenCode baseline - no Bitloops)
 - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml`
 - `configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml`
 
@@ -189,6 +194,7 @@ max_instances = 5
 ```
 
 Important:
+
 - `max_instances` limits how many tasks run after repo/language/task filters are
   applied.
 - `max_workers` is only parallelism. It does not change how many tasks are
@@ -222,15 +228,15 @@ extra_args = [
 These wrapper flags are currently supported by Claude, Codex, and OpenCode
 Bitloops runs:
 
-| Flag | Values | Purpose |
-| --- | --- | --- |
-| `--bitloops-init` | none | Run Bitloops setup before the agent starts |
-| `--bitloops-sync` | `true`, `false` | Control whether init queues sync |
-| `--bitloops-ingest` | `true`, `false` | Control whether init queues ingest |
-| `--bitloops-embeddings-runtime` | `local`, `platform` | Select embeddings runtime for init |
-| `--bitloops-no-embeddings` | none | Disable embeddings setup during init |
-| `--bitloops-summary-mode` | `auto`, `off` | Override summary mode in task-local config |
-| `--bitloops-embedding-mode` | `off`, `deterministic`, `refresh_on_upgrade`, `semantic_aware_once` | Override embedding mode in task-local config |
+| Flag                            | Values                                                              | Purpose                                      |
+| ------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
+| `--bitloops-init`               | none                                                                | Run Bitloops setup before the agent starts   |
+| `--bitloops-sync`               | `true`, `false`                                                     | Control whether init queues sync             |
+| `--bitloops-ingest`             | `true`, `false`                                                     | Control whether init queues ingest           |
+| `--bitloops-embeddings-runtime` | `local`, `platform`                                                 | Select embeddings runtime for init           |
+| `--bitloops-no-embeddings`      | none                                                                | Disable embeddings setup during init         |
+| `--bitloops-summary-mode`       | `auto`, `off`                                                       | Override summary mode in task-local config   |
+| `--bitloops-embedding-mode`     | `off`, `deterministic`, `refresh_on_upgrade`, `semantic_aware_once` | Override embedding mode in task-local config |
 
 Use benchmark TOML `extra_args` to request those overrides. You do not need to
 manually create the repo-local `config.toml` for benchmark runs.
@@ -254,6 +260,7 @@ max_workers = 1
 ```
 
 Check that:
+
 - `Selected instances` is the count you expect
 - sample IDs include the tasks you want
 
@@ -281,6 +288,7 @@ ls -1t runs/swebench_multilingual/$(date +%Y%m%d) | head -n 1
 ```
 
 Inside the run folder:
+
 - `run_manifest.json`
 - `summary.json`
 - `instances.jsonl`
@@ -292,6 +300,7 @@ Inside the run folder:
 ### Appendix outputs
 
 Inside your appendix directory:
+
 - `appendix_minimal_per_task_log.csv`
 - `appendix_minimal_results_table.csv`
 - `appendix_per_attempt_breakdown.md`
