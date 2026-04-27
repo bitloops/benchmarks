@@ -9,6 +9,8 @@ canonical run-level summary in one pass.
   --output-dir reports/appendix/my_report
 ```
 
+For a single run, `./scripts/swebench/generate_run_report.sh <run-root>` calls the same module and writes to `reports/appendix/<basename>/` (the run folder name, for example `20260427_140322_1f39e8`). An optional second argument overrides that subdirectory name.
+
 Repeat `--run-root` to bundle multiple runs into the same output directory.
 
 Generated files include:
