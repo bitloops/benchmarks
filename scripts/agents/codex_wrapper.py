@@ -68,9 +68,14 @@ def parse_args() -> argparse.Namespace:
         help="Disable embeddings setup during Bitloops init.",
     )
     parser.add_argument(
+        "--bitloops-no-summaries",
+        action="store_true",
+        help="Disable summaries setup during Bitloops init.",
+    )
+    parser.add_argument(
         "--bitloops-summary-mode",
         choices=("auto", "off"),
-        help="Repo-local Bitloops summary mode override to apply after init.",
+        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
     )
     parser.add_argument(
         "--bitloops-embedding-mode",
@@ -144,6 +149,7 @@ def main() -> None:
                 ingest=args.bitloops_ingest == "true",
                 embeddings_runtime=args.bitloops_embeddings_runtime,
                 no_embeddings=args.bitloops_no_embeddings,
+                no_summaries=args.bitloops_no_summaries,
                 summary_mode=args.bitloops_summary_mode,
                 embedding_mode=args.bitloops_embedding_mode,
                 sandbox=bitloops_sandbox,

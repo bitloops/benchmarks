@@ -76,8 +76,17 @@ Optional wrapper argument:
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
   - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true`
 - `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime used during `bitloops init`
+- `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
+- `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`
+- `--bitloops-summary-mode <auto|off>`: benchmark-wrapper control; `auto` leaves Bitloops init at its default summary behavior, and `off` is a compatibility alias for `--bitloops-no-summaries`
 
-Current Claude + Bitloops configs use:
+When both embeddings and summaries are off, benchmark wrappers now issue:
+
+```bash
+bitloops init --no-embeddings --no-summaries
+```
+
+When both are enabled, use:
 
 ```toml
 [run]
@@ -86,7 +95,11 @@ workspace_timeout_seconds = 1800
 bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
+extra_args = [
+  "--bitloops-init",
+  "--bitloops-embeddings-runtime", "platform",
+  "--bitloops-summary-mode", "auto",
+]
 ```
 
 ## Claude Wrapper

@@ -1233,11 +1233,14 @@ def _run_bitloops_init(
     install_default_daemon: bool,
     embeddings_runtime: str | None,
     no_embeddings: bool,
+    no_summaries: bool = False,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
 ) -> dict[str, Any]:
     include_install_default_daemon = install_default_daemon
     include_ingest_flag = True
+    include_no_summaries_flag = no_summaries
+    effective_embeddings_runtime = None if no_embeddings else embeddings_runtime
     init_fallback_used = False
     init_command: list[str] = []
     init_stdout = ""
@@ -1266,10 +1269,12 @@ def _run_bitloops_init(
             init_command.append("--install-default-daemon")
         if include_ingest_flag:
             init_command.append(f"--ingest={'true' if ingest else 'false'}")
-        if embeddings_runtime:
-            init_command.extend(["--embeddings-runtime", embeddings_runtime])
         if no_embeddings:
             init_command.append("--no-embeddings")
+        elif effective_embeddings_runtime:
+            init_command.extend(["--embeddings-runtime", effective_embeddings_runtime])
+        if include_no_summaries_flag:
+            init_command.append("--no-summaries")
 
         use_init_status_shortcut = (
             isinstance(env, dict)
@@ -1314,6 +1319,16 @@ def _run_bitloops_init(
             init_stderr,
         ):
             include_install_default_daemon = False
+            fallback_applied = True
+        if include_no_summaries_flag and _bitloops_init_rejects_no_summaries_flag(
+            init_stdout,
+            init_stderr,
+        ):
+            include_no_summaries_flag = False
+            _apply_bitloops_repo_semantic_modes(
+                summary_mode="off",
+                cwd=cwd,
+            )
             fallback_applied = True
 
         if not fallback_applied:
@@ -1371,6 +1386,7 @@ def setup_bitloops_for_workspace(
     install_default_daemon: bool = True,
     embeddings_runtime: str | None = None,
     no_embeddings: bool = False,
+    no_summaries: bool = False,
     summary_mode: str | None = None,
     embedding_mode: str | None = None,
     sandbox: dict[str, Any] | None = None,
@@ -1392,8 +1408,12 @@ def setup_bitloops_for_workspace(
         env=env,
         cwd=cwd,
     )
+    requested_summary_mode = (
+        summary_mode.strip().lower() if isinstance(summary_mode, str) and summary_mode.strip() else None
+    )
+    effective_no_summaries = no_summaries or requested_summary_mode == "off"
+    effective_summary_mode = "off" if effective_no_summaries else requested_summary_mode
     repo_config_path = _apply_bitloops_repo_semantic_modes(
-        summary_mode=summary_mode,
         embedding_mode=embedding_mode,
         cwd=cwd,
     )
@@ -1459,6 +1479,7 @@ def setup_bitloops_for_workspace(
             install_default_daemon=install_default_daemon,
             embeddings_runtime=embeddings_runtime,
             no_embeddings=no_embeddings,
+            no_summaries=effective_no_summaries,
             env=sandbox_env,
             cwd=cwd,
         )
@@ -1489,6 +1510,7 @@ def setup_bitloops_for_workspace(
                     install_default_daemon=False,
                     embeddings_runtime=embeddings_runtime,
                     no_embeddings=no_embeddings,
+                    no_summaries=effective_no_summaries,
                     env=env,
                     cwd=cwd,
                 )
@@ -1508,6 +1530,7 @@ def setup_bitloops_for_workspace(
                 install_default_daemon=install_default_daemon,
                 embeddings_runtime=embeddings_runtime,
                 no_embeddings=no_embeddings,
+                no_summaries=effective_no_summaries,
                 env=env,
                 cwd=cwd,
             )
@@ -1542,7 +1565,8 @@ def setup_bitloops_for_workspace(
         "bitloops_install_default_daemon_requested": install_default_daemon,
         "bitloops_embeddings_runtime": embeddings_runtime,
         "bitloops_no_embeddings": no_embeddings,
-        "bitloops_summary_mode": summary_mode,
+        "bitloops_no_summaries": effective_no_summaries,
+        "bitloops_summary_mode": effective_summary_mode,
         "bitloops_embedding_mode": embedding_mode,
         "bitloops_git_detached_head": git_detached_head,
         "bitloops_git_checkout_attempted": git_checkout_attempted,
@@ -1558,8 +1582,8 @@ def setup_bitloops_for_workspace(
 
 def _apply_bitloops_repo_semantic_modes(
     *,
-    summary_mode: str | None,
-    embedding_mode: str | None,
+    summary_mode: str | None = None,
+    embedding_mode: str | None = None,
     cwd: str | None = None,
 ) -> Path | None:
     updates = {
@@ -1637,6 +1661,11 @@ def _bitloops_init_rejects_install_default_daemon_flag(
 ) -> bool:
     text = "\n".join((stdout, stderr)).strip().lower()
     return "unexpected argument '--install-default-daemon'" in text
+
+
+def _bitloops_init_rejects_no_summaries_flag(stdout: str, stderr: str) -> bool:
+    text = "\n".join((stdout, stderr)).strip().lower()
+    return "unexpected argument '--no-summaries'" in text
 
 
 def _bitloops_init_hit_database_lock(stdout: str, stderr: str) -> bool:

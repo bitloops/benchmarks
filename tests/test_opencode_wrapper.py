@@ -29,6 +29,11 @@ wrapper = _load_wrapper_module()
 
 
 class OpencodeWrapperTests(unittest.TestCase):
+    def test_parse_args_accepts_bitloops_no_summaries_flag(self) -> None:
+        with patch.object(sys, "argv", ["opencode_wrapper.py", "--bitloops-no-summaries"]):
+            args = wrapper.parse_args()
+        self.assertTrue(args.bitloops_no_summaries)
+
     def test_resolve_raw_output_paths_uses_attempt_dir_and_instance_id(self) -> None:
         payload = {
             "instance_id": "tokio-rs__axum-1119",

@@ -42,6 +42,43 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Initialize Bitloops before running the agent command.",
     )
+    parser.add_argument(
+        "--bitloops-sync",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue sync.",
+    )
+    parser.add_argument(
+        "--bitloops-ingest",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue ingest.",
+    )
+    parser.add_argument(
+        "--bitloops-embeddings-runtime",
+        choices=("local", "platform"),
+        help="Embeddings runtime to configure during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-embeddings",
+        action="store_true",
+        help="Disable embeddings setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-summaries",
+        action="store_true",
+        help="Disable summaries setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-summary-mode",
+        choices=("auto", "off"),
+        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
+    )
+    parser.add_argument(
+        "--bitloops-embedding-mode",
+        choices=("off", "deterministic", "refresh_on_upgrade", "semantic_aware_once"),
+        help="Repo-local Bitloops embedding mode override to apply after init.",
+    )
     args, _ = parser.parse_known_args()
     return args
 
@@ -105,6 +142,13 @@ def main() -> None:
             bitloops_metadata = setup_bitloops_for_workspace(
                 agent_name="cursor",
                 timeout_seconds=bitloops_setup_timeout_seconds,
+                sync=args.bitloops_sync == "true",
+                ingest=args.bitloops_ingest == "true",
+                embeddings_runtime=args.bitloops_embeddings_runtime,
+                no_embeddings=args.bitloops_no_embeddings,
+                no_summaries=args.bitloops_no_summaries,
+                summary_mode=args.bitloops_summary_mode,
+                embedding_mode=args.bitloops_embedding_mode,
                 sandbox=bitloops_sandbox,
                 env=bitloops_env,
                 cwd=str(workspace),

@@ -27,6 +27,11 @@ wrapper = _load_wrapper_module()
 
 
 class ClaudeCodeWrapperTests(unittest.TestCase):
+    def test_parse_args_accepts_bitloops_no_summaries_flag(self) -> None:
+        with patch.object(sys, "argv", ["claude_code_wrapper.py", "--bitloops-no-summaries"]):
+            args = wrapper.parse_args()
+        self.assertTrue(args.bitloops_no_summaries)
+
     def test_resolve_timeout_uses_larger_env_override(self) -> None:
         payload = {"run": {"timeout_seconds": 3600}}
         with patch.dict(wrapper.os.environ, {"CLAUDE_TIMEOUT_SECONDS": "7200"}, clear=True):
