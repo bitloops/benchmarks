@@ -4,13 +4,13 @@
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
 split = "test"
-language = "rust"
+# language = "rust"
 condition = "baseline"
 include_repos = []
 # Put your instance ID here
-include_instance_ids = ["tokio-rs__tokio-4384"]
+include_instance_ids = ["uutils__coreutils-6731"]
 max_instances = 1
-attempts = 1
+attempts = 3
 timeout_seconds = 900
 output_root = "runs"
 prepare_workspace = true
