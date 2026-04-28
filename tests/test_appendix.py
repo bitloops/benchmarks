@@ -28,9 +28,11 @@ class AppendixTests(unittest.TestCase):
             write_json(
                 run_root / "run_manifest.json",
                 {
+                    "run_id": "run-1",
                     "benchmark": "swebench_multilingual",
                     "dataset_path": "datasets/sample.jsonl",
                     "split": "dev",
+                    "language": "rust",
                     "condition": "baseline",
                     "agent": {"id": "claude_code"},
                     "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
@@ -70,6 +72,8 @@ class AppendixTests(unittest.TestCase):
                 metadata = {
                     "token_input": str(1000 + index),
                     "token_output": 220 + index,
+                    "reasoning_output_tokens": 30 + index,
+                    "total_tokens": 1300 + index,
                     "cache_creation_input_tokens": 10 + index,
                     "cache_read_input_tokens": 20 + index,
                     "cache_creation_ephemeral_5m_input_tokens": 7 + index,
@@ -163,13 +167,17 @@ class AppendixTests(unittest.TestCase):
             self.assertEqual(per_task[0]["status"], "solved")
             self.assertEqual(per_task[0]["token_input"], 1001)
             self.assertEqual(per_task[0]["token_output"], 221)
+            self.assertEqual(per_task[0]["reasoning_output_tokens"], 31)
+            self.assertEqual(per_task[0]["total_tokens"], 1301)
             self.assertEqual(per_task[0]["estimated_cost"], 0.04)
             self.assertEqual(per_task[0]["cache_creation_input_tokens"], 11)
             self.assertEqual(per_task[0]["cache_read_input_tokens"], 21)
             self.assertEqual(per_task[0]["cache_creation_ephemeral_5m_input_tokens"], 8)
             self.assertEqual(per_task[0]["cache_creation_ephemeral_1h_input_tokens"], 3)
-            self.assertEqual(per_task[0]["bedrock_quota_tokens"], 2117)
-            self.assertAlmostEqual(per_task[0]["bedrock_cost_usd"], 0.0106205)
+            self.assertIsNone(per_task[0]["cached_input_tokens"])
+            self.assertIsNone(per_task[0]["cached_output_tokens"])
+            self.assertEqual(per_task[0]["token_input_uncached"], 1001)
+            self.assertEqual(per_task[0]["token_output_uncached"], 221)
             self.assertEqual(per_task[0]["tool_calls"], 7)
             self.assertEqual(per_task[0]["shell_commands"], 3)
             self.assertEqual(per_task[0]["file_reads"], 8)
@@ -293,7 +301,7 @@ class AppendixTests(unittest.TestCase):
             self.assertEqual(row["variance_cost"], "")
             self.assertEqual(row["stddev_cost"], "")
 
-    def test_bedrock_quota_tokens_require_bedrock_model_and_cache_field(self) -> None:
+    def test_openai_estimated_cost_fallback_for_supported_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             run_root = root / "run-1"
@@ -307,8 +315,8 @@ class AppendixTests(unittest.TestCase):
                     "dataset_path": "datasets/sample.jsonl",
                     "split": "dev",
                     "condition": "baseline",
-                    "agent": {"id": "claude_code"},
-                    "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
+                    "agent": {"id": "codex"},
+                    "model": {"resolved_name": "gpt-5.4"},
                 },
             )
             write_jsonl(
@@ -357,10 +365,93 @@ class AppendixTests(unittest.TestCase):
             ]
             self.assertIsNone(per_task[0]["cache_creation_input_tokens"])
             self.assertIsNone(per_task[0]["cache_read_input_tokens"])
-            self.assertIsNone(per_task[0]["bedrock_quota_tokens"])
-            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
+            self.assertIsNone(per_task[0]["reasoning_output_tokens"])
+            self.assertEqual(per_task[0]["total_tokens"], 13)
+            self.assertEqual(per_task[0]["token_input_uncached"], 10)
+            self.assertEqual(per_task[0]["token_output_uncached"], 3)
+            self.assertAlmostEqual(per_task[0]["estimated_cost"], 0.00007)
 
-    def test_bedrock_quota_tokens_remain_blank_for_non_bedrock_model(self) -> None:
+    def test_cached_token_columns_and_uncached_derivation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "condition": "baseline",
+                    "agent": {"id": "codex"},
+                    "model": {"resolved_name": "gpt-5.4"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:claude_code",
+                        "model_patch": "",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {
+                            "token_input": 10,
+                            "token_output": 3,
+                            "cached_input_tokens": 4,
+                            "cached_output_tokens": 1,
+                            "cache_creation_input_tokens": 2,
+                            "cache_read_input_tokens": 1,
+                            "cache_creation_ephemeral_5m_input_tokens": 1,
+                            "cache_creation_ephemeral_1h_input_tokens": 1,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(attempt_dir / "evaluation.tasks.jsonl", [])
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+
+            per_task = [
+                json.loads(line)
+                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(per_task[0]["cached_input_tokens"], 4)
+            self.assertEqual(per_task[0]["cached_output_tokens"], 1)
+            self.assertEqual(per_task[0]["total_tokens"], 13)
+            self.assertEqual(per_task[0]["token_input_uncached"], 6)
+            self.assertEqual(per_task[0]["token_output_uncached"], 2)
+            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 2)
+            self.assertEqual(per_task[0]["cache_read_input_tokens"], 1)
+            self.assertAlmostEqual(per_task[0]["estimated_cost"], 0.000061)
+
+    def test_estimated_cost_remains_blank_for_unknown_model_without_explicit_cost(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             run_root = root / "run-1"
@@ -412,8 +503,6 @@ class AppendixTests(unittest.TestCase):
                             "token_output": 3,
                             "cache_creation_input_tokens": 2,
                             "cache_read_input_tokens": 1,
-                            "cache_creation_ephemeral_5m_input_tokens": 1,
-                            "cache_creation_ephemeral_1h_input_tokens": 1,
                         },
                     }
                 ],
@@ -429,80 +518,7 @@ class AppendixTests(unittest.TestCase):
                 json.loads(line)
                 for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
             ]
-            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 2)
-            self.assertEqual(per_task[0]["cache_read_input_tokens"], 1)
-            self.assertIsNone(per_task[0]["bedrock_quota_tokens"])
-            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
-
-    def test_bedrock_cost_usd_requires_cache_write_breakdown(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            run_root = root / "run-1"
-            attempt_dir = run_root / "attempts" / "attempt-01"
-            attempt_dir.mkdir(parents=True, exist_ok=True)
-
-            write_json(
-                run_root / "run_manifest.json",
-                {
-                    "benchmark": "swebench_multilingual",
-                    "dataset_path": "datasets/sample.jsonl",
-                    "split": "dev",
-                    "condition": "baseline",
-                    "agent": {"id": "claude_code"},
-                    "model": {"resolved_name": "eu.anthropic.claude-opus-4-6-v1"},
-                },
-            )
-            write_jsonl(
-                run_root / "instances.jsonl",
-                [
-                    {
-                        "instance_id": "tokio__1",
-                        "repo": "tokio-rs/tokio",
-                        "language": "rust",
-                        "base_commit": "abc",
-                        "problem_statement": "Fix",
-                        "metadata": {},
-                    }
-                ],
-            )
-            write_jsonl(
-                attempt_dir / "predictions.jsonl",
-                [
-                    {
-                        "instance_id": "tokio__1",
-                        "model_name_or_path": "agent:claude_code",
-                        "model_patch": "",
-                    }
-                ],
-            )
-            write_jsonl(
-                attempt_dir / "trace.jsonl",
-                [
-                    {
-                        "instance_id": "tokio__1",
-                        "status": "ok",
-                        "metadata": {
-                            "token_input": 10,
-                            "token_output": 3,
-                            "cache_creation_input_tokens": 2,
-                            "cache_read_input_tokens": 1,
-                        },
-                    }
-                ],
-            )
-            write_jsonl(attempt_dir / "evaluation.tasks.jsonl", [])
-
-            outputs = generate_appendix_files(
-                run_roots=[run_root],
-                output_dir=root / "reports",
-            )
-
-            per_task = [
-                json.loads(line)
-                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
-            ]
-            self.assertEqual(per_task[0]["bedrock_quota_tokens"], 27)
-            self.assertIsNone(per_task[0]["bedrock_cost_usd"])
+            self.assertIsNone(per_task[0]["estimated_cost"])
 
     def test_tool_invocation_markdown_separates_same_task_by_agent_and_model(self) -> None:
         markdown = _render_tool_invocation_markdown(

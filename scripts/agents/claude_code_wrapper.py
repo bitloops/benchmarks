@@ -7,6 +7,7 @@ import sys
 
 from common import (  # type: ignore[import-not-found]
     call_command,
+    build_bitloops_task_environment,
     capture_workspace_patch,
     _debug_log,
     emit_success,
@@ -26,8 +27,11 @@ from common import (  # type: ignore[import-not-found]
     read_payload_from_stdin,
     render_task_prompt,
     reset_workspace,
+    resolve_bitloops_sandbox,
     resolve_workspace,
     setup_bitloops_for_workspace,
+    start_bitloops_task_daemon,
+    stop_bitloops_task_daemon,
     summarize_tool_invocation_counts,
     summarize_command_failure,
     validate_exact_tool_capture,
@@ -41,8 +45,87 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Initialize Bitloops before running the agent command.",
     )
+    parser.add_argument(
+        "--bitloops-sync",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue sync.",
+    )
+    parser.add_argument(
+        "--bitloops-ingest",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue ingest.",
+    )
+    parser.add_argument(
+        "--bitloops-embeddings-runtime",
+        choices=("local", "platform"),
+        help="Embeddings runtime to configure during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-embeddings",
+        action="store_true",
+        help="Disable embeddings setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-summaries",
+        action="store_true",
+        help="Disable summaries setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-summary-mode",
+        choices=("auto", "off"),
+        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
+    )
+    parser.add_argument(
+        "--bitloops-embedding-mode",
+        choices=("off", "deterministic", "refresh_on_upgrade", "semantic_aware_once"),
+        help="Repo-local Bitloops embedding mode override to apply after init.",
+    )
     args, _ = parser.parse_known_args()
     return args
+
+
+def _resolve_claude_timeout_seconds(payload: dict[str, object]) -> int:
+    env_timeout = os.environ.get("CLAUDE_TIMEOUT_SECONDS", "").strip()
+    env_value = 0
+    if env_timeout:
+        try:
+            env_value = int(env_timeout)
+        except ValueError:
+            env_value = 0
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        raw_timeout = run.get("timeout_seconds")
+        try:
+            run_value = int(raw_timeout)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            run_value = 0
+
+    return max(env_value, run_value, 900)
+
+
+def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
+    env_timeout = os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "").strip()
+    env_value = 0
+    if env_timeout:
+        try:
+            env_value = int(env_timeout)
+        except ValueError:
+            env_value = 0
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        raw_timeout = run.get("timeout_seconds")
+        try:
+            run_value = int(raw_timeout)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            run_value = 0
+
+    return max(env_value, run_value, 1500)
 
 
 def main() -> None:
@@ -57,6 +140,8 @@ def main() -> None:
     )
 
     workspace = resolve_workspace(payload)
+    bitloops_sandbox = resolve_bitloops_sandbox(payload)
+    bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
     prompt = render_task_prompt(payload, wrapper_name="claude_code")
 
     try:
@@ -68,10 +153,35 @@ def main() -> None:
         )
 
     bitloops_metadata: dict[str, object] = {}
+    task_daemon_handle = None
     if args.bitloops_init:
+        bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
         try:
-            bitloops_metadata = setup_bitloops_for_workspace(agent_name="claude-code")
+            if bitloops_env is not None and bitloops_sandbox is not None:
+                task_daemon_handle = start_bitloops_task_daemon(
+                    binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
+                    timeout=bitloops_setup_timeout_seconds,
+                    env=bitloops_env,
+                    sandbox=bitloops_sandbox,
+                    cwd=str(workspace),
+                )
+            bitloops_metadata = setup_bitloops_for_workspace(
+                agent_name="claude-code",
+                timeout_seconds=bitloops_setup_timeout_seconds,
+                sync=args.bitloops_sync == "true",
+                ingest=args.bitloops_ingest == "true",
+                embeddings_runtime=args.bitloops_embeddings_runtime,
+                no_embeddings=args.bitloops_no_embeddings,
+                no_summaries=args.bitloops_no_summaries,
+                summary_mode=args.bitloops_summary_mode,
+                embedding_mode=args.bitloops_embedding_mode,
+                sandbox=bitloops_sandbox,
+                env=bitloops_env,
+                cwd=str(workspace),
+                task_daemon_handle=task_daemon_handle,
+            )
         except Exception as exc:
+            stop_bitloops_task_daemon(task_daemon_handle)
             fatal_error(
                 "bitloops setup failed",
                 details={"error": str(exc), "workspace": str(workspace)},
@@ -99,20 +209,31 @@ def main() -> None:
         command.append("--include-partial-messages")
     command.extend(extra_args)
     command.append(prompt)
-    timeout_seconds = int(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "900"))
+    timeout_seconds = _resolve_claude_timeout_seconds(payload)
 
-    stdout, stderr, return_code, elapsed_ms = call_command(command, timeout_seconds)
-    if (
-        return_code != 0
-        and output_format == "stream-json"
-        and "requires --verbose" in stderr.lower()
-        and "--verbose" not in command
-    ):
-        retry_command = command[:-1] + ["--verbose", command[-1]]
+    try:
         stdout, stderr, return_code, elapsed_ms = call_command(
-            retry_command, timeout_seconds
+            command,
+            timeout_seconds,
+            env=bitloops_env,
+            cwd=str(workspace),
         )
-        command = retry_command
+        if (
+            return_code != 0
+            and output_format == "stream-json"
+            and "requires --verbose" in stderr.lower()
+            and "--verbose" not in command
+        ):
+            retry_command = command[:-1] + ["--verbose", command[-1]]
+            stdout, stderr, return_code, elapsed_ms = call_command(
+                retry_command,
+                timeout_seconds,
+                env=bitloops_env,
+                cwd=str(workspace),
+            )
+            command = retry_command
+    finally:
+        stop_bitloops_task_daemon(task_daemon_handle)
 
     workspace_patch = capture_workspace_patch(workspace)
 

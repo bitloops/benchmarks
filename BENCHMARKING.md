@@ -1,7 +1,11 @@
 # Benchmarking Guide
 
 End-to-end instructions for running SWE-bench Multilingual benchmarks on Rust tasks
-with the Claude Code agent on Amazon Bedrock.
+with Claude Code, Cursor, OpenCode, and Codex agents.
+
+Note: older one-off configs referenced in historical sections are preserved
+under `configs/swebench/archive/`. Copy one back to `configs/swebench/` before
+using it as a current run config.
 
 ## Prerequisites
 
@@ -16,6 +20,9 @@ python -m pip install swebench
 You also need:
 - Docker Desktop running (`docker info` should succeed)
 - `claude` CLI installed and authenticated (`claude --version`)
+- `cursor-agent` CLI installed and authenticated (`cursor-agent --version`)
+- `codex` CLI installed and authenticated (`codex --version`)
+- `opencode` CLI installed and authenticated (`opencode --version`)
 - `bitloops` CLI installed (`bitloops --version`) for `with_bitloops` runs
 - Git
 
@@ -71,39 +78,66 @@ Use an existing config as-is or copy it as a starting point.
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml
+  --config configs/swebench/archive/ruff_15309_claude.toml
 ```
 
-See [`configs/swebench/ruff_15309_claude.toml`](configs/swebench/ruff_15309_claude.toml)
+See [`configs/swebench/archive/ruff_15309_claude.toml`](configs/swebench/archive/ruff_15309_claude.toml)
 — targets `astral-sh__ruff-15309` with condition `baseline`.
 
 **With extra context**:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude_with_context.toml
+  --config configs/swebench/archive/ruff_15309_claude_with_context.toml
 ```
 
-See [`configs/swebench/ruff_15309_claude_with_context.toml`](configs/swebench/ruff_15309_claude_with_context.toml)
+See [`configs/swebench/archive/ruff_15309_claude_with_context.toml`](configs/swebench/archive/ruff_15309_claude_with_context.toml)
 — same task but with `prompt_context` injected and condition `with_testlens_context`.
+
+**Codex baseline**:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/rust_tokio_phase1_codex.toml
+```
+
+See [`configs/swebench/rust_tokio_phase1_codex.toml`](configs/swebench/rust_tokio_phase1_codex.toml)
+for the default Codex baseline.
+
+**OpenCode baseline**:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config configs/swebench/rust_tokio_phase1_opencode.toml
+```
+
+See [`configs/swebench/rust_tokio_phase1_opencode.toml`](configs/swebench/rust_tokio_phase1_opencode.toml)
+for the default OpenCode baseline.
 
 Other single-task configs available:
 
 | Config | Task | Condition |
 | --- | --- | --- |
-| [`ruff_15309_claude.toml`](configs/swebench/ruff_15309_claude.toml) | `astral-sh__ruff-15309` | baseline |
-| [`ruff_15309_claude_with_context.toml`](configs/swebench/ruff_15309_claude_with_context.toml) | `astral-sh__ruff-15309` | with_testlens_context |
-| [`ruff_15330_claude.toml`](configs/swebench/ruff_15330_claude.toml) | `astral-sh__ruff-15330` | baseline |
-| [`ruff_15330_claude_with_context.toml`](configs/swebench/ruff_15330_claude_with_context.toml) | `astral-sh__ruff-15330` | with_testlens_context |
+| [`ruff_15309_claude.toml`](configs/swebench/archive/ruff_15309_claude.toml) | `astral-sh__ruff-15309` | baseline |
+| [`ruff_15309_claude_with_context.toml`](configs/swebench/archive/ruff_15309_claude_with_context.toml) | `astral-sh__ruff-15309` | with_testlens_context |
+| [`ruff_15330_claude.toml`](configs/swebench/archive/ruff_15330_claude.toml) | `astral-sh__ruff-15330` | baseline |
+| [`ruff_15330_claude_with_context.toml`](configs/swebench/archive/ruff_15330_claude_with_context.toml) | `astral-sh__ruff-15330` | with_testlens_context |
 
 ### Bitloops-enabled condition
 
 Use a config with:
 - `condition = "with_bitloops"`
-- `[agent].extra_args = ["--bitloops-init"]`
+- `workspace_timeout_seconds = 1800`
+- `bitloops_sandbox_mode = "per_task_daemon"`
+- `[agent].extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`
+
+Canonical multi-repo Claude + Bitloops (Rust selection across repos):
+
+- [`rust_all_repos_claude_with_bitloops.toml`](configs/swebench/rust_all_repos_claude_with_bitloops.toml)
 
 Example Tokio config:
 - [`rust_tokio_phase1_claude_with_bitloops.toml`](configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml)
+- [`rust_tokio_phase1_codex_with_bitloops.toml`](configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml)
 
 ### Key TOML fields
 
@@ -111,15 +145,21 @@ Example Tokio config:
 | --- | --- |
 | `include_instance_ids` | Target specific tasks by SWE-bench ID |
 | `attempts` | How many times to run each task |
+| `max_workers` | Maximum concurrent attempt-instance jobs within a run |
+| `workspace_isolation_mode` | Workspace reuse policy: `shared_repo_commit`, `task_scoped`, or `attempt_scoped` |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
 | `prompt_context` | Extra text appended to the agent's prompt |
-| `agent.extra_args` | Wrapper toggles (for Bitloops use `["--bitloops-init"]`) |
+| `agent.extra_args` | Wrapper toggles (for Claude/OpenCode + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
+
+When `attempts > 1` and `max_workers > 1`, the runner can execute multiple attempts for the same
+task instance in parallel. If workspace preparation is enabled, those runs automatically use
+`attempt_scoped` isolation so each parallel attempt gets its own workspace.
 
 ### Override attempts from the CLI
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml \
+  --config configs/swebench/archive/ruff_15309_claude.toml \
   --attempts 5
 ```
 
@@ -127,10 +167,10 @@ Example Tokio config:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml
+  --config configs/swebench/archive/ruff_all_claude.toml
 ```
 
-See [`configs/swebench/ruff_all_claude.toml`](configs/swebench/ruff_all_claude.toml)
+See [`configs/swebench/archive/ruff_all_claude.toml`](configs/swebench/archive/ruff_all_claude.toml)
 — runs all `astral-sh/ruff` tasks in `datasets/swebench_multilingual.test.ruff.jsonl`.
 
 To run the 4-attempt Ruff benchmark sweep used for reporting, either edit `attempts = 4`
@@ -138,7 +178,7 @@ in the config or override attempts from the CLI:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml \
+  --config configs/swebench/archive/ruff_all_claude.toml \
   --attempts 4
 ```
 
@@ -169,6 +209,46 @@ name = "opus-4-6"
 `[model].name` is the canonical label used in reports and the `model_version` CSV
 column. `model_map` maps it to the actual `--model` CLI flag value passed to the
 `claude` command.
+
+**Codex default**:
+
+```toml
+[model]
+name = "gpt-5.4"
+
+[model_map.codex]
+"gpt-5.4" = "gpt-5.4"
+```
+
+**OpenCode default**:
+
+```toml
+[model]
+name = "gpt-5"
+temperature = 0.0
+# seed = 4242
+
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+```
+
+OpenCode auth and runtime behavior:
+- provider credentials live in `~/.local/share/opencode/auth.json`
+- committed benchmark OpenCode defaults live in `configs/opencode/opencode.json`
+- benchmark config stays in TOML: set `[model].name`, `temperature`, and optional `seed`
+- the wrapper injects the committed repo config and benchmark runtime overrides through `OPENCODE_CONFIG_CONTENT`
+- benchmark `temperature` and `seed` still come from the TOML runtime overrides, so TOML remains the final source for those knobs
+
+Example provider credential file:
+
+```json
+{
+  "fireworks": {
+    "type": "api",
+    "key": "YOUR_API_KEY"
+  }
+}
+```
 
 ## 5. Generate reports
 
@@ -300,6 +380,8 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 | runtime_sec | trace metadata | Agent wall-clock time in seconds |
 | token_input | Claude JSON | Input tokens consumed |
 | token_output | Claude JSON | Output tokens generated |
+| reasoning_output_tokens | Codex JSON (when available) | Reasoning output tokens reported by agent runtime |
+| total_tokens | Codex JSON / derived | Total tokens excluding reasoning output (or `token_input + token_output` fallback) |
 | estimated_cost | Claude JSON | Total cost in USD (reported by Claude CLI) |
 | tool_calls | Claude JSON `num_turns` | Number of agentic tool-use turns |
 | shell_commands | Claude JSON | Bash tool invocations |
@@ -322,11 +404,11 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 
 # Run a single task on Bedrock
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml
+  --config configs/swebench/archive/ruff_15309_claude.toml
 
 # Run all ruff tasks with 4 attempts
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml --attempts 4
+  --config configs/swebench/archive/ruff_all_claude.toml --attempts 4
 
 # Generate reports
 ./.venv/bin/python -m benchkit.swebench.cli appendix \

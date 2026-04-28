@@ -69,6 +69,26 @@ class ModelMapperTests(unittest.TestCase):
         self.assertEqual(result.resolved_name, "opus-4-6")
         self.assertEqual(result.source, "identity")
 
+    def test_resolve_codex_identity_mapping(self) -> None:
+        result = resolve_model_name(
+            canonical_name="gpt-5.4",
+            agent_id="codex",
+            model_map={},
+        )
+        self.assertEqual(result.resolved_name, "gpt-5.4")
+        self.assertEqual(result.source, "identity")
+
+    def test_resolve_codex_uses_agent_specific_map(self) -> None:
+        result = resolve_model_name(
+            canonical_name="gpt-5.4",
+            agent_id="codex",
+            model_map={
+                "codex": {"gpt-5.4": "gpt-5.4"},
+            },
+        )
+        self.assertEqual(result.resolved_name, "gpt-5.4")
+        self.assertEqual(result.map_key, "codex")
+
     def test_suggest_model_id_for_agent(self) -> None:
         self.assertEqual(
             suggest_model_id_for_agent("opus-4-6", "claude_code"),
@@ -78,6 +98,7 @@ class ModelMapperTests(unittest.TestCase):
             suggest_model_id_for_agent("opus-4-6", "cursor"),
             "opus-4.6",
         )
+        self.assertIsNone(suggest_model_id_for_agent("gpt-5.4", "codex"))
 
 
 if __name__ == "__main__":

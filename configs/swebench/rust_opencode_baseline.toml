@@ -1,0 +1,48 @@
+# Dry run: ./.venv/bin/python -m benchkit.swebench.cli plan --config configs/swebench/rust_opencode_baseline.toml
+# Run: ./.venv/bin/python -m benchkit.swebench.cli run --config configs/swebench/rust_opencode_baseline.toml
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
+split = "test"
+# language = "rust"
+condition = "baseline"
+include_repos = []
+# Put your instance ID here
+include_instance_ids = ["uutils__coreutils-6731"]
+max_instances = 1
+attempts = 5
+timeout_seconds = 900
+output_root = "runs"
+prepare_workspace = true
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+# workspace_root = "runs/workspaces"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
+
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
+
+[model]
+provider = "fireworks-ai"
+# name = "qwen3.6-plus"
+name = "deepseek-v4-pro"
+temperature = 0.0
+seed = 42
+max_tokens = 32768
+
+[model_map.opencode]
+# "qwen3.6-plus" = "fireworks-ai/accounts/fireworks/models/qwen3p6-plus"
+"deepseek-v4-pro" = "fireworks-ai/accounts/vasilis-bitloops/deployments/d5hkfhu7"
+
+
+[evaluation]
+enabled = true
+python_bin = "./.venv/bin/python"
+dataset_name = "SWE-bench/SWE-bench_Multilingual"
+split = "test"
+max_workers = 2
+timeout_seconds = 7200
+command_template = []
+extra_args = []

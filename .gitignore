@@ -214,3 +214,9 @@ reports/*
 !reports/appendix/**
 datasets/*.jsonl
 agent:*.json
+
+# Per-task Bitloops sandbox homes and daemon state
+datasets/workspaces/**/*__bitloops/
+datasets/workspaces/rust_all/
+
+reports/

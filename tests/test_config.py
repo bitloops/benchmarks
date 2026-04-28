@@ -61,6 +61,9 @@ timeout_seconds = 3600
             self.assertEqual(cfg.include_repos, ["tokio-rs/tokio"])
             self.assertEqual(cfg.include_instance_ids, ["tokio__a", "tokio__b"])
             self.assertTrue(cfg.prepare_workspace)
+            self.assertEqual(cfg.workspace_isolation_mode, "shared_repo_commit")
+            self.assertFalse(cfg.bitloops_enabled)
+            self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
             self.assertEqual(
                 cfg.model_map["claude_code"]["opus-4-6"],
                 "claude-opus-4-6",
@@ -68,6 +71,70 @@ timeout_seconds = 3600
             self.assertTrue(cfg.evaluation.enabled)
             self.assertEqual(cfg.evaluation.dataset_name, "SWE-bench/SWE-bench_Multilingual")
             self.assertEqual(cfg.evaluation.max_workers, 8)
+
+    def test_load_run_config_enables_task_scoped_isolation_for_bitloops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            raw = """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+condition = "with_bitloops"
+
+[agent]
+id = "claude_code"
+extra_args = ["--bitloops-init"]
+
+[model]
+provider = "anthropic"
+name = "opus-4-6"
+            """.strip()
+            path = temp_root / "config.toml"
+            path.write_text(raw, encoding="utf-8")
+
+            cfg = load_run_config(path)
+
+            self.assertTrue(cfg.bitloops_enabled)
+            self.assertEqual(cfg.workspace_isolation_mode, "task_scoped")
+            self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
+
+    def test_load_run_config_supports_opencode_agent_and_model_map(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            raw = """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+condition = "baseline"
+
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
+
+[model]
+provider = "openai"
+name = "gpt-5"
+temperature = 0.15
+seed = 4242
+
+[model_map.opencode]
+"gpt-5" = "openai/gpt-5"
+            """.strip()
+            path = temp_root / "config.toml"
+            path.write_text(raw, encoding="utf-8")
+
+            cfg = load_run_config(path)
+
+            self.assertEqual(cfg.agent.id, "opencode")
+            self.assertEqual(
+                cfg.agent.command,
+                ["python3", "scripts/agents/opencode_wrapper.py"],
+            )
+            self.assertEqual(cfg.model.provider, "openai")
+            self.assertEqual(cfg.model.name, "gpt-5")
+            self.assertEqual(cfg.model.temperature, 0.15)
+            self.assertEqual(cfg.model.seed, 4242)
+            self.assertEqual(cfg.model_map["opencode"]["gpt-5"], "openai/gpt-5")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,43 @@
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
+split = "test"
+language = ""
+condition = "with_testlens_context"
+include_repos = []
+include_instance_ids = ["astral-sh__ruff-15309"]
+max_instances = 1
+attempts = 3
+max_workers = 1
+timeout_seconds = 1200
+output_root = "runs"
+prepare_workspace = true
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+workspace_root = "datasets/workspaces/rust_all"
+workspace_timeout_seconds = 600
+prompt_context = """Local TestLens context: the target rule is `string_dot_format_extra_positional_arguments` in `crates/ruff_linter/src/rules/pyflakes/rules/strings.rs:781-848`. TestLens statically links it to the pyflakes harness case `rules[StringDotFormatExtraPositionalArguments, F523.py]` in `crates/ruff_linter/src/rules/pyflakes/mod.rs`, plus a same-file doctest. Treat these as candidate validation surfaces only; current evidence is static-only, not true per-test coverage."""
+
+[agent]
+id = "claude_code"
+command = ["python3", "scripts/agents/claude_code_wrapper.py"]
+extra_args = []
+
+[model]
+provider = "anthropic"
+name = "opus-4-6"
+temperature = 0.0
+max_tokens = 32000
+
+[model_map.claude_code]
+"opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
+
+[evaluation]
+enabled = true
+python_bin = "python3"
+dataset_name = "SWE-bench/SWE-bench_Multilingual"
+split = "test"
+max_workers = 4
+timeout_seconds = 7200
+command_template = []
+extra_args = []

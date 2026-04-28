@@ -17,7 +17,9 @@ Input shape:
   "model": {
     "provider": "...",
     "name": "...",
+    "canonical_name": "...",
     "temperature": 0.0,
+    "seed": 4242,
     "max_tokens": 32000
   }
 }
@@ -40,14 +42,19 @@ Use `mock_agent.py` as a minimal reference implementation.
 
 - `claude_code_wrapper.py`
 - `cursor_wrapper.py`
+- `opencode_wrapper.py`
+- `codex_wrapper.py`
 
-Both wrappers:
+All wrappers:
 
 1. Read the benchmark payload from stdin.
 2. Build a strict patch-only prompt.
 3. Call the respective CLI in non-interactive print mode.
 4. Parse output and extract a unified diff patch.
 5. Print JSON response with `patch` and `metadata`.
+
+`codex_wrapper.py` follows the same contract and metadata shape.
+`opencode_wrapper.py` follows the same contract and metadata shape.
 
 For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also includes:
 - `tool_invocations_raw` (exact per-call tool-use events)
@@ -64,10 +71,36 @@ Optional wrapper argument:
 
 - `--bitloops-init`: runs non-interactive Bitloops setup in the task workspace
   before invoking the agent CLI:
-  - checks daemon status
-  - starts daemon (`bitloops start --detached`)
-  - if needed, bootstraps daemon config (`bitloops start --create-default-config --telemetry=false --detached`)
-  - runs `bitloops init --agent <agent> --telemetry=false --sync=false --ingest=false`
+  - resolves the task-local Bitloops sandbox/runtime
+  - starts an isolated per-task daemon when sandboxing is enabled
+  - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
+  - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true`
+- `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime used during `bitloops init`
+- `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
+- `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`
+- `--bitloops-summary-mode <auto|off>`: benchmark-wrapper control; `auto` leaves Bitloops init at its default summary behavior, and `off` is a compatibility alias for `--bitloops-no-summaries`
+
+When both embeddings and summaries are off, benchmark wrappers now issue:
+
+```bash
+bitloops init --no-embeddings --no-summaries
+```
+
+When both are enabled, use:
+
+```toml
+[run]
+condition = "with_bitloops"
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
+
+[agent]
+extra_args = [
+  "--bitloops-init",
+  "--bitloops-embeddings-runtime", "platform",
+  "--bitloops-summary-mode", "auto",
+]
+```
 
 ## Claude Wrapper
 
@@ -116,6 +149,58 @@ Typical non-interactive setting:
 export CURSOR_EXTRA_ARGS="--force --trust"
 ```
 
+## Codex Wrapper
+
+Command shape:
+
+```bash
+codex exec --json --model <model> --cd <workspace> --full-auto "<prompt>"
+```
+
+Env vars:
+
+- `CODEX_BIN` (default: `codex`)
+- `CODEX_MODEL` (fallback model if payload.model.name is empty; default wrapper fallback: `gpt-5.4`)
+- `CODEX_EXTRA_ARGS` (extra CLI args, shell-split)
+- `CODEX_TIMEOUT_SECONDS` (default: `900`)
+- `CODEX_FULL_AUTO` (default: `true`; set false to use explicit sandbox mode below)
+- `CODEX_SANDBOX` (default: `workspace-write`; used only when `CODEX_FULL_AUTO=false`)
+- `CODEX_SKIP_GIT_REPO_CHECK` (default: `false`)
+
+Typical non-interactive setting:
+
+```bash
+export CODEX_EXTRA_ARGS="--ephemeral"
+```
+
+## OpenCode Wrapper
+
+Command shape:
+
+```bash
+opencode run --format json --model <provider/model> --agent <agent> --dangerously-skip-permissions "<prompt>"
+```
+
+Env vars:
+
+- `OPENCODE_BIN` (default: `opencode`)
+- `OPENCODE_MODEL` (fallback model if payload.model.name is empty; default wrapper fallback: `openai/gpt-5`)
+- `OPENCODE_AGENT` (default: `build`)
+- `OPENCODE_EXTRA_ARGS` (extra CLI args, shell-split)
+- `OPENCODE_TIMEOUT_SECONDS` (default: `900`)
+
+OpenCode-specific notes:
+
+- Provider credentials are expected in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
+- The wrapper loads committed repo defaults from `configs/opencode/opencode.json`.
+- The wrapper maps benchmark `[model].temperature` and optional `[model].seed` into `OPENCODE_CONFIG_CONTENT` at runtime, layering benchmark overrides on top of any committed repo defaults and existing inline OpenCode config.
+
+Typical non-interactive setting:
+
+```bash
+export OPENCODE_AGENT="build"
+```
+
 ## Config Examples
 
 Claude:
@@ -132,4 +217,20 @@ Cursor:
 [agent]
 id = "cursor"
 command = ["python3", "scripts/agents/cursor_wrapper.py"]
+```
+
+Codex:
+
+```toml
+[agent]
+id = "codex"
+command = ["python3", "scripts/agents/codex_wrapper.py"]
+```
+
+OpenCode:
+
+```toml
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
 ```

@@ -26,7 +26,7 @@ temperature = 0.0
 max_tokens = 32000
 
 [model_map.claude_code]
-"opus-4-6" = "claude-opus-4-6"
+"opus-4-6" = "eu.anthropic.claude-opus-4-6-v1"
 
 [evaluation]
 enabled = true

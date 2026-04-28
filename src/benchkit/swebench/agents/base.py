@@ -24,7 +24,10 @@ class RunContext:
     canonical_model_name: str
     run_id: str
     benchmark: str
+    condition: str | None = None
     prompt_context: str | None = None
+    bitloops_sandbox: dict[str, Any] | None = None
+    attempt_dir: Path | None = None
 
 
 @dataclass(slots=True)
@@ -76,6 +79,26 @@ class JsonCommandAgentAdapter(AgentAdapter):
         command.extend(self.config.extra_args)
         return _resolve_relative_command_paths(command, base_dir=self.command_base_dir)
 
+    def _uses_bitloops_init(self, context: RunContext) -> bool:
+        if str(context.condition or "").strip().lower() == "with_bitloops":
+            return True
+        return any(str(arg).strip() == "--bitloops-init" for arg in self.config.extra_args)
+
+    def _resolve_bitloops_setup_timeout_seconds(self, context: RunContext) -> int:
+        env_timeout = str(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "")).strip()
+        env_value = 0
+        if env_timeout:
+            try:
+                env_value = int(env_timeout)
+            except ValueError:
+                env_value = 0
+        return max(env_value, context.timeout_seconds, 1500)
+
+    def _resolve_adapter_timeout_seconds(self, context: RunContext) -> int:
+        if not self._uses_bitloops_init(context):
+            return context.timeout_seconds
+        return context.timeout_seconds + self._resolve_bitloops_setup_timeout_seconds(context)
+
     def generate_patch(self, instance: BenchmarkInstance, context: RunContext) -> AgentResult:
         payload = {
             "instance_id": instance.instance_id,
@@ -91,22 +114,32 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 "canonical_name": context.canonical_model_name,
                 "temperature": context.model.temperature,
                 "max_tokens": context.model.max_tokens,
+                "seed": context.model.seed,
             },
             "run": {
                 "run_id": context.run_id,
                 "attempt": context.attempt,
                 "benchmark": context.benchmark,
+                "condition": context.condition,
+                "timeout_seconds": context.timeout_seconds,
                 "workspace_root": str(context.workspace_root),
+                "attempt_dir": (
+                    str(context.attempt_dir.resolve())
+                    if isinstance(context.attempt_dir, Path)
+                    else None
+                ),
+                "bitloops_sandbox": context.bitloops_sandbox,
             },
         }
         command = self._build_command()
+        adapter_timeout_seconds = self._resolve_adapter_timeout_seconds(context)
 
         start = time.time()
         heartbeat = _AgentHeartbeat(
             adapter_id=self.config.id,
             instance_id=instance.instance_id,
             attempt=context.attempt,
-            timeout_seconds=context.timeout_seconds,
+            timeout_seconds=adapter_timeout_seconds,
         )
         heartbeat.start()
         try:
@@ -115,7 +148,7 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 input=json.dumps(payload),
                 text=True,
                 capture_output=True,
-                timeout=context.timeout_seconds,
+                timeout=adapter_timeout_seconds,
                 cwd=str(context.workspace_root),
                 check=False,
             )
