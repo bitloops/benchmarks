@@ -1882,6 +1882,73 @@ def summarize_command_failure(stdout: str, stderr: str) -> dict[str, Any]:
     return summary
 
 
+def _extract_opencode_step_finish_usage_metrics(payload: Any) -> dict[str, float | int | str]:
+    events = payload if isinstance(payload, list) else [payload]
+    totals: dict[str, int | float] = {
+        "token_input": 0,
+        "token_output": 0,
+        "reasoning_output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost": 0.0,
+    }
+    seen_token_block = False
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "step_finish":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict):
+            continue
+        tokens = part.get("tokens")
+        if not isinstance(tokens, dict):
+            continue
+
+        seen_token_block = True
+        cache = tokens.get("cache")
+        if not isinstance(cache, dict):
+            cache = {}
+
+        input_tokens = _coerce_number(tokens.get("input")) or 0
+        output_tokens = _coerce_number(tokens.get("output")) or 0
+        reasoning_tokens = _coerce_number(tokens.get("reasoning")) or 0
+        cache_write_tokens = _coerce_number(cache.get("write")) or 0
+        cache_read_tokens = _coerce_number(cache.get("read")) or 0
+        event_total = _coerce_number(tokens.get("total"))
+        if event_total is None:
+            event_total = (
+                float(input_tokens)
+                + float(cache_write_tokens)
+                + float(cache_read_tokens)
+                + float(output_tokens)
+                + float(reasoning_tokens)
+            )
+
+        totals["token_input"] += input_tokens
+        totals["token_output"] += output_tokens
+        totals["reasoning_output_tokens"] += reasoning_tokens
+        totals["cache_creation_input_tokens"] += cache_write_tokens
+        totals["cache_read_input_tokens"] += cache_read_tokens
+        totals["total_tokens"] += event_total
+        totals["estimated_cost"] += _coerce_number(part.get("cost")) or 0.0
+
+    if not seen_token_block:
+        return {}
+
+    metrics: dict[str, float | int | str] = {
+        "token_metrics_source": "opencode_step_finish_sum",
+    }
+    for key, value in totals.items():
+        if isinstance(value, float) and value.is_integer() and key != "estimated_cost":
+            metrics[key] = int(value)
+        else:
+            metrics[key] = value
+    return metrics
+
+
 def _try_parse_json(raw_text: str) -> Any | None:
     try:
         return json.loads(raw_text)
@@ -1907,6 +1974,8 @@ def _try_parse_json(raw_text: str) -> Any | None:
 def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
     if payload is None:
         return {}
+
+    opencode_step_finish_metrics = _extract_opencode_step_finish_usage_metrics(payload)
 
     token_input_paths = [
         ("usage", "input_tokens"),
@@ -2080,17 +2149,44 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("usage", "server_tool_use", "runTerminalCmdRequests"),
     ]
 
-    token_input, token_input_source = _extract_number_with_source(payload, token_input_paths)
-    token_output, token_output_source = _extract_number_with_source(payload, token_output_paths)
-    reasoning_output_tokens, _ = _extract_number_with_source(payload, reasoning_output_paths)
-    total_tokens, _ = _extract_number_with_source(payload, total_tokens_paths)
-    estimated_cost, _ = _extract_number_with_source(payload, estimated_cost_paths)
-    cached_input_tokens, _ = _extract_number_with_source(payload, cached_input_paths)
-    cached_output_tokens, _ = _extract_number_with_source(payload, cached_output_paths)
-    cache_creation_input_tokens, _ = _extract_number_with_source(payload, cache_creation_input_paths)
-    cache_read_input_tokens, _ = _extract_number_with_source(payload, cache_read_input_paths)
-    cache_creation_ephemeral_5m_input_tokens, _ = _extract_number_with_source(payload, cache_write_5m_paths)
-    cache_creation_ephemeral_1h_input_tokens, _ = _extract_number_with_source(payload, cache_write_1h_paths)
+    if opencode_step_finish_metrics:
+        token_input = _coerce_number(opencode_step_finish_metrics.get("token_input"))
+        token_output = _coerce_number(opencode_step_finish_metrics.get("token_output"))
+        token_input_source = "opencode_step_finish_sum"
+        token_output_source = "opencode_step_finish_sum"
+        reasoning_output_tokens = _coerce_number(
+            opencode_step_finish_metrics.get("reasoning_output_tokens")
+        )
+        total_tokens = _coerce_number(opencode_step_finish_metrics.get("total_tokens"))
+        estimated_cost = _coerce_number(opencode_step_finish_metrics.get("estimated_cost"))
+        cached_input_tokens = None
+        cached_output_tokens = None
+        cache_creation_input_tokens = _coerce_number(
+            opencode_step_finish_metrics.get("cache_creation_input_tokens")
+        )
+        cache_read_input_tokens = _coerce_number(
+            opencode_step_finish_metrics.get("cache_read_input_tokens")
+        )
+        cache_creation_ephemeral_5m_input_tokens = None
+        cache_creation_ephemeral_1h_input_tokens = None
+    else:
+        token_input, token_input_source = _extract_number_with_source(payload, token_input_paths)
+        token_output, token_output_source = _extract_number_with_source(payload, token_output_paths)
+        reasoning_output_tokens, _ = _extract_number_with_source(payload, reasoning_output_paths)
+        total_tokens, _ = _extract_number_with_source(payload, total_tokens_paths)
+        estimated_cost, _ = _extract_number_with_source(payload, estimated_cost_paths)
+        cached_input_tokens, _ = _extract_number_with_source(payload, cached_input_paths)
+        cached_output_tokens, _ = _extract_number_with_source(payload, cached_output_paths)
+        cache_creation_input_tokens, _ = _extract_number_with_source(payload, cache_creation_input_paths)
+        cache_read_input_tokens, _ = _extract_number_with_source(payload, cache_read_input_paths)
+        cache_creation_ephemeral_5m_input_tokens, _ = _extract_number_with_source(
+            payload,
+            cache_write_5m_paths,
+        )
+        cache_creation_ephemeral_1h_input_tokens, _ = _extract_number_with_source(
+            payload,
+            cache_write_1h_paths,
+        )
     search_actions, _ = _extract_number_with_source(payload, search_actions_paths)
     web_fetches, _ = _extract_number_with_source(payload, web_fetches_paths)
     tool_calls, _ = _extract_number_with_source(payload, tool_calls_paths)
