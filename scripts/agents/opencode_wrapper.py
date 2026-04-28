@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 from copy import deepcopy
 
@@ -353,6 +354,14 @@ def _persist_raw_opencode_output(
     return str(stdout_path), str(stderr_path)
 
 
+def _coerce_command_output(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _run_condition(payload: dict[str, object]) -> str:
     run = payload.get("run", {})
     if not isinstance(run, dict):
@@ -500,6 +509,26 @@ def main() -> None:
             timeout_seconds,
             env=command_env,
             cwd=str(workspace),
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_stdout = _coerce_command_output(exc.stdout)
+        timeout_stderr = _coerce_command_output(exc.stderr)
+        raw_stdout_path, raw_stderr_path = _persist_raw_opencode_output(
+            payload=payload,
+            stdout=timeout_stdout,
+            stderr=timeout_stderr,
+        )
+        failure_summary = summarize_command_failure(timeout_stdout, timeout_stderr)
+        fatal_error(
+            "opencode command timed out",
+            details={
+                "timeout_seconds": timeout_seconds,
+                "command": command,
+                "workspace": str(workspace),
+                "raw_stdout_path": raw_stdout_path,
+                "raw_stderr_path": raw_stderr_path,
+                **failure_summary,
+            },
         )
     finally:
         stop_bitloops_task_daemon(task_daemon_handle)
