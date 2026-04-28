@@ -77,17 +77,15 @@ RUN_MAX_WORKERS=3 ./scripts/swebench/phase1_tokio_run.sh
 
 1. Pick a config:
    - `configs/swebench/rust_canary.toml` (mock agent)
-   - `configs/swebench/rust_claude_code.toml` (Claude Code wrapper)
-   - `configs/swebench/rust_cursor.toml` (Cursor wrapper)
-   - `configs/swebench/rust_opencode.toml` (OpenCode wrapper)
-   - `configs/swebench/rust_codex.toml` (Codex wrapper)
+   - `configs/swebench/rust_opencode.toml` (OpenCode + Bitloops)
+   - `configs/swebench/rust_opencode_baseline.toml` (OpenCode baseline)
    - `configs/swebench/rust_tokio_phase1_claude.toml` (Tokio Phase 1)
-   - `configs/swebench/rust_all_repos_claude_with_bitloops.toml` (multi-repo Rust subset + Claude + Bitloops)
    - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
-   - `configs/swebench/rust_tokio_phase1_cursor.toml` (Tokio Phase 1)
-   - `configs/swebench/rust_tokio_phase1_opencode.toml` (Tokio Phase 1)
    - `configs/swebench/rust_tokio_phase1_codex.toml` (Tokio Phase 1)
    - `configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
+   - `configs/swebench/rust_all_repos_claude_with_bitloops.toml` (multi-repo Rust subset + Claude + Bitloops)
+
+   Historical one-off configs are kept under `configs/swebench/archive/`.
 2. Export SWE-bench Multilingual data into local JSONL:
 
 ```bash

@@ -3,6 +3,10 @@
 End-to-end instructions for running SWE-bench Multilingual benchmarks on Rust tasks
 with Claude Code, Cursor, OpenCode, and Codex agents.
 
+Note: older one-off configs referenced in historical sections are preserved
+under `configs/swebench/archive/`. Copy one back to `configs/swebench/` before
+using it as a current run config.
+
 ## Prerequisites
 
 ```bash
@@ -74,20 +78,20 @@ Use an existing config as-is or copy it as a starting point.
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml
+  --config configs/swebench/archive/ruff_15309_claude.toml
 ```
 
-See [`configs/swebench/ruff_15309_claude.toml`](configs/swebench/ruff_15309_claude.toml)
+See [`configs/swebench/archive/ruff_15309_claude.toml`](configs/swebench/archive/ruff_15309_claude.toml)
 — targets `astral-sh__ruff-15309` with condition `baseline`.
 
 **With extra context**:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude_with_context.toml
+  --config configs/swebench/archive/ruff_15309_claude_with_context.toml
 ```
 
-See [`configs/swebench/ruff_15309_claude_with_context.toml`](configs/swebench/ruff_15309_claude_with_context.toml)
+See [`configs/swebench/archive/ruff_15309_claude_with_context.toml`](configs/swebench/archive/ruff_15309_claude_with_context.toml)
 — same task but with `prompt_context` injected and condition `with_testlens_context`.
 
 **Codex baseline**:
@@ -114,10 +118,10 @@ Other single-task configs available:
 
 | Config | Task | Condition |
 | --- | --- | --- |
-| [`ruff_15309_claude.toml`](configs/swebench/ruff_15309_claude.toml) | `astral-sh__ruff-15309` | baseline |
-| [`ruff_15309_claude_with_context.toml`](configs/swebench/ruff_15309_claude_with_context.toml) | `astral-sh__ruff-15309` | with_testlens_context |
-| [`ruff_15330_claude.toml`](configs/swebench/ruff_15330_claude.toml) | `astral-sh__ruff-15330` | baseline |
-| [`ruff_15330_claude_with_context.toml`](configs/swebench/ruff_15330_claude_with_context.toml) | `astral-sh__ruff-15330` | with_testlens_context |
+| [`ruff_15309_claude.toml`](configs/swebench/archive/ruff_15309_claude.toml) | `astral-sh__ruff-15309` | baseline |
+| [`ruff_15309_claude_with_context.toml`](configs/swebench/archive/ruff_15309_claude_with_context.toml) | `astral-sh__ruff-15309` | with_testlens_context |
+| [`ruff_15330_claude.toml`](configs/swebench/archive/ruff_15330_claude.toml) | `astral-sh__ruff-15330` | baseline |
+| [`ruff_15330_claude_with_context.toml`](configs/swebench/archive/ruff_15330_claude_with_context.toml) | `astral-sh__ruff-15330` | with_testlens_context |
 
 ### Bitloops-enabled condition
 
@@ -149,7 +153,7 @@ Example Tokio config:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml \
+  --config configs/swebench/archive/ruff_15309_claude.toml \
   --attempts 5
 ```
 
@@ -157,10 +161,10 @@ Example Tokio config:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml
+  --config configs/swebench/archive/ruff_all_claude.toml
 ```
 
-See [`configs/swebench/ruff_all_claude.toml`](configs/swebench/ruff_all_claude.toml)
+See [`configs/swebench/archive/ruff_all_claude.toml`](configs/swebench/archive/ruff_all_claude.toml)
 — runs all `astral-sh/ruff` tasks in `datasets/swebench_multilingual.test.ruff.jsonl`.
 
 To run the 4-attempt Ruff benchmark sweep used for reporting, either edit `attempts = 4`
@@ -168,7 +172,7 @@ in the config or override attempts from the CLI:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml \
+  --config configs/swebench/archive/ruff_all_claude.toml \
   --attempts 4
 ```
 
@@ -394,11 +398,11 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 
 # Run a single task on Bedrock
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_15309_claude.toml
+  --config configs/swebench/archive/ruff_15309_claude.toml
 
 # Run all ruff tasks with 4 attempts
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/ruff_all_claude.toml --attempts 4
+  --config configs/swebench/archive/ruff_all_claude.toml --attempts 4
 
 # Generate reports
 ./.venv/bin/python -m benchkit.swebench.cli appendix \
