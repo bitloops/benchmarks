@@ -145,9 +145,15 @@ Example Tokio config:
 | --- | --- |
 | `include_instance_ids` | Target specific tasks by SWE-bench ID |
 | `attempts` | How many times to run each task |
+| `max_workers` | Maximum concurrent attempt-instance jobs within a run |
+| `workspace_isolation_mode` | Workspace reuse policy: `shared_repo_commit`, `task_scoped`, or `attempt_scoped` |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
 | `prompt_context` | Extra text appended to the agent's prompt |
 | `agent.extra_args` | Wrapper toggles (for Claude/OpenCode + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
+
+When `attempts > 1` and `max_workers > 1`, the runner can execute multiple attempts for the same
+task instance in parallel. If workspace preparation is enabled, those runs automatically use
+`attempt_scoped` isolation so each parallel attempt gets its own workspace.
 
 ### Override attempts from the CLI
 

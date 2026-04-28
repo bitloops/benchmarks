@@ -1,3 +1,0 @@
-agent      , condition, benchmark            , language, tasks, solved, solve_rate, median_runtime_sec, median_tool_calls, median_file_reads, median_search_actions, median_cost
-claude_code, baseline , swebench_multilingual, rust    ,     2,      0,        0.0, 1443.708          ,               0.0,                  ,                   0.0, 0.6080148000000001
-cursor     , baseline , swebench_multilingual, rust    ,     2,      1,        0.5,  790.1229999999999,                  ,                  ,                      ,  

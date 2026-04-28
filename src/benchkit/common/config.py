@@ -203,10 +203,10 @@ def _detect_bitloops_enabled(*, condition: str, agent: AgentConfig) -> bool:
 
 def _resolve_workspace_isolation_mode(*, requested: str, bitloops_enabled: bool) -> str:
     if requested:
-        if requested not in {"shared_repo_commit", "task_scoped"}:
+        if requested not in {"shared_repo_commit", "task_scoped", "attempt_scoped"}:
             raise ValueError(
                 "run.workspace_isolation_mode must be one of: "
-                "'shared_repo_commit', 'task_scoped'"
+                "'shared_repo_commit', 'task_scoped', 'attempt_scoped'"
             )
         return requested
     if bitloops_enabled:

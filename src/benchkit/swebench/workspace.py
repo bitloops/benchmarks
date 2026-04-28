@@ -39,6 +39,7 @@ def prepare_instance_workspace(
     workspace_root: Path | None = None,
     isolation_mode: str = "shared_repo_commit",
     run_id: str | None = None,
+    attempt: int | None = None,
 ) -> WorkspacePrepResult:
     start = time.time()
     base = workspace_root.resolve() if workspace_root else (run_root / "workspaces").resolve()
@@ -53,6 +54,7 @@ def prepare_instance_workspace(
         instance_id=instance.instance_id,
         isolation_mode=isolation_mode,
         run_id=run_id,
+        attempt=attempt,
     )
     repo_url = _resolve_repo_url(instance.repo, repo_url_template)
 
@@ -99,7 +101,13 @@ def _resolve_workspace_target(
     instance_id: str,
     isolation_mode: str,
     run_id: str | None,
+    attempt: int | None,
 ) -> Path:
+    if isolation_mode == "attempt_scoped":
+        run_slug = _sanitize_path_segment(run_id, fallback="unknown_run")
+        instance_slug = _sanitize_path_segment(instance_id, fallback="unknown_instance")
+        attempt_slug = _sanitize_attempt(attempt)
+        return base / "_isolated" / run_slug / repo_slug / commit_slug / instance_slug / attempt_slug
     if isolation_mode == "task_scoped":
         run_slug = _sanitize_path_segment(run_id, fallback="unknown_run")
         instance_slug = _sanitize_path_segment(instance_id, fallback="unknown_instance")
@@ -156,6 +164,12 @@ def _sanitize_commit(commit: str) -> str:
 def _sanitize_path_segment(value: str | None, fallback: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or "").strip())
     return cleaned[:120] if cleaned else fallback
+
+
+def _sanitize_attempt(attempt: int | None) -> str:
+    if isinstance(attempt, int) and attempt > 0:
+        return f"attempt-{attempt:02d}"
+    return "attempt-unknown"
 
 
 def _run(

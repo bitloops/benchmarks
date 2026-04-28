@@ -57,6 +57,11 @@ docker info
 By default, Phase 1 now runs Claude, Cursor, and OpenCode baselines in parallel and runs up to
 2 tasks concurrently per baseline (`RUN_MAX_WORKERS=2`).
 
+Within a single benchmark run, `max_workers` applies to attempt-instance jobs. If `attempts > 1`
+and `max_workers > 1`, the runner can execute multiple attempts for the same task instance in
+parallel. When workspace preparation is enabled, those parallel attempts automatically use isolated
+attempt-scoped workspaces.
+
 If needed, you can force the script to use a specific interpreter:
 
 ```bash
@@ -221,6 +226,8 @@ extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 
 Field reference:
 - `run.max_instances`: Optional cap on how many instances are selected after repo/language/ID filters. Omit it to run all matched instances. Must be `>= 1` when set.
+- `run.max_workers`: Maximum concurrent attempt-instance jobs inside a single run.
+- `run.workspace_isolation_mode`: Workspace reuse policy. Supported values are `shared_repo_commit`, `task_scoped`, and `attempt_scoped`. Multi-attempt parallel runs automatically promote to `attempt_scoped`.
 - `agent.extra_args`: Extra CLI args appended to `agent.command` in order. For Claude/Cursor/OpenCode/Codex wrappers, this is where Bitloops flags are passed.
 - `model.seed`: Optional integer seed recorded in run metadata and forwarded to wrappers that support deterministic sampling. OpenCode maps it into runtime config automatically.
 
