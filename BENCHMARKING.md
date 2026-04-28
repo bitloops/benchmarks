@@ -48,14 +48,20 @@ Notes:
 
 ## 1. Export the dataset
 
-Pull Rust tasks from HuggingFace into a local JSONL file:
+Pull the **43-task** Rust workspace slice from HuggingFace (same repos as `configs/swebench/rust_all_repos_claude_with_bitloops.toml`). Use `--repo` filters: `--language rust` alone only exports rows whose HF `language` field is `rust` (currently 16), and misses e.g. `astral-sh/ruff` tasks labeled `python`.
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli export-hf \
   --split test \
-  --language rust \
   --output datasets/swebench_multilingual.test.rust_all.jsonl \
-  --overwrite
+  --overwrite \
+  --repo tokio-rs/tokio \
+  --repo uutils/coreutils \
+  --repo nushell/nushell \
+  --repo tokio-rs/axum \
+  --repo burntsushi/ripgrep \
+  --repo sharkdp/bat \
+  --repo astral-sh/ruff
 ```
 
 To export only a single repo:
@@ -108,11 +114,12 @@ for the default Codex baseline.
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
-  --config configs/swebench/rust_tokio_phase1_opencode.toml
+  --config configs/swebench/rust_opencode.toml \
+  --mode baseline
 ```
 
-See [`configs/swebench/rust_tokio_phase1_opencode.toml`](configs/swebench/rust_tokio_phase1_opencode.toml)
-for the default OpenCode baseline.
+Use `--mode with_bitloops` against the same file for the matching OpenCode
+Bitloops run.
 
 Other single-task configs available:
 
@@ -148,6 +155,7 @@ Example Tokio config:
 | `max_workers` | Maximum concurrent attempt-instance jobs within a run |
 | `workspace_isolation_mode` | Workspace reuse policy: `shared_repo_commit`, `task_scoped`, or `attempt_scoped` |
 | `condition` | Label for reports (`baseline`, `with_testlens_context`, etc.) |
+| `modes.<name>.*` | Optional shallow overrides for baseline/Bitloops switches without duplicating the shared config |
 | `prompt_context` | Extra text appended to the agent's prompt |
 | `agent.extra_args` | Wrapper toggles (for Claude/OpenCode + Bitloops use `["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]`) |
 
@@ -225,8 +233,6 @@ name = "gpt-5.4"
 ```toml
 [model]
 name = "gpt-5"
-temperature = 0.0
-# seed = 4242
 
 [model_map.opencode]
 "gpt-5" = "openai/gpt-5"
@@ -234,16 +240,15 @@ temperature = 0.0
 
 OpenCode auth and runtime behavior:
 - provider credentials live in `~/.local/share/opencode/auth.json`
-- committed benchmark OpenCode defaults live in `configs/opencode/opencode.json`
-- benchmark config stays in TOML: set `[model].name`, `temperature`, and optional `seed`
-- the wrapper injects the committed repo config and benchmark runtime overrides through `OPENCODE_CONFIG_CONTENT`
-- benchmark `temperature` and `seed` still come from the TOML runtime overrides, so TOML remains the final source for those knobs
+- committed benchmark OpenCode defaults live in `configs/opencode/opencode.json`; the file is intentionally minimal and keeps only the benchmark-relevant `build` and `plan` agent sampling plus provider model limits
+- benchmark TOML sets `[model].name` / `provider` / `model_map` only; **sampling** (`temperature`, `seed`, `max_tokens`) for OpenCode is defined **only** in `configs/opencode/opencode.json` (optional `OPENCODE_CONFIG_CONTENT` is merged first for local overrides)
+- the wrapper sets `OPENCODE_CONFIG_CONTENT` from that merge so the CLI does not read TOML for sampling
 
 Example provider credential file:
 
 ```json
 {
-  "fireworks": {
+  "fireworks-ai": {
     "type": "api",
     "key": "YOUR_API_KEY"
   }
@@ -398,8 +403,10 @@ The per-task CSV (`appendix_minimal_per_task_log.csv`) contains these columns:
 ## Quick reference
 
 ```bash
-# Export all Rust tasks
-./.venv/bin/python -m benchkit.swebench.cli export-hf --split test --language rust \
+# Export Rust workspace slice (43 tasks; see section 1 for --repo list)
+./.venv/bin/python -m benchkit.swebench.cli export-hf --split test \
+  --repo tokio-rs/tokio --repo uutils/coreutils --repo nushell/nushell \
+  --repo tokio-rs/axum --repo burntsushi/ripgrep --repo sharkdp/bat --repo astral-sh/ruff \
   --output datasets/swebench_multilingual.test.rust_all.jsonl --overwrite
 
 # Run a single task on Bedrock

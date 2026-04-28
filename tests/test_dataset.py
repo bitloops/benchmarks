@@ -54,6 +54,16 @@ class DatasetTests(unittest.TestCase):
             self.assertEqual(len(rust_only), 1)
             self.assertEqual(rust_only[0].language, "rust")
 
+    def test_rust_track_repo_python_hf_tag_still_filters_as_rust(self) -> None:
+        payload = '{"instance_id":"ruff-1","repo":"astral-sh/ruff","base_commit":"c1","problem_statement":"x","language":"python"}'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dataset.jsonl"
+            path.write_text(payload, encoding="utf-8")
+            instances = load_instances(path)
+            self.assertEqual(instances[0].language, "rust")
+            rust_only = filter_instances(instances, language="rust")
+            self.assertEqual(len(rust_only), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,21 @@ LANGUAGE_ALIASES = {
     "tokio-rs": "rust",
 }
 
+# SWE-bench Multilingual rows for these repos are run as the Rust workspace slice
+# (see `rust_all` HF export). HF may label e.g. astral-sh/ruff as ``python``;
+# BenchKit treats them as ``rust`` so ``run.language = "rust"`` matches all 43 tasks.
+SWEBENCH_MULTILINGUAL_RUST_TRACK_REPOS: frozenset[str] = frozenset(
+    {
+        "astral-sh/ruff",
+        "burntsushi/ripgrep",
+        "nushell/nushell",
+        "sharkdp/bat",
+        "tokio-rs/axum",
+        "tokio-rs/tokio",
+        "uutils/coreutils",
+    }
+)
+
 
 def load_instances(dataset_path: Path) -> list[BenchmarkInstance]:
     dataset_path = dataset_path.resolve()
@@ -136,6 +151,9 @@ def _row_to_instance(row: dict[str, Any]) -> BenchmarkInstance:
 
 
 def resolve_language_from_row(row: dict[str, Any]) -> str:
+    repo = str(row.get("repo", "")).strip().lower()
+    if repo in SWEBENCH_MULTILINGUAL_RUST_TRACK_REPOS:
+        return "rust"
     for key in LANGUAGE_KEYS:
         value = row.get(key)
         if isinstance(value, str) and value.strip():

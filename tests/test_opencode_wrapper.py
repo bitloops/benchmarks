@@ -125,72 +125,6 @@ class OpencodeWrapperTests(unittest.TestCase):
             "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
         )
 
-    def test_build_runtime_config_normalizes_legacy_fireworks_provider_alias(self) -> None:
-        payload = {
-            "model": {
-                "provider": "fireworks",
-                "temperature": 0.2,
-                "seed": 4242,
-            }
-        }
-
-        config = wrapper._build_opencode_runtime_config(
-            payload=payload,
-            resolved_model_name="fireworks/accounts/firefunction-v2",
-        )
-
-        self.assertEqual(
-            config,
-            {
-                "$schema": "https://opencode.ai/config.json",
-                "provider": {
-                    "fireworks-ai": {
-                        "models": {
-                            "accounts/firefunction-v2": {
-                                "options": {
-                                    "temperature": 0.2,
-                                    "seed": 4242,
-                                }
-                            }
-                        }
-                    }
-                },
-            },
-        )
-
-    def test_build_runtime_config_uses_payload_provider_when_model_name_has_no_prefix(self) -> None:
-        payload = {
-            "model": {
-                "provider": "openai",
-                "temperature": 0.0,
-                "seed": 7,
-            }
-        }
-
-        config = wrapper._build_opencode_runtime_config(
-            payload=payload,
-            resolved_model_name="gpt-5",
-        )
-
-        self.assertEqual(
-            config,
-            {
-                "$schema": "https://opencode.ai/config.json",
-                "provider": {
-                    "openai": {
-                        "models": {
-                            "gpt-5": {
-                                "options": {
-                                    "temperature": 0.0,
-                                    "seed": 7,
-                                }
-                            }
-                        }
-                    }
-                },
-            },
-        )
-
     def test_merge_runtime_config_content_preserves_existing_env_config(self) -> None:
         runtime_config = {
             "$schema": "https://opencode.ai/config.json",
@@ -264,23 +198,7 @@ class OpencodeWrapperTests(unittest.TestCase):
             },
         )
 
-    def test_build_invocation_config_merges_existing_repo_and_runtime_layers(self) -> None:
-        runtime_config = {
-            "$schema": "https://opencode.ai/config.json",
-            "provider": {
-                "fireworks-ai": {
-                    "models": {
-                        "accounts/fireworks/models/qwen3p6-plus": {
-                            "options": {
-                                "temperature": 0.0,
-                                "seed": 7,
-                            }
-                        }
-                    }
-                }
-            },
-        }
-
+    def test_build_invocation_config_merges_env_and_repo_without_toml_runtime_layer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_config_path = Path(temp_dir) / "opencode.json"
             repo_config_path.write_text(
@@ -308,7 +226,6 @@ class OpencodeWrapperTests(unittest.TestCase):
             merged = wrapper._build_opencode_invocation_config(
                 existing_content=json.dumps({"small_model": "fireworks/accounts/fireworks/models/qwen3p6-plus"}),
                 repo_config_path=repo_config_path,
-                runtime_config=runtime_config,
             )
 
         self.assertIsNotNone(merged)
@@ -326,19 +243,11 @@ class OpencodeWrapperTests(unittest.TestCase):
                 "accounts/fireworks/models/qwen3p6-plus"
             ]["options"],
             {
-                "temperature": 0.0,
-                "seed": 7,
+                "temperature": 0.4,
+                "seed": 42,
                 "max_tokens": 32768,
             },
         )
-
-    def test_build_runtime_config_returns_none_when_no_overrides_present(self) -> None:
-        payload = {"model": {"provider": "openai"}}
-        config = wrapper._build_opencode_runtime_config(
-            payload=payload,
-            resolved_model_name="openai/gpt-5",
-        )
-        self.assertIsNone(config)
 
     def test_resolve_timeout_uses_larger_env_override(self) -> None:
         payload = {"run": {"timeout_seconds": 3600}}
@@ -373,6 +282,115 @@ class OpencodeWrapperTests(unittest.TestCase):
         with patch.dict(wrapper.os.environ, {}, clear=True):
             timeout = wrapper._resolve_bitloops_setup_timeout_seconds({})
         self.assertEqual(timeout, 1500)
+
+    def test_clip_text_truncates_long_input(self) -> None:
+        long = "x" * 5000
+        out = wrapper._clip_text(long, limit=20)
+        self.assertIn("truncated", out)
+        self.assertLessEqual(len(out), 100)
+
+    def test_summarize_opencode_stdout_errors_api_error(self) -> None:
+        line = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "message": "You must provide an API key.",
+                        "statusCode": 401,
+                    },
+                },
+            }
+        )
+        summary = wrapper._summarize_opencode_stdout_errors(line + "\n")
+        self.assertIn("401", summary or "")
+        self.assertIn("API key", summary or "")
+
+    def test_summarize_opencode_stdout_errors_none_for_result_only(self) -> None:
+        line = json.dumps({"type": "result", "ok": True})
+        self.assertIsNone(wrapper._summarize_opencode_stdout_errors(line))
+
+    def test_ensure_nonempty_patch_fatal_on_empty_without_escape_env(self) -> None:
+        with patch.object(wrapper, "fatal_error", side_effect=RuntimeError("fatal")) as mock_fatal:
+            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": ""}):
+                with self.assertRaises(RuntimeError):
+                    wrapper._ensure_nonempty_patch_or_exit(
+                        patch="   ",
+                        return_code=0,
+                        patch_source="no_patch_found",
+                        stdout='{"type":"result"}\n',
+                        stderr="",
+                        command=["opencode", "run"],
+                        workspace=Path("/tmp/ws"),
+                        raw_stdout_path="/tmp/out.jsonl",
+                        raw_stderr_path="/tmp/err.log",
+                    )
+        mock_fatal.assert_called_once()
+        args, kwargs = mock_fatal.call_args
+        self.assertEqual(args[0], "opencode produced no patch")
+        self.assertEqual(kwargs["details"]["return_code"], 0)
+        self.assertEqual(kwargs["details"]["patch_source"], "no_patch_found")
+
+    def test_ensure_nonempty_patch_fatal_prefers_api_error_summary(self) -> None:
+        err_line = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "APIError",
+                    "data": {"message": "Unauthorized", "statusCode": 401},
+                },
+            }
+        )
+        with patch.object(wrapper, "fatal_error", side_effect=RuntimeError("fatal")) as mock_fatal:
+            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": ""}):
+                with self.assertRaises(RuntimeError):
+                    wrapper._ensure_nonempty_patch_or_exit(
+                        patch="",
+                        return_code=0,
+                        patch_source="no_patch_found",
+                        stdout=err_line + "\n",
+                        stderr="",
+                        command=["opencode", "run"],
+                        workspace=Path("/tmp/ws"),
+                        raw_stdout_path="/tmp/out.jsonl",
+                        raw_stderr_path="/tmp/err.log",
+                    )
+        mock_fatal.assert_called_once()
+        args, kwargs = mock_fatal.call_args
+        self.assertIn("API error", args[0])
+        self.assertIn("401", kwargs["details"]["error_summary"])
+        self.assertIn("Unauthorized", kwargs["details"]["error_summary"])
+
+    def test_ensure_nonempty_patch_allows_empty_when_escape_env_set(self) -> None:
+        with patch.object(wrapper, "fatal_error") as mock_fatal:
+            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": "1"}):
+                wrapper._ensure_nonempty_patch_or_exit(
+                    patch="",
+                    return_code=0,
+                    patch_source="no_patch_found",
+                    stdout="",
+                    stderr="",
+                    command=["opencode"],
+                    workspace=Path("/tmp/ws"),
+                    raw_stdout_path=None,
+                    raw_stderr_path=None,
+                )
+        mock_fatal.assert_not_called()
+
+    def test_ensure_nonempty_patch_noop_when_patch_nonempty(self) -> None:
+        with patch.object(wrapper, "fatal_error") as mock_fatal:
+            wrapper._ensure_nonempty_patch_or_exit(
+                patch="diff --git a/x b/x\n",
+                return_code=0,
+                patch_source="diff_header",
+                stdout="",
+                stderr="",
+                command=["opencode"],
+                workspace=Path("/tmp/ws"),
+                raw_stdout_path=None,
+                raw_stderr_path=None,
+            )
+        mock_fatal.assert_not_called()
 
 
 if __name__ == "__main__":
