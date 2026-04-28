@@ -1,10 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
-  "small_model": "fireworks-ai/accounts/fireworks/models/qwen3p6-plus",
+
+  "model": "fireworks/accounts/vasilis-bitloops/deployments/d5hkfhu7",
+  "small_model": "fireworks/accounts/vasilis-bitloops/deployments/d5hkfhu7",
+
   "agent": {
     "build": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -15,8 +17,12 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
       "parallel_tool_calls": false,
       "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true,
       "steps": 150,
       "permission": {
         "task": {
@@ -24,8 +30,9 @@
         }
       }
     },
+
     "plan": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -36,8 +43,12 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
       "parallel_tool_calls": false,
       "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true,
       "steps": 150,
       "permission": {
         "task": {
@@ -45,8 +56,9 @@
         }
       }
     },
+
     "general": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -57,12 +69,17 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
       "parallel_tool_calls": false,
       "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true,
       "steps": 150
     },
+
     "explore": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -73,12 +90,17 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
       "parallel_tool_calls": false,
       "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true,
       "steps": 150
     },
+
     "summary": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -89,10 +111,15 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
-      "context_length_exceeded_behavior": "error"
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
+      "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true
     },
+
     "title": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -103,10 +130,15 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
-      "context_length_exceeded_behavior": "error"
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
+      "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true
     },
+
     "compaction": {
-      "temperature": 0.0,
+      "temperature": 0,
       "top_k": 1,
       "top_p": 1,
       "min_p": 0,
@@ -117,21 +149,26 @@
       "seed": 42,
       "n": 1,
       "max_tokens": 32768,
-      "context_length_exceeded_behavior": "error"
+      "reasoning_effort": "none",
+      "reasoning_history": "disabled",
+      "context_length_exceeded_behavior": "error",
+      "prompt_cache_max_len": 0,
+      "perf_metrics_in_response": true
     }
   },
+
   "provider": {
-    "fireworks-ai": {
+    "fireworks": {
       "name": "Fireworks.ai",
       "options": {
         "baseURL": "https://api.fireworks.ai/inference/v1"
       },
       "models": {
-        "accounts/fireworks/models/qwen3p6-plus": {
-          "name": "Qwen 3.6 Plus",
+        "accounts/vasilis-bitloops/deployments/d5hkfhu7": {
+          "name": "Bitloops DeepSeek V4 Pro Deployment",
           "temperature": true,
           "options": {
-            "temperature": 0.0,
+            "temperature": 0,
             "top_k": 1,
             "top_p": 1,
             "min_p": 0,
@@ -142,11 +179,15 @@
             "seed": 42,
             "n": 1,
             "max_tokens": 32768,
+            "reasoning_effort": "none",
+            "reasoning_history": "disabled",
             "parallel_tool_calls": false,
-            "context_length_exceeded_behavior": "error"
+            "context_length_exceeded_behavior": "error",
+            "prompt_cache_max_len": 0,
+            "perf_metrics_in_response": true
           },
           "limit": {
-            "context": 1000000,
+            "context": 1048576,
             "output": 32768
           }
         }
