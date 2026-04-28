@@ -5,7 +5,7 @@ split = "test"
 language = "rust"
 condition = "with_bitloops"
 include_repos = []
-include_instance_ids = []
+include_instance_ids = ["tokio-rs__tokio-6551"]
 # instance_ids_file = "tokio_task_ids.txt"
 max_instances = 2
 attempts = 1
@@ -25,13 +25,15 @@ extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "-
 
 [model]
 provider = "fireworks-ai"
-name = "qwen3.6-plus"
+# name = "qwen3.6-plus"
+name = "deepseek-v4-pro"
 temperature = 0.0
 seed = 42
 max_tokens = 32768
 
 [model_map.opencode]
-"qwen3.6-plus" = "fireworks-ai/accounts/fireworks/models/qwen3p6-plus"
+# "qwen3.6-plus" = "fireworks-ai/accounts/fireworks/models/qwen3p6-plus"
+"deepseek-v4-pro" = "fireworks-ai/accounts/vasilis-bitloops/deployments/d5hkfhu7"
 
 [evaluation]
 enabled = true
