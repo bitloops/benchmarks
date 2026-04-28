@@ -34,7 +34,7 @@ TARGET_COLUMNS = [
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate a baseline_runs TSV row from a benchmark report directory."
+        description="Generate a benchmark results TSV row from a benchmark report directory."
     )
     parser.add_argument(
         "report_path",
@@ -93,7 +93,7 @@ def main() -> int:
         source = resolve_summary_source(args.report_path)
         rows = load_summary_rows(source)
         row = select_row(rows, args.run_id)
-        row = apply_task_filters(
+        row = apply_per_task_metrics(
             row=row,
             summary_source=source,
             instance_ids=args.instance_ids,
@@ -162,7 +162,7 @@ def select_row(rows: list[dict[str, Any]], run_id: str | None) -> dict[str, Any]
     return rows[0]
 
 
-def apply_task_filters(
+def apply_per_task_metrics(
     *,
     row: dict[str, Any],
     summary_source: Path,
@@ -171,9 +171,6 @@ def apply_task_filters(
 ) -> dict[str, Any]:
     wanted_instance_ids = normalize_instance_ids(instance_ids)
     wanted_attempts = normalize_attempts(attempts)
-    if not wanted_instance_ids and not wanted_attempts:
-        return row
-
     per_task_source = resolve_per_task_source(summary_source.parent)
     per_task_rows = load_summary_rows(per_task_source)
     selected_rows = [

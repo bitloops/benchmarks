@@ -20,7 +20,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from generate_baseline_run_row import load_summary_rows, resolve_summary_source, select_row
+from generate_benchmark_run_row import load_summary_rows, resolve_summary_source, select_row
 
 
 @dataclass(frozen=True, slots=True)

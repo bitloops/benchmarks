@@ -13,9 +13,9 @@ SCRIPT = (
     REPO_ROOT
     / ".agents"
     / "skills"
-    / "baseline-run-row"
+    / "benchmark-run-row"
     / "scripts"
-    / "generate_baseline_run_row.py"
+    / "generate_benchmark_run_row.py"
 )
 UPLOAD_SCRIPT = SCRIPT.with_name("upload_trace_jsonl_to_drive.py")
 
@@ -30,7 +30,7 @@ def load_upload_module():
     return module
 
 
-class GenerateBaselineRunRowTests(unittest.TestCase):
+class GenerateBenchmarkRunRowTests(unittest.TestCase):
     def test_log_jsonl_link_can_be_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_dir = Path(tmpdir)
@@ -75,6 +75,25 @@ class GenerateBaselineRunRowTests(unittest.TestCase):
                         "internal_tool_calls": "5",
                     }
                 )
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "12.3",
+                        "token_input": "10",
+                        "token_output": "2",
+                        "cache_read_input_tokens": "3",
+                        "cache_creation_input_tokens": "4",
+                        "total_tokens": "19",
+                        "tool_calls": "5",
+                    }
+                ],
+            )
 
             completed = subprocess.run(
                 [
@@ -92,6 +111,76 @@ class GenerateBaselineRunRowTests(unittest.TestCase):
 
         cells = completed.stdout.rstrip("\n").split("\t")
         self.assertEqual(cells[6], "https://drive.google.com/file/d/uploaded/view")
+
+    def test_uses_per_task_log_metrics_without_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(
+                report_dir,
+                {
+                    "runtime_total_sec": "999",
+                    "input_tokens_total": "999",
+                    "output_tokens_total": "999",
+                    "cache_read_input_tokens_total": "999",
+                    "cache_creation_input_tokens_total": "999",
+                    "derived_total_input_processed_tokens": "999",
+                    "derived_total_processed_tokens": "999",
+                    "result": "unsolved",
+                    "internal_tool_calls": "999",
+                },
+            )
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "10",
+                        "token_input": "100",
+                        "token_output": "20",
+                        "cache_read_input_tokens": "7",
+                        "cache_creation_input_tokens": "3",
+                        "total_tokens": "130",
+                        "tool_calls": "5",
+                    },
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "2",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "solved",
+                        "runtime_sec": "30",
+                        "token_input": "200",
+                        "token_output": "40",
+                        "cache_read_input_tokens": "11",
+                        "cache_creation_input_tokens": "13",
+                        "total_tokens": "264",
+                        "tool_calls": "9",
+                    },
+                ],
+            )
+
+            completed = subprocess.run(
+                ["python3", str(SCRIPT), str(report_dir)],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        cells = completed.stdout.rstrip("\n").split("\t")
+        self.assertEqual(cells[7], "40")
+        self.assertEqual(cells[8], "300")
+        self.assertEqual(cells[9], "60")
+        self.assertEqual(cells[10], "18")
+        self.assertEqual(cells[11], "16")
+        self.assertEqual(cells[12], "334")
+        self.assertEqual(cells[13], "394")
+        self.assertEqual(cells[14], "solved")
+        self.assertEqual(cells[15], "14")
 
     def test_instance_id_filters_row_metrics_from_per_task_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -230,7 +319,26 @@ class UploadTraceJsonlToDriveTests(unittest.TestCase):
         self.assertEqual(uploads[0].name, "run-1_attempt-02_repo__two-2.opencode.stdout.jsonl")
 
 
-def write_summary_csv(report_dir: Path) -> None:
+def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None) -> None:
+    row = {
+        "run_id": "run-1",
+        "run_datetime": "2026-04-28T07:01:09Z",
+        "engineer": "markos",
+        "agent": "opencode",
+        "model_canonical": "qwen3.6-plus",
+        "model_resolved": "model/full",
+        "log_jsonl_link": "runs/run-1/attempts/attempt-01/trace.jsonl",
+        "runtime_total_sec": "40",
+        "input_tokens_total": "300",
+        "output_tokens_total": "60",
+        "cache_read_input_tokens_total": "18",
+        "cache_creation_input_tokens_total": "16",
+        "derived_total_input_processed_tokens": "334",
+        "derived_total_processed_tokens": "394",
+        "result": "partially_solved",
+        "internal_tool_calls": "14",
+    }
+    row.update(overrides or {})
     with (report_dir / "run_summary.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
@@ -254,26 +362,7 @@ def write_summary_csv(report_dir: Path) -> None:
             ],
         )
         writer.writeheader()
-        writer.writerow(
-            {
-                "run_id": "run-1",
-                "run_datetime": "2026-04-28T07:01:09Z",
-                "engineer": "markos",
-                "agent": "opencode",
-                "model_canonical": "qwen3.6-plus",
-                "model_resolved": "model/full",
-                "log_jsonl_link": "runs/run-1/attempts/attempt-01/trace.jsonl",
-                "runtime_total_sec": "40",
-                "input_tokens_total": "300",
-                "output_tokens_total": "60",
-                "cache_read_input_tokens_total": "18",
-                "cache_creation_input_tokens_total": "16",
-                "derived_total_input_processed_tokens": "334",
-                "derived_total_processed_tokens": "394",
-                "result": "partially_solved",
-                "internal_tool_calls": "14",
-            }
-        )
+        writer.writerow(row)
 
 
 def write_per_task_csv(report_dir: Path, rows: list[dict[str, str]]) -> None:
