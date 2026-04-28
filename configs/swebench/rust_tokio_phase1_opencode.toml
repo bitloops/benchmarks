@@ -25,9 +25,7 @@ extra_args = []
 [model]
 provider = "openai"
 name = "gpt-5"
-temperature = 0.0
-# seed = 4242
-max_tokens = 32000
+# Sampling for OpenCode: configs/opencode/opencode.json
 
 [model_map.opencode]
 "gpt-5" = "openai/gpt-5"

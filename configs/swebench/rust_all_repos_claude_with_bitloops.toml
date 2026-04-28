@@ -1,18 +1,11 @@
 # BenchKit: canonical multi-repo Claude + Bitloops (Rust subset). Not the bat-2260 recovery slice.
+# Dataset: 43 tasks (tokio, axum, ruff, bat, ripgrep, nushell, coreutils); export via BENCHMARKING.md.
 [run]
 benchmark = "swebench_multilingual"
-dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
-include_repos = [
-  "tokio-rs/tokio",
-  "uutils/coreutils",
-  "nushell/nushell",
-  "tokio-rs/axum",
-  "burntsushi/ripgrep",
-  "sharkdp/bat",
-  "astral-sh/ruff",
-]
+dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
+include_repos = []
 split = "test"
-language = ""
+language = "rust"
 condition = "with_bitloops"
 attempts = 1
 max_instances = 2

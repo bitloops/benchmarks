@@ -188,12 +188,13 @@ Env vars:
 - `OPENCODE_AGENT` (default: `build`)
 - `OPENCODE_EXTRA_ARGS` (extra CLI args, shell-split)
 - `OPENCODE_TIMEOUT_SECONDS` (default: `900`)
+- `BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH` (default: unset/false): if set to `1`/`true`, the wrapper allows an empty patch. Otherwise OpenCode exit 0 with no `git diff` and no parseable unified diff is treated as a **fatal error** so benchkit does not record a misleading success.
 
 OpenCode-specific notes:
 
 - Provider credentials are expected in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
-- The wrapper loads committed repo defaults from `configs/opencode/opencode.json`.
-- The wrapper maps benchmark `[model].temperature` and optional `[model].seed` into `OPENCODE_CONFIG_CONTENT` at runtime, layering benchmark overrides on top of any committed repo defaults and existing inline OpenCode config.
+- The wrapper loads committed defaults from `configs/opencode/opencode.json` and passes them via `OPENCODE_CONFIG_CONTENT` (merged with any existing `OPENCODE_CONFIG_CONTENT` from the environment). Benchmark TOML **does not** override OpenCode sampling; edit the JSON file instead.
+- Keep `configs/opencode/opencode.json` small: only `agent.build`, `agent.plan`, and the provider model entry should carry benchmark sampling unless a smoke run proves another OpenCode internal agent needs explicit settings.
 
 Typical non-interactive setting:
 

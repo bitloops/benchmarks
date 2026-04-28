@@ -192,6 +192,20 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue(sandbox["home_root"].endswith("/home"))
             self.assertIn("__bitloops", sandbox["sandbox_root"])
 
+    def test_execute_run_records_config_mode_in_manifest_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = _make_config(root, max_workers=1, config_mode="baseline")
+            adapter = _RecordingAdapter(delay_seconds=0.01)
+
+            with patch("benchkit.swebench.runner.build_agent_adapter", return_value=adapter):
+                result = execute_run(config)
+
+            manifest = read_json(result.run_root / "run_manifest.json")
+            summary = read_json(result.run_root / "summary.json")
+            self.assertEqual(manifest["config_mode"], "baseline")
+            self.assertEqual(summary["config_mode"], "baseline")
+
 
 def _make_config(
     root: Path,
@@ -200,6 +214,7 @@ def _make_config(
     attempts: int = 1,
     instance_count: int = 4,
     prepare_workspace: bool = False,
+    config_mode: str | None = None,
 ) -> RunConfig:
     dataset_path = root / "dataset.jsonl"
     source_path = root / "config.toml"
@@ -220,6 +235,7 @@ def _make_config(
     write_jsonl(dataset_path, instances)
 
     return RunConfig(
+        config_mode=config_mode,
         benchmark="swebench_multilingual",
         dataset_path=dataset_path,
         split="test",

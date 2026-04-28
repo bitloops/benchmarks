@@ -16,6 +16,7 @@ from benchkit.swebench.agents.registry import build_agent_adapter
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.evaluation import AttemptEvaluationResult, evaluate_predictions_with_harness
 from benchkit.swebench.model_mapper import resolve_model_name
+from benchkit.swebench.opencode_config_metadata import build_opencode_run_metadata
 from benchkit.swebench.types import BenchmarkInstance, PredictionRecord
 from benchkit.swebench.workspace import WorkspacePrepResult, prepare_instance_workspace
 
@@ -291,6 +292,7 @@ def execute_run(
     summary = {
         "run_id": layout.run_id,
         "benchmark": config.benchmark,
+        "config_mode": config.config_mode,
         "condition": config.condition,
         "bitloops_enabled": config.bitloops_enabled,
         "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
@@ -354,9 +356,10 @@ def _build_manifest(
     dry_run: bool,
     started_at: str,
 ) -> dict[str, Any]:
-    return {
+    manifest: dict[str, Any] = {
         "run_id": run_id,
         "benchmark": config.benchmark,
+        "config_mode": config.config_mode,
         "dataset_path": str(config.dataset_path),
         "split": config.split,
         "language": config.language,
@@ -416,6 +419,9 @@ def _build_manifest(
             "extra_args": config.evaluation.extra_args,
         },
     }
+    if config.agent.id == "opencode":
+        manifest["opencode"] = build_opencode_run_metadata()
+    return manifest
 
 
 def _run_instance(

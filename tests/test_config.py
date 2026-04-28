@@ -51,6 +51,7 @@ timeout_seconds = 3600
             path = temp_root / "config.toml"
             path.write_text(raw, encoding="utf-8")
             cfg = load_run_config(path)
+            self.assertIsNone(cfg.config_mode)
             self.assertEqual(cfg.benchmark, "swebench_multilingual")
             self.assertEqual(cfg.language, "rust")
             self.assertEqual(cfg.condition, "baseline")
@@ -135,6 +136,96 @@ seed = 4242
             self.assertEqual(cfg.model.temperature, 0.15)
             self.assertEqual(cfg.model.seed, 4242)
             self.assertEqual(cfg.model_map["opencode"]["gpt-5"], "openai/gpt-5")
+
+    def test_load_run_config_applies_baseline_mode_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(_mode_config_text(), encoding="utf-8")
+
+            cfg = load_run_config(path, mode="baseline")
+
+            self.assertEqual(cfg.config_mode, "baseline")
+            self.assertEqual(cfg.condition, "baseline")
+            self.assertEqual(cfg.timeout_seconds, 900)
+            self.assertEqual(cfg.agent.extra_args, [])
+            self.assertFalse(cfg.bitloops_enabled)
+            self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
+
+    def test_load_run_config_applies_with_bitloops_mode_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(_mode_config_text(), encoding="utf-8")
+
+            cfg = load_run_config(path, mode="with_bitloops")
+
+            self.assertEqual(cfg.config_mode, "with_bitloops")
+            self.assertEqual(cfg.condition, "with_bitloops")
+            self.assertEqual(cfg.timeout_seconds, 1500)
+            self.assertEqual(cfg.workspace_timeout_seconds, 1800)
+            self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
+            self.assertEqual(
+                cfg.agent.extra_args,
+                ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"],
+            )
+            self.assertTrue(cfg.bitloops_enabled)
+
+    def test_load_run_config_unknown_mode_lists_available_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(_mode_config_text(), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "Unknown config mode 'missing'.*baseline.*with_bitloops",
+            ):
+                load_run_config(path, mode="missing")
+
+def _mode_config_text() -> str:
+    return """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+include_repos = []
+include_instance_ids = ["tokio__a"]
+attempts = 1
+max_workers = 1
+output_root = "runs"
+prepare_workspace = true
+repo_url_template = "https://github.com/{repo}.git"
+git_bin = "git"
+
+[agent]
+id = "opencode"
+command = ["python3", "scripts/agents/opencode_wrapper.py"]
+extra_args = ["base-arg"]
+
+[model]
+provider = "fireworks-ai"
+name = "deepseek-v4-pro"
+
+[model_map.opencode]
+"deepseek-v4-pro" = "fireworks-ai/accounts/example/deployments/model"
+
+[modes.baseline.run]
+condition = "baseline"
+timeout_seconds = 900
+bitloops_sandbox_mode = "disabled"
+
+[modes.baseline.agent]
+extra_args = []
+
+[modes.with_bitloops.run]
+condition = "with_bitloops"
+timeout_seconds = 1500
+workspace_timeout_seconds = 1800
+bitloops_sandbox_mode = "per_task_daemon"
+
+[modes.with_bitloops.agent]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
+    """.strip()
 
 
 if __name__ == "__main__":

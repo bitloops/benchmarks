@@ -31,6 +31,7 @@ class AgentConfig:
 
 @dataclass(slots=True)
 class RunConfig:
+    config_mode: str | None
     benchmark: str
     dataset_path: Path
     split: str | None
@@ -79,9 +80,10 @@ def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
     return mapping[key]
 
 
-def load_run_config(config_path: Path) -> RunConfig:
+def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
     config_path = config_path.resolve()
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    data = _apply_mode_overlay(data, mode=mode)
 
     run = data.get("run", {})
     agent = data.get("agent", {})
@@ -166,6 +168,7 @@ def load_run_config(config_path: Path) -> RunConfig:
     evaluation_cfg = _parse_evaluation_config(evaluation, split=split, benchmark=benchmark)
 
     return RunConfig(
+        config_mode=_normalize_config_mode(mode),
         benchmark=benchmark,
         dataset_path=dataset_path,
         split=split if split is None else str(split),
@@ -193,6 +196,53 @@ def load_run_config(config_path: Path) -> RunConfig:
         evaluation=evaluation_cfg,
         source_path=config_path,
     )
+
+
+def _normalize_config_mode(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+    normalized = str(mode).strip()
+    return normalized or None
+
+
+def _apply_mode_overlay(
+    data: dict[str, Any],
+    *,
+    mode: str | None,
+) -> dict[str, Any]:
+    selected_mode = _normalize_config_mode(mode)
+    if selected_mode is None:
+        return data
+
+    modes = data.get("modes", {})
+    if not isinstance(modes, dict):
+        raise ValueError("modes must be a table of mode overlays")
+    overlay = modes.get(selected_mode)
+    if not isinstance(overlay, dict):
+        available = ", ".join(sorted(str(key) for key in modes.keys())) or "none"
+        raise ValueError(
+            f"Unknown config mode '{selected_mode}'. Available modes: {available}"
+        )
+
+    merged = {
+        key: value
+        for key, value in data.items()
+        if key != "modes"
+    }
+    for section_name in ("run", "agent", "model", "evaluation", "model_map"):
+        section_overlay = overlay.get(section_name)
+        if section_overlay is None:
+            continue
+        if not isinstance(section_overlay, dict):
+            raise ValueError(f"modes.{selected_mode}.{section_name} must be a table")
+        base_section = merged.get(section_name, {})
+        if not isinstance(base_section, dict):
+            raise ValueError(f"{section_name} must be a table")
+        merged[section_name] = {
+            **base_section,
+            **section_overlay,
+        }
+    return merged
 
 
 def _detect_bitloops_enabled(*, condition: str, agent: AgentConfig) -> bool:

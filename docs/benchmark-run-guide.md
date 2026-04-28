@@ -96,9 +96,12 @@ Authenticate the `codex` CLI normally. No Bedrock or AWS setup is needed.
 
 Authenticate OpenCode normally. Provider credentials typically live in
 `~/.local/share/opencode/auth.json`. No Bedrock or AWS setup is needed unless
-your chosen model provider separately requires it. Committed benchmark defaults
-for OpenCode live in `configs/opencode/opencode.json`, while per-run
-`[model].name`, `temperature`, and optional `seed` stay in the benchmark TOML.
+your chosen model provider separately requires it. OpenCode **sampling** lives
+only in `configs/opencode/opencode.json`. That JSON is intentionally small:
+`build` and `plan` carry benchmark sampling, and provider model options carry the
+same seed/temperature/token cap plus context/output limits. The benchmark TOML
+still supplies `[model].name`, `provider`, and `[model_map.opencode]` for model
+resolution and reports.
 
 ## 4) Export the dataset once (if needed)
 
@@ -127,8 +130,8 @@ It uses:
 
 There are also narrower starting points, such as:
 
-- `configs/swebench/rust_opencode.toml` (Use this for OpenCode)
-- `configs/swebench/rust_opencode_baseline.toml` (Use this for OpenCode baseline - no Bitloops)
+- `configs/swebench/rust_opencode.toml --mode with_bitloops` (Use this for OpenCode + Bitloops)
+- `configs/swebench/rust_opencode.toml --mode baseline` (Use this for OpenCode baseline - no Bitloops)
 - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml`
 - `configs/swebench/rust_tokio_phase1_codex_with_bitloops.toml`
 
@@ -256,7 +259,8 @@ max_workers = 1
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli plan \
-  --config configs/swebench/rust_opencode.toml
+  --config configs/swebench/rust_opencode.toml \
+  --mode with_bitloops
 ```
 
 Check that:
@@ -272,6 +276,7 @@ If you want five tasks, this command is the fastest way to verify that
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
   --config configs/swebench/rust_opencode.toml \
+  --mode with_bitloops \
   --appendix-output-dir reports/appendix/rust_opencode
 ```
 
@@ -289,7 +294,7 @@ ls -1t runs/swebench_multilingual/$(date +%Y%m%d) | head -n 1
 
 Inside the run folder:
 
-- `run_manifest.json`
+- `run_manifest.json` (for `agent.id = "opencode"`, includes an `opencode` object summarizing `configs/opencode/opencode.json`: path, SHA256, and sampling fields used by the OpenCode CLI)
 - `summary.json`
 - `instances.jsonl`
 - `attempts/attempt-01/predictions.jsonl`

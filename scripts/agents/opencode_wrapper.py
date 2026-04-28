@@ -131,30 +131,6 @@ def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
     return max(env_value, run_value, 1500)
 
 
-def _coerce_temperature(model: object) -> float | None:
-    if not isinstance(model, dict):
-        return None
-    raw_value = model.get("temperature")
-    if raw_value is None:
-        return None
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_seed(model: object) -> int | None:
-    if not isinstance(model, dict):
-        return None
-    raw_value = model.get("seed")
-    if raw_value is None:
-        return None
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_opencode_provider_id(provider_id: str | None) -> str | None:
     normalized = str(provider_id or "").strip()
     if not normalized:
@@ -174,69 +150,6 @@ def _normalize_opencode_model_reference(model_reference: str) -> str:
     if not canonical_provider_id:
         return normalized
     return f"{canonical_provider_id}/{model_id.strip()}"
-
-
-def _split_opencode_model_reference(
-    resolved_model_name: str,
-    fallback_provider: str | None,
-) -> tuple[str | None, str | None]:
-    model_name = _normalize_opencode_model_reference(resolved_model_name)
-    if not model_name:
-        return None, None
-
-    if "/" in model_name:
-        provider_id, model_id = model_name.split("/", 1)
-        provider_id = _normalize_opencode_provider_id(provider_id)
-        model_id = model_id.strip()
-        if provider_id and model_id:
-            return provider_id, model_id
-
-    provider_id = _normalize_opencode_provider_id(fallback_provider)
-    if not provider_id:
-        return None, None
-    return provider_id, model_name
-
-
-def _build_opencode_runtime_config(
-    *,
-    payload: dict[str, object],
-    resolved_model_name: str,
-) -> dict[str, object] | None:
-    model = payload.get("model", {})
-    temperature = _coerce_temperature(model)
-    seed = _coerce_seed(model)
-    if temperature is None and seed is None:
-        return None
-
-    fallback_provider = None
-    if isinstance(model, dict):
-        fallback_provider = str(model.get("provider", "")).strip() or None
-
-    provider_id, model_id = _split_opencode_model_reference(
-        resolved_model_name,
-        fallback_provider,
-    )
-    if not provider_id or not model_id:
-        return None
-
-    options: dict[str, object] = {}
-    if temperature is not None:
-        options["temperature"] = temperature
-    if seed is not None:
-        options["seed"] = seed
-
-    return {
-        "$schema": "https://opencode.ai/config.json",
-        "provider": {
-            provider_id: {
-                "models": {
-                    model_id: {
-                        "options": options,
-                    }
-                }
-            }
-        },
-    }
 
 
 def _resolve_repo_opencode_config_path() -> Path:
@@ -290,7 +203,6 @@ def _build_opencode_invocation_config(
     *,
     existing_content: str,
     repo_config_path: Path,
-    runtime_config: dict[str, object] | None,
 ) -> dict[str, object] | None:
     merged: dict[str, object] | None = None
     if existing_content.strip():
@@ -302,9 +214,6 @@ def _build_opencode_invocation_config(
     if repo_config_path.exists():
         repo_config = _load_opencode_config_file(repo_config_path)
         merged = _deep_merge_dicts(merged or {}, repo_config)
-
-    if runtime_config is not None:
-        merged = _deep_merge_dicts(merged or {}, runtime_config)
 
     return merged
 
@@ -398,6 +307,112 @@ def _resolve_missing_tool_capture_error(
     )
 
 
+def _clip_text(text: str, limit: int = 4000) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit]}\n… (truncated)"
+
+
+def _summarize_opencode_stdout_errors(stdout: str) -> str | None:
+    """Parse OpenCode ``--format json`` JSONL for top-level ``type: error`` events (e.g. API 401)."""
+    summaries: list[str] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "error":
+            continue
+        err = obj.get("error")
+        if isinstance(err, dict):
+            name = str(err.get("name", "")).strip()
+            data = err.get("data")
+            part = ""
+            if isinstance(data, dict):
+                msg = str(data.get("message", "")).strip()
+                code = data.get("statusCode")
+                if code is not None and msg:
+                    part = f"HTTP {code}: {msg}"
+                elif msg:
+                    part = msg
+                elif code is not None:
+                    part = f"HTTP {code}"
+            if not part:
+                part = name or str(err)[:400]
+            elif name and name not in part:
+                part = f"{name}: {part}"
+        else:
+            part = str(err)[:400] if err is not None else "unknown error"
+        if part:
+            summaries.append(part)
+    if not summaries:
+        return None
+    return "; ".join(summaries[:3])
+
+
+def _ensure_nonempty_patch_or_exit(
+    *,
+    patch: str,
+    return_code: int,
+    patch_source: str,
+    stdout: str,
+    stderr: str,
+    command: list[str],
+    workspace: Path,
+    raw_stdout_path: str | None,
+    raw_stderr_path: str | None,
+) -> None:
+    if patch.strip():
+        return
+    if env_flag("BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH", default=False):
+        return
+    stream_error = _summarize_opencode_stdout_errors(stdout)
+    if stream_error:
+        fatal_error(
+            "opencode failed before producing edits (model or API error)",
+            details={
+                "error_summary": stream_error,
+                "hint": (
+                    "OpenCode returned JSONL error event(s) instead of completing the task. "
+                    "For Fireworks, configure an API key in OpenCode auth "
+                    "(see https://docs.fireworks.ai/api-reference/introduction#authentication) "
+                    "or your team's opencode provider setup. "
+                    "Set BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH=1 only for targeted tests."
+                ),
+                "return_code": return_code,
+                "patch_source": patch_source,
+                "stdout_preview": _clip_text(stdout),
+                "stderr_preview": _clip_text(stderr),
+                "command": command,
+                "workspace": str(workspace),
+                "raw_stdout_path": raw_stdout_path,
+                "raw_stderr_path": raw_stderr_path,
+            },
+        )
+    fatal_error(
+        "opencode produced no patch",
+        details={
+            "hint": (
+                "OpenCode exited successfully but produced no unified diff and no "
+                "git-tracked workspace changes. Set BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH=1 "
+                "only for targeted tests."
+            ),
+            "return_code": return_code,
+            "patch_source": patch_source,
+            "stdout_preview": _clip_text(stdout),
+            "stderr_preview": _clip_text(stderr),
+            "command": command,
+            "workspace": str(workspace),
+            "raw_stdout_path": raw_stdout_path,
+            "raw_stderr_path": raw_stderr_path,
+        },
+    )
+
+
 def main() -> None:
     args = parse_args()
     payload = read_payload_from_stdin()
@@ -410,10 +425,6 @@ def main() -> None:
     )
     model_name = _normalize_opencode_model_reference(raw_model_name)
     agent_name = os.environ.get("OPENCODE_AGENT", "").strip() or "build"
-    runtime_config = _build_opencode_runtime_config(
-        payload=payload,
-        resolved_model_name=model_name,
-    )
 
     workspace = resolve_workspace(payload)
     bitloops_sandbox = resolve_bitloops_sandbox(payload)
@@ -484,7 +495,6 @@ def main() -> None:
         invocation_config = _build_opencode_invocation_config(
             existing_content=existing_config_content,
             repo_config_path=repo_config_path,
-            runtime_config=runtime_config,
         )
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         fatal_error(
@@ -555,11 +565,22 @@ def main() -> None:
                 **failure_summary,
             },
         )
-        sys.exit(1)
     else:
         parsed_payload = parse_agent_payload(stdout)
         parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
         patch, patch_source = extract_git_patch(parsed_text)
+
+    _ensure_nonempty_patch_or_exit(
+        patch=patch,
+        return_code=return_code,
+        patch_source=patch_source,
+        stdout=stdout,
+        stderr=stderr,
+        command=command,
+        workspace=workspace,
+        raw_stdout_path=raw_stdout_path,
+        raw_stderr_path=raw_stderr_path,
+    )
 
     parsed_payload = parse_agent_payload(stdout)
     usage_metrics = extract_usage_metrics(parsed_payload)
@@ -600,6 +621,7 @@ def main() -> None:
     )
     merged_metrics = merge_metric_metadata(usage_metrics, hook_metrics)
 
+    model_manifest = model if isinstance(model, dict) else {}
     emit_success(
         patch=patch,
         metadata={
@@ -608,9 +630,10 @@ def main() -> None:
             "agent_mode": agent_name,
             "canonical_model_name": canonical_model_name or model_name,
             "resolved_model_name": model_name,
-            "temperature": _coerce_temperature(model),
-            "seed": _coerce_seed(model),
-            "runtime_config_applied": runtime_config is not None,
+            "opencode_sampling_source": "repo_json",
+            "benchmark_manifest_temperature": model_manifest.get("temperature"),
+            "benchmark_manifest_seed": model_manifest.get("seed"),
+            "benchmark_manifest_max_tokens": model_manifest.get("max_tokens"),
             "elapsed_ms": elapsed_ms,
             "patch_source": patch_source,
             "prompt_text": prompt,

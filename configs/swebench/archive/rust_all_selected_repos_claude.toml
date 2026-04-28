@@ -1,16 +1,9 @@
 [run]
 benchmark = "swebench_multilingual"
-dataset_path = "datasets/swebench_multilingual.test.all.jsonl"
-include_repos = [
-  "tokio-rs/tokio",
-  "nushell/nushell",
-  "tokio-rs/axum",
-  "burntsushi/ripgrep",
-  "sharkdp/bat",
-  "astral-sh/ruff",
-]
+dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
+include_repos = []
 split = "test"
-language = ""
+language = "rust"
 condition = "baseline"
 attempts = 1
 max_workers = 4

@@ -82,8 +82,8 @@ RUN_MAX_WORKERS=3 ./scripts/swebench/phase1_tokio_run.sh
 
 1. Pick a config:
    - `configs/swebench/rust_canary.toml` (mock agent)
-   - `configs/swebench/rust_opencode.toml` (OpenCode + Bitloops)
-   - `configs/swebench/rust_opencode_baseline.toml` (OpenCode baseline)
+   - `configs/swebench/rust_opencode.toml --mode baseline` (OpenCode baseline)
+   - `configs/swebench/rust_opencode.toml --mode with_bitloops` (OpenCode + Bitloops)
    - `configs/swebench/rust_tokio_phase1_claude.toml` (Tokio Phase 1)
    - `configs/swebench/rust_tokio_phase1_claude_with_bitloops.toml` (Tokio Phase 1 + Bitloops)
    - `configs/swebench/rust_tokio_phase1_codex.toml` (Tokio Phase 1)
@@ -177,11 +177,12 @@ For Codex baseline defaults:
 For OpenCode baseline defaults:
 - canonical model: `gpt-5`
 - resolved model: `openai/gpt-5` (via `[model_map.opencode]`)
-- optional reproducibility knob: `[model].seed = 4242`
+- reproducibility and sampling: edit `configs/opencode/opencode.json` (not `[model]` in TOML)
+- `configs/opencode/opencode.json` is intentionally minimal: `agent.build`, `agent.plan`, and the provider model entry are the benchmark-owned sampling surface
 
 For OpenCode credentials:
 - keep provider API keys in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`
-- keep benchmark runtime knobs in TOML (`[model].name`, `temperature`, optional `seed`)
+- keep model identity in TOML (`[model].name`, `provider`, `model_map`); sampling stays in `configs/opencode/opencode.json`
 
 `plan` and `run` now perform strict agent/model normalization checks and fail
 fast on mismatches (example: Cursor with `claude-opus-4-6` will error and suggest
@@ -212,6 +213,13 @@ APPENDIX_DIR=reports/appendix/tokio_claude_bitloops_ab \
 RUN_MAX_WORKERS=2 ./scripts/swebench/run_ab_compare.sh
 ```
 
+For OpenCode, the same TOML can be used for both sides:
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli plan --config configs/swebench/rust_opencode.toml --mode baseline
+./.venv/bin/python -m benchkit.swebench.cli run --config configs/swebench/rust_opencode.toml --mode with_bitloops
+```
+
 Bitloops-enabled Claude configs now use the same wrapper setup pattern:
 
 ```toml
@@ -228,8 +236,9 @@ Field reference:
 - `run.max_instances`: Optional cap on how many instances are selected after repo/language/ID filters. Omit it to run all matched instances. Must be `>= 1` when set.
 - `run.max_workers`: Maximum concurrent attempt-instance jobs inside a single run.
 - `run.workspace_isolation_mode`: Workspace reuse policy. Supported values are `shared_repo_commit`, `task_scoped`, and `attempt_scoped`. Multi-attempt parallel runs automatically promote to `attempt_scoped`.
+- `modes.<name>.*`: Optional shallow overrides for `run`, `agent`, `model`, `evaluation`, and `model_map`; use this to switch between baseline and Bitloops without duplicating the shared config.
 - `agent.extra_args`: Extra CLI args appended to `agent.command` in order. For Claude/Cursor/OpenCode/Codex wrappers, this is where Bitloops flags are passed.
-- `model.seed`: Optional integer seed recorded in run metadata and forwarded to wrappers that support deterministic sampling. OpenCode maps it into runtime config automatically.
+- `model.seed`: Optional integer seed recorded in run metadata and forwarded to wrappers that support deterministic sampling (e.g. Codex). **OpenCode** ignores TOML sampling fields; configure them in `configs/opencode/opencode.json`.
 
 With this setup, the wrapper brings up an isolated task-local Bitloops runtime and runs
 `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=false --embeddings-runtime platform`.

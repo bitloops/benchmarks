@@ -35,7 +35,7 @@ Use SWE-bench Multilingual as the first benchmark suite, but evaluate **agents**
 
 Each run creates:
 
-- `run_manifest.json` with benchmark, agent, model, dataset, and timing metadata.
+- `run_manifest.json` with benchmark, agent, model, dataset, and timing metadata (OpenCode runs also include an `opencode` summary of `configs/opencode/opencode.json`).
 - `instances.jsonl` with exact evaluated instance list.
 - `attempts/attempt-<n>/predictions.jsonl`
 - `attempts/attempt-<n>/trace.jsonl`
@@ -136,6 +136,8 @@ Runner sends JSON on stdin:
   }
 }
 ```
+
+The runner always sends `model.temperature`, `model.max_tokens`, and `model.seed` from the benchmark TOML for manifests and non-OpenCode agents. **OpenCode** does not apply those fields to the CLI; configure sampling in `configs/opencode/opencode.json` instead.
 
 Wrapper must output JSON to stdout:
 

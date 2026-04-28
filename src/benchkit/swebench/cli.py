@@ -9,6 +9,10 @@ from benchkit.swebench.db import import_appendix_csv_to_sqlite
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
 from benchkit.swebench.model_mapper import resolve_model_name
+from benchkit.swebench.opencode_config_metadata import (
+    build_opencode_run_metadata,
+    format_opencode_plan_lines,
+)
 from benchkit.swebench.runner import execute_run
 
 
@@ -18,10 +22,12 @@ def main() -> None:
 
     plan_parser = subparsers.add_parser("plan", help="Inspect selected instances before running")
     plan_parser.add_argument("--config", required=True, type=Path, help="Path to TOML config")
+    plan_parser.add_argument("--mode", default=None, help="Optional config mode overlay")
     plan_parser.add_argument("--show", type=int, default=5, help="How many instance IDs to show")
 
     run_parser = subparsers.add_parser("run", help="Run agent-based benchmark generation")
     run_parser.add_argument("--config", required=True, type=Path, help="Path to TOML config")
+    run_parser.add_argument("--mode", default=None, help="Optional config mode overlay")
     run_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -170,12 +176,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "plan":
-        run_plan(args.config, args.show)
+        run_plan(args.config, args.show, args.mode)
         return
 
     if args.command == "run":
         run_execute(
             args.config,
+            args.mode,
             args.dry_run,
             args.attempts,
             args.max_workers,
@@ -213,8 +220,11 @@ def main() -> None:
     raise RuntimeError(f"Unsupported command: {args.command}")
 
 
-def run_plan(config_path: Path, show: int) -> None:
-    config = load_run_config(config_path)
+def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
+    try:
+        config = load_run_config(config_path, mode=mode)
+    except ValueError as exc:
+        raise SystemExit(f"Config error: {exc}") from exc
     all_instances = load_instances(config.dataset_path)
     selected = filter_instances(
         all_instances,
@@ -233,6 +243,7 @@ def run_plan(config_path: Path, show: int) -> None:
         raise SystemExit(f"Model resolution error: {exc}") from exc
 
     print(f"Benchmark: {config.benchmark}")
+    print(f"Config mode: {config.config_mode or 'none'}")
     print(f"Dataset: {config.dataset_path}")
     print(f"Condition: {config.condition}")
     print(f"Agent: {config.agent.id}")
@@ -240,9 +251,13 @@ def run_plan(config_path: Path, show: int) -> None:
     print(f"Resolved model: {model_resolution.resolved_name}")
     print(f"Model resolution source: {model_resolution.source}")
     print(f"Model map key: {model_resolution.map_key}")
-    print(f"Temperature: {config.model.temperature}")
-    print(f"Max tokens: {config.model.max_tokens}")
-    print(f"Seed: {config.model.seed if config.model.seed is not None else 'none'}")
+    print("Benchmark TOML model manifest (run.json payload; not OpenCode sampling):")
+    print(f"  Temperature: {config.model.temperature}")
+    print(f"  Max tokens: {config.model.max_tokens}")
+    print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
+    if config.agent.id == "opencode":
+        for line in format_opencode_plan_lines(build_opencode_run_metadata()):
+            print(line)
     print(f"Total instances in file: {len(all_instances)}")
     print(f"Selected instances: {len(selected)}")
     print(f"Language filter: {config.language or 'none'}")
@@ -264,12 +279,16 @@ def run_plan(config_path: Path, show: int) -> None:
 
 def run_execute(
     config_path: Path,
+    mode: str | None,
     dry_run: bool,
     attempts: int | None,
     max_workers: int | None,
     appendix_output_dir: Path | None = None,
 ) -> None:
-    config = load_run_config(config_path)
+    try:
+        config = load_run_config(config_path, mode=mode)
+    except ValueError as exc:
+        raise SystemExit(f"Config error: {exc}") from exc
     try:
         result = execute_run(
             config,
