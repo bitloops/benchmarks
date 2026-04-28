@@ -416,6 +416,119 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("token_output"), 444)
         self.assertEqual(metrics.get("estimated_cost"), 0.12)
 
+    def test_extract_usage_metrics_aggregates_opencode_step_finish_tokens_before_fallback_scan(
+        self,
+    ) -> None:
+        payload = [
+            {
+                "type": "step_finish",
+                "part": {
+                    "cost": 0.006207,
+                    "tokens": {
+                        "total": 10889,
+                        "input": 10584,
+                        "output": 305,
+                        "reasoning": 0,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                },
+            },
+            {
+                "type": "message.updated",
+                "part": {
+                    "cost": 999,
+                    "tokens": {
+                        "input": 999999,
+                        "output": 999999,
+                        "cache": {"write": 999999, "read": 999999},
+                    },
+                },
+            },
+            {
+                "type": "step_finish",
+                "part": {
+                    "cost": 0.5,
+                    "tokens": {
+                        "input": 100,
+                        "output": 7,
+                        "reasoning": 3,
+                        "cache": {"write": 4, "read": 200},
+                    },
+                },
+            },
+        ]
+
+        metrics = common.extract_usage_metrics(payload)
+
+        self.assertEqual(metrics.get("token_input"), 10684)
+        self.assertEqual(metrics.get("token_output"), 312)
+        self.assertEqual(metrics.get("reasoning_output_tokens"), 3)
+        self.assertEqual(metrics.get("cache_creation_input_tokens"), 4)
+        self.assertEqual(metrics.get("cache_read_input_tokens"), 200)
+        self.assertEqual(metrics.get("total_tokens"), 11203)
+        self.assertAlmostEqual(float(metrics.get("estimated_cost", 0)), 0.506207)
+        self.assertEqual(metrics.get("token_metrics_source"), "opencode_step_finish_sum")
+
+    def test_extract_usage_metrics_emits_zero_cache_counts_for_opencode_step_finish(
+        self,
+    ) -> None:
+        payload = [
+            {
+                "type": "step_finish",
+                "part": {
+                    "cost": 0.1,
+                    "tokens": {
+                        "total": 12,
+                        "input": 10,
+                        "output": 2,
+                        "reasoning": 0,
+                        "cache": {},
+                    },
+                },
+            },
+            {
+                "type": "step_finish",
+                "part": {
+                    "cost": 0.2,
+                    "tokens": {
+                        "total": 13,
+                        "input": 11,
+                        "output": 2,
+                    },
+                },
+            },
+            {
+                "type": "step.finish",
+                "part": {
+                    "cost": 999,
+                    "tokens": {
+                        "total": 999,
+                        "input": 999,
+                        "output": 999,
+                        "cache": {"write": 999, "read": 999},
+                    },
+                },
+            },
+            {
+                "type": "step_finish",
+                "part": {
+                    "cost": 999,
+                    "tokens": "not-a-dict",
+                },
+            },
+        ]
+
+        metrics = common.extract_usage_metrics(payload)
+
+        self.assertEqual(metrics.get("token_input"), 21)
+        self.assertEqual(metrics.get("token_output"), 4)
+        self.assertEqual(metrics.get("reasoning_output_tokens"), 0)
+        self.assertEqual(metrics.get("cache_creation_input_tokens"), 0)
+        self.assertEqual(metrics.get("cache_read_input_tokens"), 0)
+        self.assertEqual(metrics.get("total_tokens"), 25)
+        self.assertAlmostEqual(float(metrics.get("estimated_cost", 0)), 0.3)
+        self.assertEqual(metrics.get("token_metrics_source"), "opencode_step_finish_sum")
+
     def test_extract_codex_command_execution_as_tool_invocation(self) -> None:
         payload = [
             {
