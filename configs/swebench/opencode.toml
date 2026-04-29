@@ -1,35 +1,23 @@
-# Built-in defaults from benchkit: agent command, provider, run/evaluation fields, and [modes] overlays.
-# Use CLI `--mode baseline` or `--mode with_bitloops` to merge a mode section from the preset.
+# Field reference: docs/run-benchmarks.md#swe-bench-config-reference
 preset = "opencode"
 
 [run]
-# JSONL dataset (path is relative to the repo root unless absolute).
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
-# If non-empty, only instances whose repo is in this list are run.
 include_repos = []
-# If non-empty, only these SWE-bench instance IDs are run (in addition to instance_ids_file, if set).
 include_instance_ids = []
-# Stop after this many instances (after filters); omit or use a large number for full runs.
 max_instances = 1
-# Independent solve attempts per instance (each attempt is a full agent run).
 attempts = 1
-# Concurrent benchmark tasks (instances in flight).
 max_workers = 1
-# Per-instance agent/solve timeout in seconds (opencode preset default is 900).
 timeout_seconds = 900
-# Timeout for workspace preparation (clone, checkout, etc.) in seconds (opencode preset uses 1800).
 workspace_timeout_seconds = 1800
 
 [model]
-# Overrides preset model name; provider and other model fields still come from the opencode preset unless set here.
+# Runtime OpenCode settings come from configs/opencode/opencode.json.
 name = "deepseek-v4-pro"
 
-# Maps the canonical model.name to the model id the OpenCode agent expects (e.g. provider deployment id).
 [model_map.opencode]
 "deepseek-v4-pro" = "fireworks-ai/accounts/vasilis-bitloops/deployments/d5hkfhu7"
 
 [evaluation]
-# Parallel workers for the SWE-bench evaluation phase (after agent runs), not for benchmark concurrency.
 max_workers = 2
-# Wall-clock cap for the evaluation subprocess per batch/run (seconds).
 timeout_seconds = 7200

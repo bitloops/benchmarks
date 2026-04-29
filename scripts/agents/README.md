@@ -167,6 +167,12 @@ Env vars:
 - `CODEX_SANDBOX` (default: `workspace-write`; used only when `CODEX_FULL_AUTO=false`)
 - `CODEX_SKIP_GIT_REPO_CHECK` (default: `false`)
 
+Codex-specific notes:
+
+- The wrapper loads committed runtime defaults from `configs/codex/codex.json`.
+- If `CODEX_CONFIG_CONTENT` is set, it is JSON-merged first, then `configs/codex/codex.json` is merged over it.
+- Runtime knobs are shared in one place (`model_reasoning_effort`, `model_verbosity`, `model_reasoning_summary`, timeout/full-auto/sandbox defaults), while benchmark TOML keeps run filtering and model mapping.
+
 Typical non-interactive setting:
 
 ```bash

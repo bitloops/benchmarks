@@ -13,6 +13,7 @@ from benchkit.common.config import AgentConfig, RunConfig
 from benchkit.common.io import write_json, write_jsonl
 from benchkit.swebench.agents.base import AgentAdapter, RunContext
 from benchkit.swebench.agents.registry import build_agent_adapter
+from benchkit.swebench.codex_config_metadata import build_codex_run_metadata
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.evaluation import AttemptEvaluationResult, evaluate_predictions_with_harness
 from benchkit.swebench.model_mapper import resolve_model_name
@@ -421,6 +422,8 @@ def _build_manifest(
     }
     if config.agent.id == "opencode":
         manifest["opencode"] = build_opencode_run_metadata()
+    if config.agent.id == "codex":
+        manifest["codex"] = build_codex_run_metadata()
     return manifest
 
 
