@@ -1408,11 +1408,20 @@ def setup_bitloops_for_workspace(
         env=env,
         cwd=cwd,
     )
+    requested_embeddings_runtime = (
+        embeddings_runtime.strip() if isinstance(embeddings_runtime, str) and embeddings_runtime.strip() else None
+    )
+    effective_no_embeddings = no_embeddings or requested_embeddings_runtime is None
     requested_summary_mode = (
         summary_mode.strip().lower() if isinstance(summary_mode, str) and summary_mode.strip() else None
     )
-    effective_no_summaries = no_summaries or requested_summary_mode == "off"
-    effective_summary_mode = "off" if effective_no_summaries else requested_summary_mode
+    if no_summaries:
+        effective_summary_mode = "off"
+    elif requested_summary_mode is not None:
+        effective_summary_mode = requested_summary_mode
+    else:
+        effective_summary_mode = "off"
+    effective_no_summaries = effective_summary_mode == "off"
     repo_config_path = _apply_bitloops_repo_semantic_modes(
         embedding_mode=embedding_mode,
         cwd=cwd,
@@ -1477,8 +1486,8 @@ def setup_bitloops_for_workspace(
             sync=sync,
             ingest=ingest,
             install_default_daemon=install_default_daemon,
-            embeddings_runtime=embeddings_runtime,
-            no_embeddings=no_embeddings,
+            embeddings_runtime=requested_embeddings_runtime,
+            no_embeddings=effective_no_embeddings,
             no_summaries=effective_no_summaries,
             env=sandbox_env,
             cwd=cwd,
@@ -1508,8 +1517,8 @@ def setup_bitloops_for_workspace(
                     sync=sync,
                     ingest=ingest,
                     install_default_daemon=False,
-                    embeddings_runtime=embeddings_runtime,
-                    no_embeddings=no_embeddings,
+                    embeddings_runtime=requested_embeddings_runtime,
+                    no_embeddings=effective_no_embeddings,
                     no_summaries=effective_no_summaries,
                     env=env,
                     cwd=cwd,
@@ -1528,8 +1537,8 @@ def setup_bitloops_for_workspace(
                 sync=sync,
                 ingest=ingest,
                 install_default_daemon=install_default_daemon,
-                embeddings_runtime=embeddings_runtime,
-                no_embeddings=no_embeddings,
+                embeddings_runtime=requested_embeddings_runtime,
+                no_embeddings=effective_no_embeddings,
                 no_summaries=effective_no_summaries,
                 env=env,
                 cwd=cwd,
@@ -1563,8 +1572,8 @@ def setup_bitloops_for_workspace(
         "bitloops_sync": sync,
         "bitloops_ingest": ingest,
         "bitloops_install_default_daemon_requested": install_default_daemon,
-        "bitloops_embeddings_runtime": embeddings_runtime,
-        "bitloops_no_embeddings": no_embeddings,
+        "bitloops_embeddings_runtime": requested_embeddings_runtime,
+        "bitloops_no_embeddings": effective_no_embeddings,
         "bitloops_no_summaries": effective_no_summaries,
         "bitloops_summary_mode": effective_summary_mode,
         "bitloops_embedding_mode": embedding_mode,

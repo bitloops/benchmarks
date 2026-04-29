@@ -939,6 +939,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
+                "--no-embeddings",
+                "--no-summaries",
             ],
         )
         self.assertFalse(metadata["bitloops_install_default_daemon"])
@@ -1001,6 +1003,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--telemetry=false",
                 "--sync=true",
+                "--no-embeddings",
+                "--no-summaries",
             ],
         )
         self.assertEqual(metadata["bitloops_init_elapsed_ms"], 22)
@@ -1014,6 +1018,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
+                "--no-embeddings",
+                "--no-summaries",
             ],
         )
         self.assertEqual(
@@ -1025,6 +1031,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--telemetry=false",
                 "--sync=true",
+                "--no-embeddings",
+                "--no-summaries",
             ],
         )
 
@@ -1126,6 +1134,43 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertIn('summary_mode = "auto"', rendered)
         self.assertIn('embedding_mode = "deterministic"', rendered)
 
+    def test_setup_bitloops_defaults_to_no_embeddings_and_no_summaries(self) -> None:
+        responses = [
+            ("Bitloops daemon: running\n", "", 0, 5),
+            ("Bitloops init completed", "", 0, 16),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            with patch.object(
+                common,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(common, "call_command", side_effect=responses) as mock_call:
+                metadata = common.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    cwd=str(workspace),
+                )
+
+        self.assertEqual(
+            mock_call.call_args_list[1].args[0],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "claude-code",
+                "--telemetry=false",
+                "--sync=true",
+                "--ingest=true",
+                "--no-embeddings",
+                "--no-summaries",
+            ],
+        )
+        self.assertTrue(metadata["bitloops_no_embeddings"])
+        self.assertTrue(metadata["bitloops_no_summaries"])
+        self.assertEqual(metadata["bitloops_summary_mode"], "off")
+
     def test_setup_bitloops_supports_no_summaries_flag(self) -> None:
         responses = [
             ("Bitloops daemon: running\n", "", 0, 5),
@@ -1156,6 +1201,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
+                "--no-embeddings",
                 "--no-summaries",
             ],
         )
@@ -1200,6 +1246,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
+                "--no-embeddings",
                 "--no-summaries",
             ],
         )
@@ -1213,6 +1260,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
+                "--no-embeddings",
             ],
         )
         self.assertTrue(metadata["bitloops_init_fallback_used"])
@@ -1251,6 +1299,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--sync=true",
                 "--ingest=true",
                 "--no-embeddings",
+                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_embeddings"])

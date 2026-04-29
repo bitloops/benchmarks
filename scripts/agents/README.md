@@ -74,19 +74,19 @@ Optional wrapper argument:
   - resolves the task-local Bitloops sandbox/runtime
   - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
-  - runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true`
-- `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime used during `bitloops init`
+  - by default runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true --no-embeddings --no-summaries`
+- `--bitloops-embeddings-runtime <local|platform>`: opts back into embeddings during `bitloops init`
 - `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
 - `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`
-- `--bitloops-summary-mode <auto|off>`: benchmark-wrapper control; `auto` leaves Bitloops init at its default summary behavior, and `off` is a compatibility alias for `--bitloops-no-summaries`
+- `--bitloops-summary-mode <auto|off>`: benchmark-wrapper control; `auto` opts back into Bitloops' default summary behavior, and `off` is a compatibility alias for `--bitloops-no-summaries`
 
-When both embeddings and summaries are off, benchmark wrappers now issue:
+With no extra args, benchmark wrappers issue:
 
 ```bash
 bitloops init --no-embeddings --no-summaries
 ```
 
-When both are enabled, use:
+To opt back into both embeddings and summaries, use:
 
 ```toml
 [run]
