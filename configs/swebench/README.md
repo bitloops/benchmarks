@@ -1,22 +1,22 @@
-# SWE-bench configs
+# SWE-bench Configs
 
-This directory keeps only current, runnable benchmark configs at the top level.
-Historical one-off experiments are preserved under `archive/`.
+Use these two configs for normal benchmark work:
 
-## Active configs
+- `codex.toml`
+- `opencode.toml`
 
-- `rust_canary.toml` - mock-agent smoke test.
-- `rust_all_repos_claude_with_bitloops.toml` - canonical multi-repo Claude + Bitloops slice (`datasets/swebench_multilingual.test.rust_all.jsonl`, 43 tasks).
-- `rust_opencode.toml` - current OpenCode config with `baseline` and `with_bitloops` modes.
-- `rust_opencode_baseline.toml` - legacy one-off OpenCode baseline config.
-- `rust_tokio_phase1_claude.toml` - Tokio Phase 1 Claude baseline.
-- `rust_tokio_phase1_claude_with_bitloops.toml` - Tokio Phase 1 Claude + Bitloops.
-- `rust_tokio_phase1_codex.toml` - Tokio Phase 1 Codex baseline.
-- `rust_tokio_phase1_codex_with_bitloops.toml` - Tokio Phase 1 Codex + Bitloops.
-- `rust_tokio_phase1_cursor.toml` - Tokio Phase 1 Cursor baseline, kept for `scripts/swebench/phase1_tokio_run.sh`.
-- `rust_tokio_phase1_opencode.toml` - Tokio Phase 1 OpenCode baseline, kept for `scripts/swebench/phase1_tokio_run.sh`.
+Both support the same modes:
 
-## Archived configs
+```bash
+--mode baseline
+--mode with_bitloops
+```
 
-The files in `archive/` are kept as runnable TOML references for old Ruff,
-prefetch, generic agent, and one-off Claude/Coreutils experiments.
+Keep the top-level configs small. Tune task selection, parallelism, timeouts,
+model name, and evaluation settings here. Shared boilerplate comes from the
+`codex` and `opencode` config presets in `benchkit.common.config`.
+
+Legacy configs are archived under:
+
+- `archive/legacy-current/` for configs that used to be top-level
+- `archive/` for older historical experiments
