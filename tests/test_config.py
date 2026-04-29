@@ -183,6 +183,136 @@ seed = 4242
             ):
                 load_run_config(path, mode="missing")
 
+    def test_load_run_config_applies_codex_preset_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(
+                """
+preset = "codex"
+
+[run]
+dataset_path = "datasets/sample.jsonl"
+include_instance_ids = ["tokio__a"]
+max_instances = 1
+
+[model]
+name = "gpt-5.4"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(path, mode="baseline")
+
+            self.assertEqual(cfg.config_mode, "baseline")
+            self.assertEqual(cfg.benchmark, "swebench_multilingual")
+            self.assertEqual(cfg.split, "test")
+            self.assertEqual(cfg.language, "rust")
+            self.assertEqual(cfg.condition, "baseline")
+            self.assertEqual(cfg.agent.id, "codex")
+            self.assertEqual(
+                cfg.agent.command,
+                ["python3", "scripts/agents/codex_wrapper.py"],
+            )
+            self.assertEqual(cfg.agent.extra_args, [])
+            self.assertEqual(cfg.model.provider, "openai")
+            self.assertEqual(cfg.model.name, "gpt-5.4")
+            self.assertTrue(cfg.prepare_workspace)
+            self.assertEqual(cfg.repo_url_template, "https://github.com/{repo}.git")
+            self.assertFalse(cfg.bitloops_enabled)
+            self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
+            self.assertTrue(cfg.evaluation.enabled)
+            self.assertEqual(cfg.evaluation.python_bin, "./.venv/bin/python")
+            self.assertEqual(cfg.evaluation.split, "test")
+
+    def test_load_run_config_applies_codex_preset_with_bitloops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(
+                """
+preset = "codex"
+
+[run]
+dataset_path = "datasets/sample.jsonl"
+timeout_seconds = 1800
+
+[model]
+name = "gpt-5.4"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(path, mode="with_bitloops")
+
+            self.assertEqual(cfg.config_mode, "with_bitloops")
+            self.assertEqual(cfg.condition, "with_bitloops")
+            self.assertEqual(cfg.timeout_seconds, 1800)
+            self.assertEqual(cfg.agent.extra_args, ["--bitloops-init"])
+            self.assertTrue(cfg.bitloops_enabled)
+            self.assertEqual(cfg.workspace_isolation_mode, "task_scoped")
+            self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
+
+    def test_load_run_config_applies_opencode_preset_with_bitloops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(
+                """
+preset = "opencode"
+
+[run]
+dataset_path = "datasets/sample.jsonl"
+max_workers = 1
+
+[model]
+name = "deepseek-v4-pro"
+
+[model_map.opencode]
+"deepseek-v4-pro" = "fireworks-ai/accounts/example/deployments/model"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(path, mode="with_bitloops")
+
+            self.assertEqual(cfg.config_mode, "with_bitloops")
+            self.assertEqual(cfg.agent.id, "opencode")
+            self.assertEqual(
+                cfg.agent.command,
+                ["python3", "scripts/agents/opencode_wrapper.py"],
+            )
+            self.assertEqual(cfg.model.provider, "fireworks-ai")
+            self.assertEqual(cfg.timeout_seconds, 1500)
+            self.assertEqual(cfg.workspace_timeout_seconds, 1800)
+            self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
+            self.assertEqual(
+                cfg.agent.extra_args,
+                [
+                    "--bitloops-init",
+                    "--bitloops-embeddings-runtime",
+                    "platform",
+                    "--bitloops-summary-mode",
+                    "off",
+                ],
+            )
+            self.assertEqual(
+                cfg.model_map["opencode"]["deepseek-v4-pro"],
+                "fireworks-ai/accounts/example/deployments/model",
+            )
+
+    def test_load_run_config_unknown_preset_lists_available_presets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text('preset = "missing"', encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "Unknown config preset 'missing'.*codex.*opencode",
+            ):
+                load_run_config(path)
+
 def _mode_config_text() -> str:
     return """
 [run]

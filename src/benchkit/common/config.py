@@ -12,6 +12,8 @@ DEFAULT_WORKSPACE_TIMEOUT_SECONDS = 600
 DEFAULT_PREPARE_WORKSPACE = False
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 32000
+DEFAULT_SWEBENCH_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
+
 
 @dataclass(slots=True)
 class ModelConfig:
@@ -83,6 +85,7 @@ def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
 def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
     config_path = config_path.resolve()
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    data = _apply_config_preset(data)
     data = _apply_mode_overlay(data, mode=mode)
 
     run = data.get("run", {})
@@ -205,6 +208,156 @@ def _normalize_config_mode(mode: str | None) -> str | None:
     return normalized or None
 
 
+def _apply_config_preset(data: dict[str, Any]) -> dict[str, Any]:
+    raw_preset = data.get("preset")
+    if raw_preset is None:
+        return data
+    if not isinstance(raw_preset, str):
+        raise ValueError("preset must be a string")
+
+    preset_name = raw_preset.strip().lower()
+    presets = _config_presets()
+    preset = presets.get(preset_name)
+    if preset is None:
+        available = ", ".join(sorted(presets.keys()))
+        raise ValueError(
+            f"Unknown config preset '{preset_name}'. Available presets: {available}"
+        )
+    return _merge_config_data(preset, data)
+
+
+def _config_presets() -> dict[str, dict[str, Any]]:
+    common_run = {
+        "benchmark": "swebench_multilingual",
+        "split": "test",
+        "language": "rust",
+        "condition": "baseline",
+        "include_repos": [],
+        "include_instance_ids": [],
+        "attempts": DEFAULT_ATTEMPTS,
+        "max_workers": DEFAULT_MAX_WORKERS,
+        "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+        "output_root": "runs",
+        "prepare_workspace": True,
+        "repo_url_template": "https://github.com/{repo}.git",
+        "git_bin": "git",
+        "workspace_timeout_seconds": DEFAULT_WORKSPACE_TIMEOUT_SECONDS,
+    }
+    common_evaluation = {
+        "enabled": True,
+        "python_bin": "./.venv/bin/python",
+        "dataset_name": DEFAULT_SWEBENCH_DATASET_NAME,
+        "split": "test",
+        "max_workers": 4,
+        "timeout_seconds": 7200,
+        "command_template": [],
+        "extra_args": [],
+    }
+    return {
+        "codex": {
+            "run": {
+                **common_run,
+                "timeout_seconds": 1200,
+            },
+            "agent": {
+                "id": "codex",
+                "command": ["python3", "scripts/agents/codex_wrapper.py"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "openai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": common_evaluation,
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                    },
+                    "agent": {"extra_args": ["--bitloops-init"]},
+                },
+            },
+        },
+        "opencode": {
+            "run": {
+                **common_run,
+                "timeout_seconds": 900,
+                "workspace_timeout_seconds": 1800,
+            },
+            "agent": {
+                "id": "opencode",
+                "command": ["python3", "scripts/agents/opencode_wrapper.py"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "fireworks-ai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": {
+                **common_evaluation,
+                "max_workers": 2,
+            },
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                        "timeout_seconds": 1500,
+                        "bitloops_sandbox_mode": "per_task_daemon",
+                    },
+                    "agent": {
+                        "extra_args": [
+                            "--bitloops-init",
+                            "--bitloops-embeddings-runtime",
+                            "platform",
+                            "--bitloops-summary-mode",
+                            "off",
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+
+def _merge_config_data(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, value in base.items():
+        if isinstance(value, dict):
+            merged[key] = _merge_config_data(value, {})
+        elif isinstance(value, list):
+            merged[key] = list(value)
+        else:
+            merged[key] = value
+
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_config_data(current, value)
+        elif isinstance(value, dict):
+            merged[key] = _merge_config_data(value, {})
+        elif isinstance(value, list):
+            merged[key] = list(value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _apply_mode_overlay(
     data: dict[str, Any],
     *,
@@ -238,10 +391,7 @@ def _apply_mode_overlay(
         base_section = merged.get(section_name, {})
         if not isinstance(base_section, dict):
             raise ValueError(f"{section_name} must be a table")
-        merged[section_name] = {
-            **base_section,
-            **section_overlay,
-        }
+        merged[section_name] = _merge_config_data(base_section, section_overlay)
     return merged
 
 
@@ -357,7 +507,7 @@ def _parse_evaluation_config(
 
     default_dataset_name = None
     if benchmark == "swebench_multilingual":
-        default_dataset_name = "SWE-bench/SWE-bench_Multilingual"
+        default_dataset_name = DEFAULT_SWEBENCH_DATASET_NAME
 
     swebench_repo_raw = raw.get("swebench_repo")
     swebench_repo = None
