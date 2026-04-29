@@ -2721,7 +2721,6 @@ def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     condition_instructions = ""
 
     if condition == "with_bitloops" and problem:
-        problem = f"Using DevQL\n\n{problem}"
         condition_instructions = (
             "- For code understanding and exploration, you must use `bitloops devql` first.\n"
             "- Only fall back to grep/read/glob or directory crawling if DevQL returns nothing useful.\n"

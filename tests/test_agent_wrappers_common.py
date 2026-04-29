@@ -25,7 +25,7 @@ common = _load_common_module()
 
 
 class AgentWrapperCommonTests(unittest.TestCase):
-    def test_render_task_prompt_prefixes_devql_issue_text_for_bitloops_condition(self) -> None:
+    def test_render_task_prompt_leaves_issue_text_unprefixed_for_bitloops_condition(self) -> None:
         prompt = common.render_task_prompt(
             {
                 "instance_id": "ruff__1",
@@ -39,7 +39,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
             wrapper_name="claude_code",
         )
 
-        self.assertIn("Issue:\nUsing DevQL\n\nFix the failing lint behavior.", prompt)
+        self.assertIn("Issue:\nFix the failing lint behavior.", prompt)
+        self.assertNotIn("Issue:\nUsing DevQL\n\nFix the failing lint behavior.", prompt)
         self.assertIn(
             "- For code understanding and exploration, you must use `bitloops devql` first.\n",
             prompt,
