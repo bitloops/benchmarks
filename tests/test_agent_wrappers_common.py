@@ -1849,6 +1849,82 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertTrue(mock_init.call_args.kwargs["install_default_daemon"])
         self.assertEqual(mock_init.call_args.kwargs["embeddings_runtime"], "platform")
 
+    def test_stop_bitloops_task_daemon_stops_sandbox_daemon_via_cli_when_handle_exited(self) -> None:
+        handle = SimpleNamespace(
+            process=SimpleNamespace(
+                poll=lambda: 0,
+                terminate=lambda: None,
+                wait=lambda timeout=None: None,
+                kill=lambda: None,
+            ),
+            port=43123,
+            stderr_log_path=Path("/tmp/benchkit/daemon.stderr.log"),
+            binary="bitloops",
+            env={"HOME": "/tmp/benchkit/home"},
+            cwd="/tmp/workspace",
+        )
+
+        with patch.object(
+            common,
+            "call_command",
+            return_value=("Bitloops daemon stopped.\n", "", 0, 9),
+        ) as mock_call:
+            common.stop_bitloops_task_daemon(handle)
+
+        mock_call.assert_called_once_with(
+            ["bitloops", "daemon", "stop"],
+            30,
+            env={"HOME": "/tmp/benchkit/home"},
+            cwd="/tmp/workspace",
+        )
+
+    def test_stop_bitloops_task_daemon_stops_cli_then_terminates_original_process(self) -> None:
+        state = {"running": True}
+        events: list[tuple[str, int | None] | str] = []
+
+        def poll() -> int | None:
+            return None if state["running"] else 0
+
+        def terminate() -> None:
+            events.append("terminate")
+            state["running"] = False
+
+        def wait(timeout: int | None = None) -> None:
+            events.append(("wait", timeout))
+
+        def kill() -> None:
+            events.append("kill")
+            state["running"] = False
+
+        handle = SimpleNamespace(
+            process=SimpleNamespace(
+                poll=poll,
+                terminate=terminate,
+                wait=wait,
+                kill=kill,
+            ),
+            port=43123,
+            stderr_log_path=Path("/tmp/benchkit/daemon.stderr.log"),
+            binary="bitloops",
+            env={"HOME": "/tmp/benchkit/home"},
+            cwd="/tmp/workspace",
+        )
+
+        with patch.object(
+            common,
+            "call_command",
+            return_value=("Bitloops daemon stopped.\n", "", 0, 11),
+        ) as mock_call:
+            common.stop_bitloops_task_daemon(handle)
+
+        mock_call.assert_called_once_with(
+            ["bitloops", "daemon", "stop"],
+            30,
+            env={"HOME": "/tmp/benchkit/home"},
+            cwd="/tmp/workspace",
+        )
+        self.assertEqual(events, ["terminate", ("wait", 5)])
+
     def test_run_bitloops_init_shortcuts_when_init_status_is_complete(self) -> None:
         shortcut_metadata = {
             "status_command": ["bitloops", "init", "status", "--json"],

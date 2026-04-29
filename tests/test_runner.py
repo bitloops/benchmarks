@@ -14,6 +14,7 @@ from benchkit.common.config import (
     RunConfig,
 )
 from benchkit.common.io import read_json, read_jsonl, write_jsonl
+from benchkit.swebench.evaluation import AttemptEvaluationResult
 from benchkit.swebench.runner import execute_run
 from benchkit.swebench.workspace import WorkspacePrepResult
 from benchkit.swebench.types import AgentResult, BenchmarkInstance
@@ -57,6 +58,35 @@ class _RecordingAdapter:
                 self.active_calls -= 1
 
 
+class _BlockingAdapter:
+    def __init__(
+        self,
+        *,
+        blocked_attempts: set[int] | None = None,
+        blocked_instance_ids: set[str] | None = None,
+        release_event: threading.Event,
+    ) -> None:
+        self.blocked_attempts = blocked_attempts or set()
+        self.blocked_instance_ids = blocked_instance_ids or set()
+        self.release_event = release_event
+
+    def generate_patch(self, instance: BenchmarkInstance, context: object) -> AgentResult:
+        attempt = int(getattr(context, "attempt", 0) or 0)
+        if attempt in self.blocked_attempts or instance.instance_id in self.blocked_instance_ids:
+            self.release_event.wait(timeout=5)
+        return AgentResult(
+            patch=(
+                f"diff --git a/{instance.instance_id}.txt b/{instance.instance_id}.txt\n"
+                "--- a/file.txt\n"
+                "+++ b/file.txt\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+            ),
+            metadata={"elapsed_ms": 1},
+        )
+
+
 class RunnerTests(unittest.TestCase):
     def test_execute_run_parallelizes_instances_when_max_workers_gt_one(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,6 +120,117 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue(all(len(read_jsonl(path)) == 1 for path in result.prediction_files))
             summary = read_json(result.run_root / "summary.json")
             self.assertEqual(summary["workspace_isolation_mode"], "attempt_scoped")
+
+    def test_execute_run_starts_attempt_evaluation_before_other_attempts_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = _make_config(root, max_workers=2, attempts=2, instance_count=1)
+            config.evaluation = EvaluationConfig(enabled=True)
+            release_event = threading.Event()
+            adapter = _BlockingAdapter(blocked_attempts={2}, release_event=release_event)
+            evaluation_started = threading.Event()
+            errors: list[BaseException] = []
+
+            def fake_evaluate_predictions_with_harness(**kwargs: object) -> AttemptEvaluationResult:
+                attempt_dir = Path(str(kwargs["attempt_dir"]))
+                evaluation_started.set()
+                return AttemptEvaluationResult(
+                    attempt=int(kwargs["attempt"]),
+                    status="ok",
+                    command=["fake-eval"],
+                    return_code=0,
+                    elapsed_ms=1,
+                    stdout_path=None,
+                    stderr_path=None,
+                    report_path=attempt_dir / "evaluation.json",
+                    parsed_path=None,
+                    tasks_path=None,
+                    parsed_source_file=None,
+                    task_count=1,
+                    solved_count=1,
+                    unsolved_count=0,
+                    error=None,
+                )
+
+            def run_benchmark() -> None:
+                try:
+                    execute_run(config)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            thread = threading.Thread(target=run_benchmark)
+            with patch("benchkit.swebench.runner.build_agent_adapter", return_value=adapter), patch(
+                "benchkit.swebench.runner.evaluate_predictions_with_harness",
+                side_effect=fake_evaluate_predictions_with_harness,
+            ):
+                thread.start()
+                started_early = evaluation_started.wait(timeout=0.2)
+                release_event.set()
+                thread.join(timeout=5)
+
+            if thread.is_alive():
+                self.fail("benchmark thread did not finish")
+            if errors:
+                raise errors[0]
+            self.assertTrue(started_early)
+
+    def test_execute_run_starts_instance_evaluation_before_other_instances_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = _make_config(root, max_workers=2, attempts=1, instance_count=2)
+            config.evaluation = EvaluationConfig(enabled=True)
+            release_event = threading.Event()
+            adapter = _BlockingAdapter(
+                blocked_instance_ids={"tokio__2"},
+                release_event=release_event,
+            )
+            evaluation_started = threading.Event()
+            errors: list[BaseException] = []
+
+            def fake_evaluate_predictions_with_harness(**kwargs: object) -> AttemptEvaluationResult:
+                attempt_dir = Path(str(kwargs["attempt_dir"]))
+                prediction_path = Path(str(kwargs["prediction_path"]))
+                if "instances" in prediction_path.parts:
+                    evaluation_started.set()
+                return AttemptEvaluationResult(
+                    attempt=int(kwargs["attempt"]),
+                    status="ok",
+                    command=["fake-eval"],
+                    return_code=0,
+                    elapsed_ms=1,
+                    stdout_path=None,
+                    stderr_path=None,
+                    report_path=attempt_dir / "evaluation.json",
+                    parsed_path=None,
+                    tasks_path=None,
+                    parsed_source_file=None,
+                    task_count=1,
+                    solved_count=1,
+                    unsolved_count=0,
+                    error=None,
+                )
+
+            def run_benchmark() -> None:
+                try:
+                    execute_run(config)
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            thread = threading.Thread(target=run_benchmark)
+            with patch("benchkit.swebench.runner.build_agent_adapter", return_value=adapter), patch(
+                "benchkit.swebench.runner.evaluate_predictions_with_harness",
+                side_effect=fake_evaluate_predictions_with_harness,
+            ):
+                thread.start()
+                started_early = evaluation_started.wait(timeout=0.2)
+                release_event.set()
+                thread.join(timeout=5)
+
+            if thread.is_alive():
+                self.fail("benchmark thread did not finish")
+            if errors:
+                raise errors[0]
+            self.assertTrue(started_early)
 
     def test_execute_run_uses_distinct_workspaces_for_parallel_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -53,7 +53,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Emit the aggregated script snapshot as JSON.",
     )
-    return parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if any(arg and arg.isspace() for arg in raw_argv):
+        parser.error(
+            "received a whitespace-only argument. This usually means one of your shell "
+            "continuation lines ended with '\\ ' instead of '\\'. Remove any spaces after "
+            "the trailing backslash and re-run the command."
+        )
+    return parser.parse_args(raw_argv)
 
 
 def find_run_roots(runs_root: Path) -> list[Path]:

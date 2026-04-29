@@ -31,6 +31,10 @@ Run it against one task in one benchmark run:
   --instance-id tokio-rs__axum-1119
 ```
 
+Keep each trailing `\` as the final character on its line. If a line ends with
+`\ ` instead, `zsh` splits the command and later flags such as `--repo` look
+like separate commands.
+
 That prints a snapshot like:
 - run metadata: run id, repo, instance id, workspace path
 - init session state: overall status plus lane-level progress from `bitloops init status`

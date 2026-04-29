@@ -47,6 +47,7 @@ DEBUG_HTTP_FALLBACK_ENV_VAR = "BENCHKIT_DEBUG_HTTP_FALLBACK"
 DEBUG_SERVER_ENDPOINT_ENV_VAR = "BENCHKIT_DEBUG_SERVER_ENDPOINT"
 BITLOOPS_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_BITLOOPS_GLOBAL_LOCK_PATH"
 BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_DISABLE_BITLOOPS_GLOBAL_LOCK"
+BITLOOPS_TASK_DAEMON_STOP_TIMEOUT_SECONDS = 30
 
 
 def _debug_log(*, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -256,10 +257,16 @@ class BitloopsTaskDaemonHandle:
         process: subprocess.Popen[str],
         port: int,
         stderr_log_path: Path,
+        binary: str,
+        env: dict[str, str],
+        cwd: str | None,
     ) -> None:
         self.process = process
         self.port = port
         self.stderr_log_path = stderr_log_path
+        self.binary = binary
+        self.env = dict(env)
+        self.cwd = cwd
 
 
 def resolve_bitloops_sandbox(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1073,12 +1080,37 @@ def start_bitloops_task_daemon(
         raise
 
     stderr_handle.close()
-    return BitloopsTaskDaemonHandle(process=process, port=port, stderr_log_path=stderr_log_path)
+    return BitloopsTaskDaemonHandle(
+        process=process,
+        port=port,
+        stderr_log_path=stderr_log_path,
+        binary=binary,
+        env=env,
+        cwd=cwd,
+    )
+
+
+def _stop_bitloops_task_daemon_via_cli(handle: BitloopsTaskDaemonHandle | None) -> None:
+    if handle is None:
+        return
+    binary = str(getattr(handle, "binary", "")).strip()
+    env = getattr(handle, "env", None)
+    cwd = getattr(handle, "cwd", None)
+    if not binary or not isinstance(env, dict):
+        return
+    with contextlib.suppress(Exception):
+        call_command(
+            [binary, "daemon", "stop"],
+            BITLOOPS_TASK_DAEMON_STOP_TIMEOUT_SECONDS,
+            env=env,
+            cwd=cwd,
+        )
 
 
 def stop_bitloops_task_daemon(handle: BitloopsTaskDaemonHandle | None) -> None:
     if handle is None:
         return
+    _stop_bitloops_task_daemon_via_cli(handle)
     if handle.process.poll() is not None:
         return
     with contextlib.suppress(OSError):
