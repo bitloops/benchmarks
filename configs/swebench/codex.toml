@@ -18,3 +18,9 @@ name = "gpt-5.4"
 [evaluation]
 max_workers = 4
 timeout_seconds = 7200
+
+[modes.baseline.agent]
+extra_args = []
+
+[modes.with_bitloops.agent]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "off"]
