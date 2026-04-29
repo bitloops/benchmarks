@@ -239,6 +239,92 @@ class GenerateBenchmarkRunRowTests(unittest.TestCase):
         self.assertEqual(cells[14], "solved")
         self.assertEqual(cells[15], "9")
 
+    def test_bitloops_rows_split_devql_calls_from_internal_tool_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(report_dir, {"condition": "with_bitloops", "internal_tool_calls": "999"})
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "condition": "with_bitloops",
+                        "status": "solved",
+                        "runtime_sec": "10",
+                        "token_input": "100",
+                        "token_output": "20",
+                        "cache_read_input_tokens": "7",
+                        "cache_creation_input_tokens": "3",
+                        "total_tokens": "130",
+                        "tool_calls": "5",
+                    }
+                ],
+            )
+            write_tool_invocation_log(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": 1,
+                        "tool": "Bash",
+                        "curated": {"command": "bitloops devql query '{ selectArtefacts { count } }'"},
+                    },
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": 1,
+                        "tool": "Bash",
+                        "curated": {"command": "cargo test"},
+                    },
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": 1,
+                        "tool": "Read",
+                        "curated": {},
+                    },
+                ],
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    str(report_dir),
+                    "--instance-id",
+                    "repo__one-1",
+                    "--attempt",
+                    "1",
+                    "--analysis",
+                    "checked",
+                    "--developer-comment",
+                    "looks ok",
+                    "--next-action",
+                    "ship",
+                    "--include-header",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        header, row = completed.stdout.rstrip("\n").splitlines()
+        columns = header.split("\t")
+        cells = row.split("\t")
+        self.assertEqual(columns[15], "devql_calls_num")
+        self.assertEqual(columns[16], "internal_tool_calls")
+        self.assertEqual(columns[17], "analysis (from AI and or query or script)")
+        self.assertEqual(columns[18], "developer comment on analysis")
+        self.assertEqual(columns[19], "next_action")
+        self.assertNotIn("ai_agent_and_model_used_for_analysis", columns)
+        self.assertEqual(cells[15], "1")
+        self.assertEqual(cells[16], "4")
+        self.assertEqual(cells[17], "checked")
+        self.assertEqual(cells[18], "looks ok")
+        self.assertEqual(cells[19], "ship")
+
 
 class UploadTraceJsonlToDriveTests(unittest.TestCase):
     def test_extracts_folder_id_from_drive_folder_url(self) -> None:
@@ -324,6 +410,7 @@ def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None)
         "run_id": "run-1",
         "run_datetime": "2026-04-28T07:01:09Z",
         "engineer": "markos",
+        "condition": "baseline",
         "agent": "opencode",
         "model_canonical": "qwen3.6-plus",
         "model_resolved": "model/full",
@@ -346,6 +433,7 @@ def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None)
                 "run_id",
                 "run_datetime",
                 "engineer",
+                "condition",
                 "agent",
                 "model_canonical",
                 "model_resolved",
@@ -376,6 +464,7 @@ def write_per_task_csv(report_dir: Path, rows: list[dict[str, str]]) -> None:
                 "attempt",
                 "agent",
                 "model_version",
+                "condition",
                 "status",
                 "runtime_sec",
                 "token_input",
@@ -388,6 +477,14 @@ def write_per_task_csv(report_dir: Path, rows: list[dict[str, str]]) -> None:
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_tool_invocation_log(report_dir: Path, rows: list[dict]) -> None:
+    with (report_dir / "appendix_tool_invocation_log.jsonl").open(
+        "w", encoding="utf-8"
+    ) as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
 
 
 if __name__ == "__main__":

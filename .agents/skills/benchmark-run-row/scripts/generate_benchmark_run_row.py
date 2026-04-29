@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-TARGET_COLUMNS = [
+BASELINE_TARGET_COLUMNS = [
     "run_id",
     "run_datetime",
     "engineer",
@@ -30,6 +30,31 @@ TARGET_COLUMNS = [
     "analysis (from AI and or query or script)",
     "developer comment on analysis (optional)",
 ]
+
+BITLOOPS_TARGET_COLUMNS = [
+    "run_id",
+    "run_datetime",
+    "engineer",
+    "agent",
+    "model",
+    "bitloops_cli_commit_sha",
+    "log_jsonl_link",
+    "runtime_sec",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "derived_total_input_processed_tokens",
+    "derived_total_processed_tokens",
+    "result",
+    "devql_calls_num",
+    "internal_tool_calls",
+    "analysis (from AI and or query or script)",
+    "developer comment on analysis",
+    "next_action",
+]
+
+TARGET_COLUMNS = BASELINE_TARGET_COLUMNS
 
 
 def main() -> int:
@@ -78,6 +103,11 @@ def main() -> int:
         help="Text for the developer comment column.",
     )
     parser.add_argument(
+        "--next-action",
+        default="",
+        help="Text for the Bitloops next_action column.",
+    )
+    parser.add_argument(
         "--log-jsonl-link",
         default=None,
         help="Override the log_jsonl_link column, for example with an uploaded Drive URL.",
@@ -104,14 +134,16 @@ def main() -> int:
             analysis=read_analysis(args.analysis, args.analysis_file),
             ai_agent_model=args.ai_agent_model,
             developer_comment=args.developer_comment,
+            next_action=args.next_action,
             log_jsonl_link=args.log_jsonl_link,
         )
+        target_columns = target_columns_for(row)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     if args.include_header:
-        print("\t".join(TARGET_COLUMNS))
+        print("\t".join(target_columns))
     print("\t".join(output_row))
     return 0
 
@@ -208,7 +240,12 @@ def apply_per_task_metrics(
     filtered["derived_total_input_processed_tokens"] = format_number(derived_input)
     filtered["derived_total_processed_tokens"] = format_number(derived_input + output_tokens)
     filtered["result"] = derive_result(selected_rows)
-    filtered["internal_tool_calls"] = format_number(sum_numeric(selected_rows, "tool_calls"))
+    devql_calls = count_devql_calls(summary_source.parent, selected_rows)
+    tool_calls = sum_numeric(selected_rows, "tool_calls")
+    filtered["devql_calls_num"] = format_number(devql_calls)
+    if is_bitloops_condition(filtered):
+        tool_calls = max(0, tool_calls - devql_calls)
+    filtered["internal_tool_calls"] = format_number(tool_calls)
     return filtered
 
 
@@ -247,10 +284,16 @@ def matches_instance(row: dict[str, Any], wanted_instance_ids: set[str]) -> bool
 def matches_attempt(row: dict[str, Any], wanted_attempts: set[str]) -> bool:
     if not wanted_attempts:
         return True
-    attempt = clean(row.get("attempt"))
+    return normalize_attempt_value(row.get("attempt")) in wanted_attempts
+
+
+def normalize_attempt_value(value: Any) -> str:
+    attempt = clean(value)
+    if attempt.startswith("attempt-"):
+        attempt = attempt.removeprefix("attempt-")
     if attempt.isdigit():
         attempt = str(int(attempt))
-    return attempt in wanted_attempts
+    return attempt
 
 
 def sum_numeric(rows: list[dict[str, Any]], key: str) -> int | float:
@@ -292,14 +335,83 @@ def derive_result(rows: list[dict[str, Any]]) -> str:
     return statuses[0] if statuses else ""
 
 
+def count_devql_calls(report_dir: Path, selected_rows: list[dict[str, Any]]) -> int:
+    selected = {
+        (clean(row.get("task_id")), normalize_attempt_value(row.get("attempt")))
+        for row in selected_rows
+    }
+    tool_log = report_dir / "appendix_tool_invocation_log.jsonl"
+    if tool_log.exists():
+        total = 0
+        with tool_log.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                record = json.loads(cleaned)
+                key = (clean(record.get("task_id")), normalize_attempt_value(record.get("attempt")))
+                if key in selected and is_devql_invocation(record):
+                    total += 1
+        return total
+
+    total = 0
+    for row in selected_rows:
+        invocations = row.get("tool_invocations_curated") or []
+        if isinstance(invocations, str):
+            try:
+                invocations = json.loads(invocations)
+            except json.JSONDecodeError:
+                invocations = []
+        if isinstance(invocations, list):
+            total += sum(1 for invocation in invocations if is_devql_invocation(invocation))
+    return total
+
+
+def is_devql_invocation(invocation: dict[str, Any]) -> bool:
+    return "bitloops devql" in invocation_command(invocation)
+
+
+def invocation_command(invocation: dict[str, Any]) -> str:
+    candidates = [
+        invocation,
+        invocation.get("curated") if isinstance(invocation.get("curated"), dict) else {},
+        invocation.get("input") if isinstance(invocation.get("input"), dict) else {},
+    ]
+    raw = invocation.get("raw")
+    if isinstance(raw, dict):
+        candidates.append(raw.get("input") if isinstance(raw.get("input"), dict) else {})
+        raw_event = raw.get("raw_event")
+        if isinstance(raw_event, dict):
+            state = raw_event.get("state")
+            if isinstance(state, dict) and isinstance(state.get("input"), dict):
+                candidates.append(state["input"])
+    for candidate in candidates:
+        command = clean(candidate.get("command"))
+        if command:
+            return command
+    return ""
+
+
+def is_bitloops_condition(row: dict[str, Any]) -> bool:
+    return clean(row.get("condition")).lower() in {"bitloops", "with_bitloops"}
+
+
+def target_columns_for(row: dict[str, Any]) -> list[str]:
+    if is_bitloops_condition(row):
+        return BITLOOPS_TARGET_COLUMNS
+    return BASELINE_TARGET_COLUMNS
+
+
 def build_tsv_row(
     row: dict[str, Any],
     *,
     analysis: str,
     ai_agent_model: str | None,
     developer_comment: str,
+    next_action: str,
     log_jsonl_link: str | None,
 ) -> list[str]:
+    target_columns = target_columns_for(row)
     values = {
         "run_id": clean(row.get("run_id")),
         "run_datetime": clean(row.get("run_datetime")),
@@ -318,13 +430,16 @@ def build_tsv_row(
         ),
         "derived_total_processed_tokens": clean(row.get("derived_total_processed_tokens")),
         "result": clean(row.get("result")),
+        "devql_calls_num": clean(row.get("devql_calls_num")),
         "internal_tool_calls": clean(row.get("internal_tool_calls")),
         "ai_agent_and_model_used_for_analysis": clean(ai_agent_model)
         or clean(row.get("ai_agent_and_model_used_for_analysis")),
         "analysis (from AI and or query or script)": sanitize_cell(analysis),
         "developer comment on analysis (optional)": sanitize_cell(developer_comment),
+        "developer comment on analysis": sanitize_cell(developer_comment),
+        "next_action": sanitize_cell(next_action),
     }
-    return [values[column] or "" for column in TARGET_COLUMNS]
+    return [values[column] or "" for column in target_columns]
 
 
 def read_analysis(analysis: str, analysis_file: Path | None) -> str:

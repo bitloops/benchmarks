@@ -5,7 +5,7 @@ description: Generate paste-ready TSV rows for benchmark result spreadsheets fro
 
 # Benchmark Run Row
 
-Use this skill to generate TSV row(s) for benchmark result Excel/Google Sheets tabs from a benchmark report path. It works for baseline and Bitloops runs because both produce the same report shape.
+Use this skill to generate TSV row(s) for benchmark result Excel/Google Sheets tabs from a benchmark report path. It supports two output schemas: baseline rows and Bitloops rows. Treat `condition=with_bitloops` as a Bitloops run.
 
 ## Inputs
 
@@ -17,8 +17,9 @@ Use this skill to generate TSV row(s) for benchmark result Excel/Google Sheets t
 - Optional: `instance_id`, benchmark instance filter for transcript upload. Repeat for multiple task instances.
 - Optional: `analysis`, free text for `analysis (from AI and or query or script)`.
 - Optional: `analysis_file`, a UTF-8 text/Markdown file to use as the analysis cell.
-- Optional: `ai_agent_model`, override for `ai_agent_and_model_used_for_analysis`.
+- Optional: `ai_agent_model`, override for `ai_agent_and_model_used_for_analysis` on baseline rows.
 - Optional: `developer_comment`, free text for `developer comment on analysis (optional)`.
+- Optional: `next_action`, free text for the Bitloops `next_action` cell.
 - Optional: `include_header`, whether to print the target header before the row.
 
 ## Procedure
@@ -69,26 +70,36 @@ python3 .agents/skills/benchmark-run-row/scripts/generate_benchmark_run_row.py <
 --analysis-file <analysis_file>
 --ai-agent-model "<agent/model text>"
 --developer-comment "<comment text>"
+--next-action "<next action text>"
 --log-jsonl-link "<uploaded Drive file URL>"
 --include-header
 ```
 
 Because the generator aggregates all matched per-task rows, pass `--attempt <attempt>` for every default per-attempt row. For multiple target pairs, run the row generator once per `(instance_id, attempt)` using that attempt's uploaded Drive URL, then return one fenced `tsv` snippet per `instance_id` or one combined snippet if all rows go to the same sheet.
 
+For Bitloops rows, the generator counts actual `bitloops devql ...` Bash commands from `appendix_tool_invocation_log.jsonl` (falling back to embedded per-task tool invocations when needed). It writes that count to `devql_calls_num` and subtracts it from `internal_tool_calls`, so `internal_tool_calls` is comparable to baseline tool calls.
+
 8. Return the script output inside a fenced code block marked `tsv`. Preserve tab separators inside the code block.
 
 ## Target Columns
 
-The TSV is emitted in this exact order:
+Baseline rows use this order:
 
 ```text
 run_id	run_datetime	engineer	agent	model	bitloops_cli_commit_sha	log_jsonl_link	runtime_sec	input_tokens	output_tokens	cache_read_input_tokens	cache_creation_input_tokens	derived_total_input_processed_tokens	derived_total_processed_tokens	result	internal_tool_calls	ai_agent_and_model_used_for_analysis	analysis (from AI and or query or script)	developer comment on analysis (optional)
+```
+
+Bitloops rows use this order:
+
+```text
+run_id	run_datetime	engineer	agent	model	bitloops_cli_commit_sha	log_jsonl_link	runtime_sec	input_tokens	output_tokens	cache_read_input_tokens	cache_creation_input_tokens	derived_total_input_processed_tokens	derived_total_processed_tokens	result	devql_calls_num	internal_tool_calls	analysis (from AI and or query or script)	developer comment on analysis	next_action
 ```
 
 ## Notes
 
 - The script reads `run_summary.csv` first, falling back to `run_summary.jsonl`, for run metadata only.
 - Metrics always come from `appendix_minimal_per_task_log.csv` / `.jsonl`: runtime, tokens, cache tokens, derived totals, result, and internal tool calls.
+- The output schema is selected from the run summary `condition`: `baseline` keeps the baseline schema; `bitloops` and `with_bitloops` use the Bitloops schema.
 - If the report has multiple run rows, use `--run-id <run_id>`.
 - If `--instance-id` or `--attempt` is supplied, filter the per-task rows before computing metrics. Without filters, the generator aggregates all per-task rows in the selected run, so omit `--attempt` only for an explicitly requested aggregate row.
 - If transcript upload resolves multiple files for an explicitly requested aggregate row, the spreadsheet `log_jsonl_link` cell receives semicolon-separated Drive URLs.
