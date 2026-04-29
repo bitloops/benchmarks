@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from benchkit.common.config import load_run_config
+from benchkit.common.config import RunConfig, load_run_config
 from benchkit.swebench.appendix import generate_appendix_files
 from benchkit.swebench.codex_config_metadata import (
     build_codex_run_metadata,
@@ -50,10 +51,18 @@ def main() -> None:
         help="Override run.max_workers from config",
     )
     run_parser.add_argument(
+        "--appendix",
+        action="store_true",
+        help=(
+            "Auto-generate appendix under reports/appendix/<agent>_bitloops|baseline_<run_timestamp>/ "
+            "(run_id date/time from the harness run)"
+        ),
+    )
+    run_parser.add_argument(
         "--appendix-output-dir",
         type=Path,
         default=None,
-        help="If set, auto-generate appendix files for this run into the given directory",
+        help="If set, write appendix to this path (--appendix-output-dir overrides --appendix)",
     )
     export_parser = subparsers.add_parser(
         "export-hf",
@@ -190,7 +199,8 @@ def main() -> None:
             args.dry_run,
             args.attempts,
             args.max_workers,
-            args.appendix_output_dir,
+            appendix_output_dir=args.appendix_output_dir,
+            appendix=args.appendix,
         )
         return
 
@@ -284,6 +294,44 @@ def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
         print(f"- {item.instance_id}")
 
 
+def default_appendix_output_dir(config: RunConfig, run_id: str) -> Path:
+    """reports/appendix/<agent>_bitloops|baseline_<YYYYMMDD_HHMMSS>/ from config + run_id."""
+    agent = _filesystem_slug(config.agent.id)
+    variant = "bitloops" if config.bitloops_enabled else "baseline"
+    ts = _appendix_timestamp_segment(run_id)
+    return Path("reports/appendix") / f"{agent}_{variant}_{ts}"
+
+
+def _filesystem_slug(value: str) -> str:
+    lowered = value.strip().lower()
+    out: list[str] = []
+    for ch in lowered:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in "._":
+            out.append(ch)
+        else:
+            out.append("_")
+    collapsed = "".join(out)
+    while "__" in collapsed:
+        collapsed = collapsed.replace("__", "_")
+    collapsed = collapsed.strip("_")
+    return collapsed or "agent"
+
+
+def _appendix_timestamp_segment(run_id: str) -> str:
+    parts = run_id.split("_")
+    if (
+        len(parts) >= 3
+        and len(parts[0]) == 8
+        and parts[0].isdigit()
+        and len(parts[1]) == 6
+        and parts[1].isdigit()
+    ):
+        return f"{parts[0]}_{parts[1]}"
+    return _filesystem_slug(run_id)
+
+
 def run_execute(
     config_path: Path,
     mode: str | None,
@@ -291,6 +339,7 @@ def run_execute(
     attempts: int | None,
     max_workers: int | None,
     appendix_output_dir: Path | None = None,
+    appendix: bool = False,
 ) -> None:
     try:
         config = load_run_config(config_path, mode=mode)
@@ -318,10 +367,22 @@ def run_execute(
     print("Evaluation reports:")
     for path in result.evaluation_reports:
         print(f"- {path}")
+    if appendix and appendix_output_dir is not None:
+        print(
+            "Note: --appendix-output-dir takes precedence over --appendix; "
+            "using the explicit output directory.",
+            file=sys.stderr,
+        )
+    effective_appendix_dir: Path | None = None
     if appendix_output_dir is not None:
+        effective_appendix_dir = appendix_output_dir
+    elif appendix:
+        effective_appendix_dir = default_appendix_output_dir(config, result.run_id)
+    if effective_appendix_dir is not None:
         print()
         print("Generating appendix files...")
-        run_appendix(run_roots=[result.run_root], output_dir=appendix_output_dir)
+        print(f"Appendix output: {effective_appendix_dir}")
+        run_appendix(run_roots=[result.run_root], output_dir=effective_appendix_dir)
 
 
 def run_export_hf(

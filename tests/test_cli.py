@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 import io
 import json
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from benchkit.swebench.cli import run_execute, run_plan
+from benchkit.swebench.cli import (
+    _appendix_timestamp_segment,
+    _filesystem_slug,
+    default_appendix_output_dir,
+    run_execute,
+    run_plan,
+)
 from benchkit.swebench.runner import RunResult
 
 
@@ -77,6 +84,121 @@ class CliRunTests(unittest.TestCase):
                 )
 
             run_appendix_mock.assert_not_called()
+
+    def test_run_execute_appendix_auto_dir_bitloops(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.toml"
+            run_root = root / "runs" / "swebench_multilingual" / "20260101" / "20260101_120000_abc123"
+            result = RunResult(
+                run_id="20260101_120000_abc123",
+                run_root=run_root,
+                total_instances=1,
+                attempts=1,
+                prediction_files=[],
+                trace_files=[],
+                evaluation_reports=[],
+            )
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=True,
+            )
+
+            with (
+                patch("benchkit.swebench.cli.load_run_config", return_value=config),
+                patch("benchkit.swebench.cli.execute_run", return_value=result),
+                patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
+            ):
+                run_execute(
+                    config_path=config_path,
+                    mode="with_bitloops",
+                    dry_run=False,
+                    attempts=None,
+                    max_workers=None,
+                    appendix=True,
+                )
+
+            run_appendix_mock.assert_called_once_with(
+                run_roots=[run_root],
+                output_dir=Path("reports/appendix/opencode_bitloops_20260101_120000"),
+            )
+
+    def test_run_execute_appendix_auto_dir_baseline(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.toml"
+            run_root = root / "runs" / "run-1"
+            result = RunResult(
+                run_id="20260101_120000_def456",
+                run_root=run_root,
+                total_instances=1,
+                attempts=1,
+                prediction_files=[],
+                trace_files=[],
+                evaluation_reports=[],
+            )
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=False,
+            )
+
+            with (
+                patch("benchkit.swebench.cli.load_run_config", return_value=config),
+                patch("benchkit.swebench.cli.execute_run", return_value=result),
+                patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
+            ):
+                run_execute(
+                    config_path=config_path,
+                    mode="baseline",
+                    dry_run=False,
+                    attempts=None,
+                    max_workers=None,
+                    appendix=True,
+                )
+
+            run_appendix_mock.assert_called_once_with(
+                run_roots=[run_root],
+                output_dir=Path("reports/appendix/opencode_baseline_20260101_120000"),
+            )
+
+    def test_run_execute_appendix_explicit_dir_overrides_appendix_flag(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.toml"
+            custom = root / "my_appendix"
+            run_root = root / "runs" / "20260101_120000_zzz"
+            result = RunResult(
+                run_id="20260101_120000_zzz",
+                run_root=run_root,
+                total_instances=1,
+                attempts=1,
+                prediction_files=[],
+                trace_files=[],
+                evaluation_reports=[],
+            )
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=True,
+            )
+            stderr = io.StringIO()
+            with (
+                patch("benchkit.swebench.cli.load_run_config", return_value=config),
+                patch("benchkit.swebench.cli.execute_run", return_value=result),
+                patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
+                redirect_stderr(stderr),
+            ):
+                run_execute(
+                    config_path=config_path,
+                    mode="with_bitloops",
+                    dry_run=False,
+                    attempts=None,
+                    max_workers=None,
+                    appendix_output_dir=custom,
+                    appendix=True,
+                )
+
+            run_appendix_mock.assert_called_once_with(run_roots=[run_root], output_dir=custom)
+            self.assertIn("precedence", stderr.getvalue())
 
     def test_run_execute_passes_mode_to_config_loader(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -250,6 +372,24 @@ extra_args = ["--bitloops-init"]
         encoding="utf-8",
     )
     return config_path
+
+
+class AppendixDirNamingTests(unittest.TestCase):
+    def test_filesystem_slug_normalizes(self) -> None:
+        self.assertEqual(_filesystem_slug("OpenCode-Agent"), "opencode_agent")
+
+    def test_appendix_timestamp_from_run_id(self) -> None:
+        self.assertEqual(_appendix_timestamp_segment("20260101_120000_abc123"), "20260101_120000")
+
+    def test_appendix_timestamp_fallback_for_nonstandard_run_id(self) -> None:
+        self.assertEqual(_appendix_timestamp_segment("run-1"), "run_1")
+
+    def test_default_appendix_output_dir(self) -> None:
+        cfg = SimpleNamespace(agent=SimpleNamespace(id="opencode"), bitloops_enabled=True)
+        self.assertEqual(
+            default_appendix_output_dir(cfg, "20260429_153823_ab12cd"),
+            Path("reports/appendix/opencode_bitloops_20260429_153823"),
+        )
 
 
 if __name__ == "__main__":

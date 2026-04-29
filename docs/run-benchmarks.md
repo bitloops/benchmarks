@@ -181,9 +181,18 @@ Check:
 
 ## 6. Run
 
-A normal run always writes harness artifacts under `runs/…` (see [Find results](#7-find-results)). The **appendix** outputs (aggregated CSV/Markdown tables, tool breakdowns, and related files) are **only** generated if you pass **`--appendix-output-dir`**. If you omit it, those appendix files are not written.
+A normal run always writes harness artifacts under `runs/…` (see [Find results](#7-find-results)). The **appendix** outputs (aggregated CSV/Markdown tables, tool breakdowns, and related files) are generated only if you pass **`--appendix`** or **`--appendix-output-dir`**.
 
-To produce both the run **and** the appendix in one step, use:
+To produce both the run **and** the appendix in one step with a stable, timestamped folder name under `reports/appendix/`, use **`--appendix`**. The directory name is `<agent_id>_bitloops_<YYYYMMDD_HHMMSS>` or `<agent_id>_baseline_<YYYYMMDD_HHMMSS>` (date and time come from the harness `run_id`, for example `opencode_bitloops_20260429_153823`):
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli run \
+  --config "$CONFIG" \
+  --mode "$MODE" \
+  --appendix
+```
+
+To choose the report directory yourself, pass **`--appendix-output-dir`** instead (it overrides **`--appendix`** if both are set):
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
@@ -192,7 +201,7 @@ To produce both the run **and** the appendix in one step, use:
   --appendix-output-dir "reports/appendix/${MODE}"
 ```
 
-If you already completed a run without `--appendix-output-dir`, generate the appendix from the printed `Run root` path:
+If you already completed a run without appendix flags, generate the appendix from the printed `Run root` path:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli appendix \
@@ -200,7 +209,7 @@ If you already completed a run without `--appendix-output-dir`, generate the app
   --output-dir "reports/appendix/<your-label>"
 ```
 
-To override parallelism without editing the config (add `--appendix-output-dir …` if you still want appendix files):
+To override parallelism without editing the config (add `--appendix` or `--appendix-output-dir …` if you still want appendix files):
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
@@ -225,7 +234,7 @@ Most useful files:
 - `attempts/attempt-01/trace.jsonl`
 - `attempts/attempt-01/evaluation.json`
 
-Appendix CSV/Markdown files exist only when you passed `--appendix-output-dir`
+Appendix CSV/Markdown files exist only when you passed `--appendix` or `--appendix-output-dir`
 during `run`, or when you ran the `appendix` command afterward (see [Run](#6-run)).
 
 ## Notes
