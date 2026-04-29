@@ -61,8 +61,12 @@ def evaluate_predictions_with_harness(
     benchmark: str,
     prediction_path: Path,
     attempt_dir: Path,
+    run_label: str | None = None,
+    artifact_dir: Path | None = None,
 ) -> AttemptEvaluationResult:
-    report_path = attempt_dir / "evaluation.json"
+    effective_artifact_dir = (artifact_dir or attempt_dir).resolve()
+    effective_run_label = run_label or f"{run_id}-attempt-{attempt:02d}"
+    report_path = effective_artifact_dir / "evaluation.json"
     if not config.enabled:
         result = AttemptEvaluationResult(
             attempt=attempt,
@@ -91,10 +95,12 @@ def evaluate_predictions_with_harness(
         benchmark=benchmark,
         prediction_path=prediction_path,
         attempt_dir=attempt_dir,
+        run_label=effective_run_label,
+        artifact_dir=effective_artifact_dir,
     )
 
-    stdout_path = attempt_dir / "evaluation.stdout.log"
-    stderr_path = attempt_dir / "evaluation.stderr.log"
+    stdout_path = effective_artifact_dir / "evaluation.stdout.log"
+    stderr_path = effective_artifact_dir / "evaluation.stderr.log"
     cwd = config.swebench_repo.resolve() if config.swebench_repo else None
     env = _build_evaluation_env(cwd)
 
@@ -138,7 +144,8 @@ def evaluate_predictions_with_harness(
         config=config,
         run_id=run_id,
         attempt=attempt,
-        attempt_dir=attempt_dir,
+        run_label=effective_run_label,
+        artifact_dir=effective_artifact_dir,
         swebench_cwd=cwd if cwd else Path.cwd(),
         started_epoch=start,
     )
@@ -228,13 +235,19 @@ def _build_evaluation_command(
     benchmark: str,
     prediction_path: Path,
     attempt_dir: Path,
+    *,
+    run_label: str | None = None,
+    artifact_dir: Path | None = None,
 ) -> list[str]:
+    effective_artifact_dir = (artifact_dir or attempt_dir).resolve()
+    effective_run_label = run_label or f"{run_id}-attempt-{attempt:02d}"
     template_context = {
         "run_id": run_id,
+        "run_label": effective_run_label,
         "attempt": attempt,
         "benchmark": benchmark,
         "predictions_path": str(prediction_path.resolve()),
-        "attempt_dir": str(attempt_dir.resolve()),
+        "attempt_dir": str(effective_artifact_dir),
         "dataset_name": config.dataset_name or "",
         "split": config.split or "",
         "max_workers": config.max_workers,
@@ -266,9 +279,9 @@ def _build_evaluation_command(
         "--max_workers",
         str(config.max_workers),
         "--run_id",
-        f"{run_id}-attempt-{attempt:02d}",
+        effective_run_label,
         "--report_dir",
-        str(attempt_dir.resolve()),
+        str(effective_artifact_dir),
     ]
     if config.split:
         command.extend(["--split", config.split])
@@ -280,7 +293,8 @@ def _parse_evaluation_outputs(
     config: EvaluationConfig,
     run_id: str,
     attempt: int,
-    attempt_dir: Path,
+    run_label: str,
+    artifact_dir: Path,
     swebench_cwd: Path,
     started_epoch: float,
 ) -> dict[str, Any]:
@@ -288,7 +302,8 @@ def _parse_evaluation_outputs(
         config=config,
         run_id=run_id,
         attempt=attempt,
-        attempt_dir=attempt_dir,
+        run_label=run_label,
+        artifact_dir=artifact_dir,
         swebench_cwd=swebench_cwd,
         started_epoch=started_epoch,
     )
@@ -301,8 +316,8 @@ def _parse_evaluation_outputs(
         return {}
 
     tasks = _extract_task_results(payload)
-    parsed_path = attempt_dir / "evaluation.parsed.json"
-    tasks_path = attempt_dir / "evaluation.tasks.jsonl"
+    parsed_path = artifact_dir / "evaluation.parsed.json"
+    tasks_path = artifact_dir / "evaluation.tasks.jsonl"
 
     solved_count = sum(1 for row in tasks if row.get("status") == "solved")
     unsolved_count = sum(1 for row in tasks if row.get("status") == "unsolved")
@@ -332,18 +347,18 @@ def _find_evaluation_source_file(
     config: EvaluationConfig,
     run_id: str,
     attempt: int,
-    attempt_dir: Path,
+    run_label: str,
+    artifact_dir: Path,
     swebench_cwd: Path,
     started_epoch: float,
 ) -> Path | None:
-    run_label = f"{run_id}-attempt-{attempt:02d}"
     if config.result_json_path_template:
         candidate = Path(
             config.result_json_path_template.format(
                 run_id=run_id,
                 attempt=attempt,
                 run_label=run_label,
-                attempt_dir=str(attempt_dir.resolve()),
+                attempt_dir=str(artifact_dir.resolve()),
                 swebench_repo=str(swebench_cwd),
             )
         )
@@ -355,7 +370,7 @@ def _find_evaluation_source_file(
 
     # Prefer reports written directly into attempt_dir.
     attempt_candidates = sorted(
-        attempt_dir.glob("*.json"),
+        artifact_dir.glob("*.json"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,7 +10,7 @@ import threading
 
 from benchkit.common.artifacts import create_run_layout, snapshot_config
 from benchkit.common.config import AgentConfig, RunConfig
-from benchkit.common.io import write_json, write_jsonl
+from benchkit.common.io import read_jsonl, write_json, write_jsonl
 from benchkit.swebench.agents.base import AgentAdapter, RunContext
 from benchkit.swebench.agents.registry import build_agent_adapter
 from benchkit.swebench.codex_config_metadata import build_codex_run_metadata
@@ -41,7 +41,18 @@ class _AttemptState:
     trace_path: Path
     prediction_slots: list[dict[str, Any] | None]
     trace_slots: list[dict[str, Any] | None]
+    instance_artifact_dirs: list[Path | None]
+    instance_evaluation_futures: list[Future[AttemptEvaluationResult] | None]
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    completed_count: int = 0
+    finalization_future: Future["_AttemptFinalizationResult"] | None = None
     success_count: int = 0
+
+
+@dataclass(slots=True)
+class _AttemptFinalizationResult:
+    attempt: int
+    evaluation_result: AttemptEvaluationResult
 
 
 def execute_run(
@@ -122,7 +133,6 @@ def execute_run(
     workspace_cache: dict[str, WorkspacePrepResult] = {}
     workspace_in_flight: dict[str, threading.Event] = {}
     workspace_lock = threading.Lock()
-    success_count_total = 0
 
     attempt_states: list[_AttemptState] = []
     for attempt in range(1, attempts_count + 1):
@@ -136,71 +146,24 @@ def execute_run(
                 trace_path=attempt_dir / "trace.jsonl",
                 prediction_slots=[None] * len(selected_instances),
                 trace_slots=[None] * len(selected_instances),
+                instance_artifact_dirs=[None] * len(selected_instances),
+                instance_evaluation_futures=[None] * len(selected_instances),
             )
         )
 
-    if parallel_attempts_enabled:
-        total_calls = len(selected_instances) * attempts_count
-        job_max_workers = min(max_workers_count, total_calls)
-        _log_progress(
-            f"parallel attempts enabled: executing {total_calls} agent call(s) "
-            f"across {attempts_count} attempt(s) with max_workers={job_max_workers}"
-        )
-        with ThreadPoolExecutor(max_workers=job_max_workers) as executor:
-            futures = [
-                executor.submit(
-                    _run_instance,
-                    attempt=attempt_state.attempt,
-                    attempt_dir=attempt_state.attempt_dir,
-                    attempts_count=attempts_count,
-                    instance_index=instance_index,
-                    total_instances=len(selected_instances),
-                    instance=instance,
-                    adapter=adapter,
-                    config=config,
-                    layout_run_root=layout.run_root,
-                    run_id=layout.run_id,
-                    resolved_model=resolved_model,
-                    canonical_model_name=model_resolution.canonical_name,
-                    model_label=model_label,
-                    workspace_cache=workspace_cache,
-                    workspace_in_flight=workspace_in_flight,
-                    workspace_lock=workspace_lock,
-                    workspace_isolation_mode=workspace_isolation_mode,
-                )
-                for attempt_state in attempt_states
-                for instance_index, instance in enumerate(selected_instances, start=1)
-            ]
-            for future in as_completed(futures):
-                (
-                    attempt,
-                    item_index,
-                    prediction_row,
-                    trace_row,
-                    succeeded,
-                ) = future.result()
-                attempt_state = attempt_states[attempt - 1]
-                attempt_state.prediction_slots[item_index] = prediction_row
-                attempt_state.trace_slots[item_index] = trace_row
-                if succeeded:
-                    attempt_state.success_count += 1
-    else:
-        for attempt_state in attempt_states:
-            attempt_max_workers = min(max_workers_count, len(selected_instances))
+    total_calls = len(selected_instances) * attempts_count
+    job_max_workers = min(max_workers_count, total_calls)
+    finalization_max_workers = max(1, job_max_workers)
+    with ThreadPoolExecutor(max_workers=finalization_max_workers) as finalizer_executor:
+        if parallel_attempts_enabled:
             _log_progress(
-                f"attempt {attempt_state.attempt}/{attempts_count}: executing "
-                f"{len(selected_instances)} instance(s) with max_workers={attempt_max_workers}"
+                f"parallel attempts enabled: executing {total_calls} agent call(s) "
+                f"across {attempts_count} attempt(s) with max_workers={job_max_workers}"
             )
-
-            if attempt_max_workers == 1:
-                for instance_index, instance in enumerate(selected_instances, start=1):
-                    (
-                        attempt,
-                        item_index,
-                        prediction_row,
-                        trace_row,
-                        succeeded,
-                    ) = _run_instance(
+            with ThreadPoolExecutor(max_workers=job_max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _run_instance,
                         attempt=attempt_state.attempt,
                         attempt_dir=attempt_state.attempt_dir,
                         attempts_count=attempts_count,
@@ -219,77 +182,115 @@ def execute_run(
                         workspace_lock=workspace_lock,
                         workspace_isolation_mode=workspace_isolation_mode,
                     )
-                    _ = attempt
-                    attempt_state.prediction_slots[item_index] = prediction_row
-                    attempt_state.trace_slots[item_index] = trace_row
-                    if succeeded:
-                        attempt_state.success_count += 1
-            else:
-                with ThreadPoolExecutor(max_workers=attempt_max_workers) as executor:
-                    futures = [
-                        executor.submit(
-                            _run_instance,
-                            attempt=attempt_state.attempt,
-                            attempt_dir=attempt_state.attempt_dir,
-                            attempts_count=attempts_count,
-                            instance_index=instance_index,
+                    for attempt_state in attempt_states
+                    for instance_index, instance in enumerate(selected_instances, start=1)
+                ]
+                for future in as_completed(futures):
+                    _record_attempt_completion(
+                        future.result(),
+                        attempt_states=attempt_states,
+                        total_instances=len(selected_instances),
+                        selected_instances=selected_instances,
+                        attempts_count=attempts_count,
+                        benchmark=config.benchmark,
+                        run_id=layout.run_id,
+                        evaluation_config=config.evaluation,
+                        finalizer_executor=finalizer_executor,
+                    )
+        else:
+            for attempt_state in attempt_states:
+                attempt_max_workers = min(max_workers_count, len(selected_instances))
+                _log_progress(
+                    f"attempt {attempt_state.attempt}/{attempts_count}: executing "
+                    f"{len(selected_instances)} instance(s) with max_workers={attempt_max_workers}"
+                )
+
+                if attempt_max_workers == 1:
+                    for instance_index, instance in enumerate(selected_instances, start=1):
+                        _record_attempt_completion(
+                            _run_instance(
+                                attempt=attempt_state.attempt,
+                                attempt_dir=attempt_state.attempt_dir,
+                                attempts_count=attempts_count,
+                                instance_index=instance_index,
+                                total_instances=len(selected_instances),
+                                instance=instance,
+                                adapter=adapter,
+                                config=config,
+                                layout_run_root=layout.run_root,
+                                run_id=layout.run_id,
+                                resolved_model=resolved_model,
+                                canonical_model_name=model_resolution.canonical_name,
+                                model_label=model_label,
+                                workspace_cache=workspace_cache,
+                                workspace_in_flight=workspace_in_flight,
+                                workspace_lock=workspace_lock,
+                                workspace_isolation_mode=workspace_isolation_mode,
+                            ),
+                            attempt_states=attempt_states,
                             total_instances=len(selected_instances),
-                            instance=instance,
-                            adapter=adapter,
-                            config=config,
-                            layout_run_root=layout.run_root,
+                            selected_instances=selected_instances,
+                            attempts_count=attempts_count,
+                            benchmark=config.benchmark,
                             run_id=layout.run_id,
-                            resolved_model=resolved_model,
-                            canonical_model_name=model_resolution.canonical_name,
-                            model_label=model_label,
-                            workspace_cache=workspace_cache,
-                            workspace_in_flight=workspace_in_flight,
-                            workspace_lock=workspace_lock,
-                            workspace_isolation_mode=workspace_isolation_mode,
+                            evaluation_config=config.evaluation,
+                            finalizer_executor=finalizer_executor,
                         )
-                        for instance_index, instance in enumerate(selected_instances, start=1)
-                    ]
-                    for future in as_completed(futures):
-                        (
-                            attempt,
-                            item_index,
-                            prediction_row,
-                            trace_row,
-                            succeeded,
-                        ) = future.result()
-                        _ = attempt
-                        attempt_state.prediction_slots[item_index] = prediction_row
-                        attempt_state.trace_slots[item_index] = trace_row
-                        if succeeded:
-                            attempt_state.success_count += 1
+                else:
+                    with ThreadPoolExecutor(max_workers=attempt_max_workers) as executor:
+                        futures = [
+                            executor.submit(
+                                _run_instance,
+                                attempt=attempt_state.attempt,
+                                attempt_dir=attempt_state.attempt_dir,
+                                attempts_count=attempts_count,
+                                instance_index=instance_index,
+                                total_instances=len(selected_instances),
+                                instance=instance,
+                                adapter=adapter,
+                                config=config,
+                                layout_run_root=layout.run_root,
+                                run_id=layout.run_id,
+                                resolved_model=resolved_model,
+                                canonical_model_name=model_resolution.canonical_name,
+                                model_label=model_label,
+                                workspace_cache=workspace_cache,
+                                workspace_in_flight=workspace_in_flight,
+                                workspace_lock=workspace_lock,
+                                workspace_isolation_mode=workspace_isolation_mode,
+                            )
+                            for instance_index, instance in enumerate(selected_instances, start=1)
+                        ]
+                        for future in as_completed(futures):
+                            _record_attempt_completion(
+                                future.result(),
+                                attempt_states=attempt_states,
+                                total_instances=len(selected_instances),
+                                selected_instances=selected_instances,
+                                attempts_count=attempts_count,
+                                benchmark=config.benchmark,
+                                run_id=layout.run_id,
+                                evaluation_config=config.evaluation,
+                                finalizer_executor=finalizer_executor,
+                            )
 
+        finalization_results: dict[int, _AttemptFinalizationResult] = {}
+        finalization_futures = [state.finalization_future for state in attempt_states]
+        if any(future is None for future in finalization_futures):
+            raise RuntimeError("Internal error: one or more attempts were not finalized")
+        for future in as_completed(
+            [future for future in finalization_futures if future is not None]
+        ):
+            result = future.result()
+            finalization_results[result.attempt] = result
+
+    success_count_total = sum(state.success_count for state in attempt_states)
     for attempt_state in attempt_states:
-        if any(item is None for item in attempt_state.prediction_slots):
-            raise RuntimeError("Internal error: missing predictions for one or more instances")
-        if any(item is None for item in attempt_state.trace_slots):
-            raise RuntimeError("Internal error: missing traces for one or more instances")
-
-        predictions = [item for item in attempt_state.prediction_slots if item is not None]
-        traces = [item for item in attempt_state.trace_slots if item is not None]
-        success_count_total += attempt_state.success_count
-
-        write_jsonl(attempt_state.prediction_path, predictions)
-        write_jsonl(attempt_state.trace_path, traces)
         prediction_files.append(attempt_state.prediction_path)
         trace_files.append(attempt_state.trace_path)
-
-        evaluation_result = evaluate_predictions_with_harness(
-            config=config.evaluation,
-            run_id=layout.run_id,
-            attempt=attempt_state.attempt,
-            benchmark=config.benchmark,
-            prediction_path=attempt_state.prediction_path,
-            attempt_dir=attempt_state.attempt_dir,
-        )
-        evaluation_results.append(evaluation_result)
+        evaluation_results.append(finalization_results[attempt_state.attempt].evaluation_result)
 
     finished_at = datetime.now(timezone.utc).isoformat()
-    total_calls = len(selected_instances) * attempts_count
     summary = {
         "run_id": layout.run_id,
         "benchmark": config.benchmark,
@@ -533,6 +534,279 @@ def _run_instance(
     }
 
     return attempt, instance_index - 1, prediction, trace, status == "ok"
+
+
+def _record_attempt_completion(
+    result: tuple[int, int, dict[str, Any], dict[str, Any], bool],
+    *,
+    attempt_states: list[_AttemptState],
+    total_instances: int,
+    selected_instances: list[BenchmarkInstance],
+    attempts_count: int,
+    benchmark: str,
+    run_id: str,
+    evaluation_config: Any,
+    finalizer_executor: ThreadPoolExecutor,
+) -> None:
+    attempt, item_index, prediction_row, trace_row, succeeded = result
+    attempt_state = attempt_states[attempt - 1]
+    instance = selected_instances[item_index]
+    instance_dir = _instance_artifact_dir(
+        attempt_dir=attempt_state.attempt_dir,
+        instance_index=item_index + 1,
+        instance_id=instance.instance_id,
+    )
+    _write_instance_artifacts(
+        instance_dir=instance_dir,
+        prediction_row=prediction_row,
+        trace_row=trace_row,
+    )
+
+    evaluation_future: Future[AttemptEvaluationResult] | None = None
+    if evaluation_config.enabled:
+        evaluation_future = finalizer_executor.submit(
+            evaluate_predictions_with_harness,
+            config=evaluation_config,
+            run_id=run_id,
+            attempt=attempt,
+            benchmark=benchmark,
+            prediction_path=instance_dir / "predictions.jsonl",
+            attempt_dir=instance_dir,
+            run_label=_instance_run_label(
+                run_id=run_id,
+                attempt=attempt,
+                instance_index=item_index + 1,
+                instance_id=instance.instance_id,
+            ),
+        )
+
+    with attempt_state.lock:
+        attempt_state.prediction_slots[item_index] = prediction_row
+        attempt_state.trace_slots[item_index] = trace_row
+        attempt_state.instance_artifact_dirs[item_index] = instance_dir
+        attempt_state.instance_evaluation_futures[item_index] = evaluation_future
+        attempt_state.completed_count += 1
+        if succeeded:
+            attempt_state.success_count += 1
+        if (
+            attempt_state.completed_count == total_instances
+            and attempt_state.finalization_future is None
+        ):
+            prediction_rows = list(attempt_state.prediction_slots)
+            trace_rows = list(attempt_state.trace_slots)
+            evaluation_futures = list(attempt_state.instance_evaluation_futures)
+            instance_dirs = list(attempt_state.instance_artifact_dirs)
+            attempt_state.finalization_future = finalizer_executor.submit(
+                _finalize_attempt,
+                attempt=attempt_state.attempt,
+                attempts_count=attempts_count,
+                attempt_dir=attempt_state.attempt_dir,
+                prediction_path=attempt_state.prediction_path,
+                trace_path=attempt_state.trace_path,
+                prediction_rows=prediction_rows,
+                trace_rows=trace_rows,
+                instance_dirs=instance_dirs,
+                evaluation_futures=evaluation_futures,
+            )
+
+
+def _finalize_attempt(
+    *,
+    attempt: int,
+    attempts_count: int,
+    attempt_dir: Path,
+    prediction_path: Path,
+    trace_path: Path,
+    prediction_rows: list[dict[str, Any] | None],
+    trace_rows: list[dict[str, Any] | None],
+    instance_dirs: list[Path | None],
+    evaluation_futures: list[Future[AttemptEvaluationResult] | None],
+) -> _AttemptFinalizationResult:
+    if any(item is None for item in prediction_rows):
+        raise RuntimeError("Internal error: missing predictions for one or more instances")
+    if any(item is None for item in trace_rows):
+        raise RuntimeError("Internal error: missing traces for one or more instances")
+
+    _log_progress(
+        f"attempt {attempt}/{attempts_count}: finalizing "
+        f"{len(prediction_rows)} completed instance(s)"
+    )
+    predictions = [item for item in prediction_rows if item is not None]
+    traces = [item for item in trace_rows if item is not None]
+    write_jsonl(prediction_path, predictions)
+    write_jsonl(trace_path, traces)
+
+    evaluation_result = _aggregate_instance_evaluations(
+        attempt=attempt,
+        attempt_dir=attempt_dir,
+        instance_dirs=instance_dirs,
+        evaluation_futures=evaluation_futures,
+    )
+    return _AttemptFinalizationResult(
+        attempt=attempt,
+        evaluation_result=evaluation_result,
+    )
+
+
+def _aggregate_instance_evaluations(
+    *,
+    attempt: int,
+    attempt_dir: Path,
+    instance_dirs: list[Path | None],
+    evaluation_futures: list[Future[AttemptEvaluationResult] | None],
+) -> AttemptEvaluationResult:
+    report_path = attempt_dir / "evaluation.json"
+    if not any(future is not None for future in evaluation_futures):
+        result = AttemptEvaluationResult(
+            attempt=attempt,
+            status="skipped",
+            command=[],
+            return_code=None,
+            elapsed_ms=None,
+            stdout_path=None,
+            stderr_path=None,
+            report_path=report_path,
+            parsed_path=None,
+            tasks_path=None,
+            parsed_source_file=None,
+            task_count=None,
+            solved_count=None,
+            unsolved_count=None,
+            error="evaluation disabled",
+        )
+        write_json(report_path, result.to_row())
+        return result
+
+    instance_results: list[AttemptEvaluationResult] = []
+    for future in evaluation_futures:
+        if future is None:
+            continue
+        instance_results.append(future.result())
+
+    task_rows: list[dict[str, Any]] = []
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    errors: list[str] = []
+    commands: list[list[str]] = []
+    for index, result in enumerate(instance_results, start=1):
+        commands.append(result.command)
+        if result.tasks_path is not None and result.tasks_path.exists():
+            task_rows.extend(read_jsonl(result.tasks_path))
+        if result.stdout_path is not None and result.stdout_path.exists():
+            stdout_chunks.append(f"# instance {index}\n")
+            stdout_chunks.append(result.stdout_path.read_text(encoding="utf-8"))
+            stdout_chunks.append("\n")
+        if result.stderr_path is not None and result.stderr_path.exists():
+            stderr_chunks.append(f"# instance {index}\n")
+            stderr_chunks.append(result.stderr_path.read_text(encoding="utf-8"))
+            stderr_chunks.append("\n")
+        if result.error:
+            errors.append(result.error)
+
+    parsed_path = attempt_dir / "evaluation.parsed.json"
+    tasks_path = attempt_dir / "evaluation.tasks.jsonl"
+    stdout_path = attempt_dir / "evaluation.stdout.log"
+    stderr_path = attempt_dir / "evaluation.stderr.log"
+    solved_count = sum(1 for row in task_rows if row.get("status") == "solved")
+    unsolved_count = sum(1 for row in task_rows if row.get("status") == "unsolved")
+    task_count = len(task_rows)
+
+    parsed_payload = {
+        "source_file": None,
+        "source_files": [
+            str(path.resolve()) for path in instance_dirs if isinstance(path, Path)
+        ],
+        "task_count": task_count,
+        "solved_count": solved_count,
+        "unsolved_count": unsolved_count,
+    }
+    write_json(parsed_path, parsed_payload)
+    if task_rows:
+        write_jsonl(tasks_path, task_rows)
+    else:
+        tasks_path = None
+
+    if stdout_chunks:
+        stdout_path.write_text("".join(stdout_chunks), encoding="utf-8")
+    else:
+        stdout_path = None
+    if stderr_chunks:
+        stderr_path.write_text("".join(stderr_chunks), encoding="utf-8")
+    else:
+        stderr_path = None
+
+    statuses = {result.status for result in instance_results}
+    if statuses == {"skipped"}:
+        status = "skipped"
+    elif "error" in statuses:
+        status = "error"
+    else:
+        status = "ok"
+    return_code = 0 if status != "error" else 1
+    elapsed_values = [result.elapsed_ms for result in instance_results if result.elapsed_ms is not None]
+    elapsed_ms = sum(elapsed_values) if elapsed_values else None
+    summary_result = AttemptEvaluationResult(
+        attempt=attempt,
+        status=status,
+        command=["aggregate-instance-evaluations", *[str(command) for command in commands]],
+        return_code=return_code,
+        elapsed_ms=elapsed_ms,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        report_path=report_path,
+        parsed_path=parsed_path,
+        tasks_path=tasks_path,
+        parsed_source_file=None,
+        task_count=task_count,
+        solved_count=solved_count,
+        unsolved_count=unsolved_count,
+        error="; ".join(errors) if errors else None,
+    )
+    write_json(report_path, summary_result.to_row())
+    return summary_result
+
+
+def _write_instance_artifacts(
+    *,
+    instance_dir: Path,
+    prediction_row: dict[str, Any],
+    trace_row: dict[str, Any],
+) -> None:
+    write_jsonl(instance_dir / "predictions.jsonl", [prediction_row])
+    write_jsonl(instance_dir / "trace.jsonl", [trace_row])
+
+
+def _instance_artifact_dir(
+    *,
+    attempt_dir: Path,
+    instance_index: int,
+    instance_id: str,
+) -> Path:
+    return (
+        attempt_dir
+        / "instances"
+        / f"{instance_index:03d}_{_sanitize_path_segment(instance_id, fallback='instance')}"
+    )
+
+
+def _instance_run_label(
+    *,
+    run_id: str,
+    attempt: int,
+    instance_index: int,
+    instance_id: str,
+) -> str:
+    slug = _sanitize_path_segment(instance_id, fallback=f"instance-{instance_index:03d}")
+    return f"{run_id}-attempt-{attempt:02d}-instance-{instance_index:03d}-{slug}"
+
+
+def _sanitize_path_segment(value: str | None, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    sanitized = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in text)
+    sanitized = sanitized.strip("._")
+    return sanitized or fallback
 
 
 def _resolve_workspace(
