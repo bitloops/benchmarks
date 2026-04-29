@@ -29,6 +29,7 @@ BASELINE_TARGET_COLUMNS = [
     "ai_agent_and_model_used_for_analysis",
     "analysis (from AI and or query or script)",
     "developer comment on analysis (optional)",
+    "run_id_report_folder",
 ]
 
 BITLOOPS_TARGET_COLUMNS = [
@@ -52,6 +53,7 @@ BITLOOPS_TARGET_COLUMNS = [
     "analysis (from AI and or query or script)",
     "developer comment on analysis",
     "next_action",
+    "run_id_report_folder",
 ]
 
 TARGET_COLUMNS = BASELINE_TARGET_COLUMNS
@@ -113,6 +115,13 @@ def main() -> int:
         help="Override the log_jsonl_link column, for example with an uploaded Drive URL.",
     )
     parser.add_argument(
+        "--run-id-report-folder",
+        "--report-folder-link",
+        dest="run_id_report_folder",
+        default=None,
+        help="Override the run_id_report_folder column, for example with an uploaded Drive folder URL.",
+    )
+    parser.add_argument(
         "--include-header",
         action="store_true",
         help="Print the target column header before the TSV row.",
@@ -136,6 +145,7 @@ def main() -> int:
             developer_comment=args.developer_comment,
             next_action=args.next_action,
             log_jsonl_link=args.log_jsonl_link,
+            run_id_report_folder=args.run_id_report_folder,
         )
         target_columns = target_columns_for(row)
     except ValueError as exc:
@@ -410,6 +420,7 @@ def build_tsv_row(
     developer_comment: str,
     next_action: str,
     log_jsonl_link: str | None,
+    run_id_report_folder: str | None,
 ) -> list[str]:
     target_columns = target_columns_for(row)
     values = {
@@ -438,6 +449,9 @@ def build_tsv_row(
         "developer comment on analysis (optional)": sanitize_cell(developer_comment),
         "developer comment on analysis": sanitize_cell(developer_comment),
         "next_action": sanitize_cell(next_action),
+        "run_id_report_folder": clean(run_id_report_folder)
+        or clean(row.get("run_id_report_folder"))
+        or clean(row.get("report_folder_link")),
     }
     return [values[column] or "" for column in target_columns]
 

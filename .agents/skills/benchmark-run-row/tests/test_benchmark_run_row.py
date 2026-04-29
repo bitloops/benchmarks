@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -18,10 +19,23 @@ SCRIPT = (
     / "generate_benchmark_run_row.py"
 )
 UPLOAD_SCRIPT = SCRIPT.with_name("upload_trace_jsonl_to_drive.py")
+REPORT_UPLOAD_SCRIPT = SCRIPT.with_name("upload_report_folder_to_drive.py")
 
 
 def load_upload_module():
     spec = importlib.util.spec_from_file_location("upload_trace_jsonl_to_drive", UPLOAD_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_report_upload_module():
+    spec = importlib.util.spec_from_file_location(
+        "upload_report_folder_to_drive", REPORT_UPLOAD_SCRIPT
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec is not None
     assert spec.loader is not None
@@ -111,6 +125,127 @@ class GenerateBenchmarkRunRowTests(unittest.TestCase):
 
         cells = completed.stdout.rstrip("\n").split("\t")
         self.assertEqual(cells[6], "https://drive.google.com/file/d/uploaded/view")
+        self.assertEqual(cells[-1], "")
+
+    def test_run_id_report_folder_can_be_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(report_dir)
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "12.3",
+                        "token_input": "10",
+                        "token_output": "2",
+                        "cache_read_input_tokens": "3",
+                        "cache_creation_input_tokens": "4",
+                        "total_tokens": "19",
+                        "tool_calls": "5",
+                    }
+                ],
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    str(report_dir),
+                    "--run-id-report-folder",
+                    "https://drive.google.com/drive/folders/report",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        cells = completed.stdout.rstrip("\n").split("\t")
+        self.assertEqual(cells[-1], "https://drive.google.com/drive/folders/report")
+
+    def test_report_folder_link_alias_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(report_dir)
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "12.3",
+                        "token_input": "10",
+                        "token_output": "2",
+                        "cache_read_input_tokens": "3",
+                        "cache_creation_input_tokens": "4",
+                        "total_tokens": "19",
+                        "tool_calls": "5",
+                    }
+                ],
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    str(report_dir),
+                    "--report-folder-link",
+                    "https://drive.google.com/drive/folders/report",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        cells = completed.stdout.rstrip("\n").split("\t")
+        self.assertEqual(cells[-1], "https://drive.google.com/drive/folders/report")
+
+    def test_run_id_report_folder_defaults_from_summary_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(
+                report_dir,
+                {"run_id_report_folder": "https://drive.google.com/drive/folders/from-summary"},
+            )
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "12.3",
+                        "token_input": "10",
+                        "token_output": "2",
+                        "cache_read_input_tokens": "3",
+                        "cache_creation_input_tokens": "4",
+                        "total_tokens": "19",
+                        "tool_calls": "5",
+                    }
+                ],
+            )
+
+            completed = subprocess.run(
+                ["python3", str(SCRIPT), str(report_dir)],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        cells = completed.stdout.rstrip("\n").split("\t")
+        self.assertEqual(cells[-1], "https://drive.google.com/drive/folders/from-summary")
 
     def test_uses_per_task_log_metrics_without_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -318,12 +453,14 @@ class GenerateBenchmarkRunRowTests(unittest.TestCase):
         self.assertEqual(columns[17], "analysis (from AI and or query or script)")
         self.assertEqual(columns[18], "developer comment on analysis")
         self.assertEqual(columns[19], "next_action")
+        self.assertEqual(columns[20], "run_id_report_folder")
         self.assertNotIn("ai_agent_and_model_used_for_analysis", columns)
         self.assertEqual(cells[15], "1")
         self.assertEqual(cells[16], "4")
         self.assertEqual(cells[17], "checked")
         self.assertEqual(cells[18], "looks ok")
         self.assertEqual(cells[19], "ship")
+        self.assertEqual(cells[20], "")
 
 
 class UploadTraceJsonlToDriveTests(unittest.TestCase):
@@ -405,6 +542,67 @@ class UploadTraceJsonlToDriveTests(unittest.TestCase):
         self.assertEqual(uploads[0].name, "run-1_attempt-02_repo__two-2.opencode.stdout.jsonl")
 
 
+class UploadReportFolderToDriveTests(unittest.TestCase):
+    def test_default_report_folder_name_uses_run_id(self) -> None:
+        module = load_report_upload_module()
+
+        self.assertEqual(
+            module.default_report_folder_name({"run_id": "20260428_141026_85fdaf"}, Path("report")),
+            "20260428_141026_85fdaf",
+        )
+
+    def test_resolves_appendix_report_files_only(self) -> None:
+        module = load_report_upload_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            for name in (
+                "run_summary.csv",
+                "run_summary.jsonl",
+                "appendix_minimal_per_task_log.csv",
+                "appendix_tool_invocation_log.jsonl",
+                "notes.txt",
+            ):
+                (report_dir / name).write_text(name, encoding="utf-8")
+            nested = report_dir / "nested"
+            nested.mkdir()
+            (nested / "appendix_nested.csv").write_text("nested", encoding="utf-8")
+
+            uploads = module.resolve_report_file_uploads(report_dir)
+
+        self.assertEqual(
+            [upload.name for upload in uploads],
+            [
+                "appendix_minimal_per_task_log.csv",
+                "appendix_tool_invocation_log.jsonl",
+                "run_summary.csv",
+                "run_summary.jsonl",
+            ],
+        )
+
+    def test_create_drive_folder_falls_back_to_folder_url(self) -> None:
+        module = load_report_upload_module()
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"id": "folder123", "name": "run-1"}'
+
+        with mock.patch.object(module.urllib.request, "urlopen", return_value=FakeResponse()):
+            folder = module.create_drive_folder(
+                folder_name="run-1",
+                parent_folder_id="parent123",
+                access_token="token",
+            )
+
+        self.assertEqual(folder.id, "folder123")
+        self.assertEqual(folder.link, "https://drive.google.com/drive/folders/folder123")
+
+
 def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None) -> None:
     row = {
         "run_id": "run-1",
@@ -415,6 +613,7 @@ def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None)
         "model_canonical": "qwen3.6-plus",
         "model_resolved": "model/full",
         "log_jsonl_link": "runs/run-1/attempts/attempt-01/trace.jsonl",
+        "run_id_report_folder": "",
         "runtime_total_sec": "40",
         "input_tokens_total": "300",
         "output_tokens_total": "60",
@@ -438,6 +637,7 @@ def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None)
                 "model_canonical",
                 "model_resolved",
                 "log_jsonl_link",
+                "run_id_report_folder",
                 "runtime_total_sec",
                 "input_tokens_total",
                 "output_tokens_total",
