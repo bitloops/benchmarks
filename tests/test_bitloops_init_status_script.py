@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import tempfile
 from pathlib import Path
 import unittest
@@ -25,6 +27,17 @@ script = _load_script_module()
 
 
 class BitloopsInitStatusScriptTests(unittest.TestCase):
+    def test_parse_args_reports_shell_continuation_hint_for_whitespace_argument(self) -> None:
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                script.parse_args(["--run-id", "20260429_124810_77fdbe", " "])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("whitespace-only argument", stderr.getvalue())
+        self.assertIn("shell continuation", stderr.getvalue())
+
     def test_find_latest_run_root_picks_latest_timestamped_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runs_root = Path(temp_dir) / "runs"
