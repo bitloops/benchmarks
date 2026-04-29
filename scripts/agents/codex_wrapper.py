@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
 import sys
+from copy import deepcopy
 
 from common import (  # type: ignore[import-not-found]
     build_bitloops_task_environment,
@@ -107,14 +109,195 @@ def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
     return max(env_value, run_value, 1500)
 
 
+def _resolve_codex_config_timeout_seconds(runtime_config: dict[str, object]) -> int:
+    raw = runtime_config.get("timeout_seconds")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _resolve_codex_timeout_seconds(
+    payload: dict[str, object],
+    runtime_config: dict[str, object],
+) -> int:
+    env_timeout = os.environ.get("CODEX_TIMEOUT_SECONDS", "").strip()
+    env_value = 0
+    if env_timeout:
+        try:
+            env_value = int(env_timeout)
+        except ValueError:
+            env_value = 0
+    config_value = _resolve_codex_config_timeout_seconds(runtime_config)
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        raw_timeout = run.get("timeout_seconds")
+        try:
+            run_value = int(raw_timeout)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            run_value = 0
+
+    return max(env_value, config_value, run_value, 900)
+
+
+def _as_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _resolve_codex_full_auto(runtime_config: dict[str, object]) -> bool:
+    if "CODEX_FULL_AUTO" in os.environ:
+        return env_flag("CODEX_FULL_AUTO", True)
+    return _as_bool(runtime_config.get("full_auto"), default=True)
+
+
+def _resolve_codex_skip_git_repo_check(runtime_config: dict[str, object]) -> bool:
+    if "CODEX_SKIP_GIT_REPO_CHECK" in os.environ:
+        return env_flag("CODEX_SKIP_GIT_REPO_CHECK", False)
+    return _as_bool(runtime_config.get("skip_git_repo_check"), default=False)
+
+
+def _resolve_codex_sandbox_mode(runtime_config: dict[str, object]) -> str:
+    sandbox = os.environ.get("CODEX_SANDBOX", "").strip()
+    if sandbox:
+        return sandbox
+    configured = runtime_config.get("sandbox")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "workspace-write"
+
+
+def _normalize_codex_reasoning_effort(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+        return None
+    return normalized
+
+
+def _normalize_codex_verbosity(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized not in {"low", "medium", "high"}:
+        return None
+    return normalized
+
+
+def _normalize_codex_reasoning_summary(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized not in {"auto", "concise", "detailed", "none"}:
+        return None
+    return normalized
+
+
+def _normalize_extra_args(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def _resolve_repo_codex_config_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "configs" / "codex" / "codex.json"
+
+
+def _decode_codex_config_content(
+    raw_content: str,
+    *,
+    source_name: str,
+) -> dict[str, object]:
+    loaded = json.loads(raw_content)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{source_name} must decode to a JSON object")
+    return loaded
+
+
+def _load_codex_config_file(config_path: Path) -> dict[str, object]:
+    return _decode_codex_config_content(
+        config_path.read_text(encoding="utf-8"),
+        source_name=str(config_path),
+    )
+
+
+def _deep_merge_dicts(base: dict[str, object], overlay: dict[str, object]) -> dict[str, object]:
+    merged: dict[str, object] = deepcopy(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(current, value)
+            continue
+        merged[key] = deepcopy(value)
+    return merged
+
+
+def _build_codex_runtime_config(
+    *,
+    existing_content: str,
+    repo_config_path: Path,
+) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    if existing_content.strip():
+        merged = _decode_codex_config_content(
+            existing_content,
+            source_name="CODEX_CONFIG_CONTENT",
+        )
+    if repo_config_path.exists():
+        repo_config = _load_codex_config_file(repo_config_path)
+        merged = _deep_merge_dicts(merged, repo_config)
+    return merged
+
+
 def main() -> None:
     args = parse_args()
     payload = read_payload_from_stdin()
     model = payload.get("model", {})
     canonical_model_name = str(model.get("canonical_name", "")).strip()
+    repo_config_path = _resolve_repo_codex_config_path()
+    existing_config_content = os.environ.get("CODEX_CONFIG_CONTENT", "")
+    try:
+        runtime_config = _build_codex_runtime_config(
+            existing_content=existing_config_content,
+            repo_config_path=repo_config_path,
+        )
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        fatal_error(
+            "invalid Codex config",
+            details={"error": str(exc)},
+        )
+        return
+
+    configured_model = runtime_config.get("model")
+    configured_model_name = (
+        configured_model.strip()
+        if isinstance(configured_model, str)
+        else ""
+    )
     model_name = (
         str(model.get("name", "")).strip()
         or os.environ.get("CODEX_MODEL", "").strip()
+        or configured_model_name
         or "gpt-5.4"
     )
     workspace = resolve_workspace(payload)
@@ -175,17 +358,31 @@ def main() -> None:
         "--cd",
         str(workspace),
     ]
-    if env_flag("CODEX_FULL_AUTO", True):
+    reasoning_effort = _normalize_codex_reasoning_effort(
+        runtime_config.get("model_reasoning_effort")
+    )
+    if reasoning_effort:
+        command.extend(["--config", f"model_reasoning_effort={reasoning_effort}"])
+    verbosity = _normalize_codex_verbosity(runtime_config.get("model_verbosity"))
+    if verbosity:
+        command.extend(["--config", f"model_verbosity={verbosity}"])
+    reasoning_summary = _normalize_codex_reasoning_summary(
+        runtime_config.get("model_reasoning_summary")
+    )
+    if reasoning_summary:
+        command.extend(["--config", f"model_reasoning_summary={reasoning_summary}"])
+    if _resolve_codex_full_auto(runtime_config):
         command.append("--full-auto")
     else:
-        sandbox_mode = os.environ.get("CODEX_SANDBOX", "workspace-write").strip()
+        sandbox_mode = _resolve_codex_sandbox_mode(runtime_config)
         if sandbox_mode:
             command.extend(["--sandbox", sandbox_mode])
-    if env_flag("CODEX_SKIP_GIT_REPO_CHECK", False):
+    if _resolve_codex_skip_git_repo_check(runtime_config):
         command.append("--skip-git-repo-check")
+    command.extend(_normalize_extra_args(runtime_config.get("extra_args")))
     command.extend(env_args("CODEX_EXTRA_ARGS"))
     command.append(prompt)
-    timeout_seconds = int(os.environ.get("CODEX_TIMEOUT_SECONDS", "900"))
+    timeout_seconds = _resolve_codex_timeout_seconds(payload, runtime_config)
 
     try:
         stdout, stderr, return_code, elapsed_ms = call_command(
@@ -244,6 +441,7 @@ def main() -> None:
             "command": command,
             "canonical_model_name": canonical_model_name or model_name,
             "resolved_model_name": model_name,
+            "codex_runtime_config": runtime_config,
             "elapsed_ms": elapsed_ms,
             "patch_source": patch_source,
             "prompt_text": prompt,

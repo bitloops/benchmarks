@@ -5,6 +5,10 @@ from pathlib import Path
 
 from benchkit.common.config import load_run_config
 from benchkit.swebench.appendix import generate_appendix_files
+from benchkit.swebench.codex_config_metadata import (
+    build_codex_run_metadata,
+    format_codex_plan_lines,
+)
 from benchkit.swebench.db import import_appendix_csv_to_sqlite
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
@@ -251,10 +255,13 @@ def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
     print(f"Resolved model: {model_resolution.resolved_name}")
     print(f"Model resolution source: {model_resolution.source}")
     print(f"Model map key: {model_resolution.map_key}")
-    print("Benchmark TOML model manifest (run.json payload; not OpenCode sampling):")
+    print("Benchmark TOML model manifest (run.json payload; runtime JSON may override):")
     print(f"  Temperature: {config.model.temperature}")
     print(f"  Max tokens: {config.model.max_tokens}")
     print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
+    if config.agent.id == "codex":
+        for line in format_codex_plan_lines(build_codex_run_metadata()):
+            print(line)
     if config.agent.id == "opencode":
         for line in format_opencode_plan_lines(build_opencode_run_metadata()):
             print(line)

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openai.com/codex/config.schema.json",
+  "model": "gpt-5.4",
+  "model_reasoning_effort": "high",
+  "model_verbosity": "low",
+  "model_reasoning_summary": "none",
+  "timeout_seconds": 1200,
+  "full_auto": true,
+  "sandbox": "workspace-write",
+  "skip_git_repo_check": false,
+  "extra_args": []
+}
