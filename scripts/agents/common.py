@@ -305,6 +305,11 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
             env[key] = value.strip()
     if sandbox_config_path is not None:
         env["BITLOOPS_DAEMON_CONFIG_PATH_OVERRIDE"] = str(sandbox_config_path)
+    sandbox_home = str(sandbox.get("home_root", "")).strip()
+    if sandbox_home:
+        # Keep shell startup lookup sandbox-local so zsh/bash tool calls
+        # do not source host dotfiles with the rewritten sandbox HOME.
+        env["ZDOTDIR"] = sandbox_home
     if original_home:
         env.setdefault("CARGO_HOME", str(Path(original_home) / ".cargo"))
         env.setdefault("RUSTUP_HOME", str(Path(original_home) / ".rustup"))
@@ -320,7 +325,6 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
             "AWS_SHARED_CREDENTIALS_FILE",
             str(Path(original_home) / ".aws" / "credentials"),
         )
-        sandbox_home = str(sandbox.get("home_root", "")).strip()
         if sandbox_home:
             _mirror_aws_auth_cache_into_sandbox(
                 original_home=Path(original_home),

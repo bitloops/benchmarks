@@ -1497,6 +1497,29 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(env["HOME"], sandbox["home_root"])
         self.assertEqual(env["CODEX_HOME"], "/custom/codex-home")
 
+    def test_build_bitloops_task_environment_reanchors_zsh_startup_to_sandbox_home(self) -> None:
+        sandbox = {
+            "mode": "per_task_daemon",
+            "home_root": "/tmp/benchkit/home",
+            "xdg_config_home": "/tmp/benchkit/home/xdg",
+            "xdg_state_home": "/tmp/benchkit/home/xdg-state",
+            "xdg_cache_home": "/tmp/benchkit/home/xdg-cache",
+            "xdg_data_home": "/tmp/benchkit/home/xdg-data",
+        }
+        with patch.dict(
+            common.os.environ,
+            {
+                "HOME": "/Users/tester",
+                "ZDOTDIR": "/Users/tester/.config/zsh",
+            },
+            clear=True,
+        ):
+            env = common.build_bitloops_task_environment(sandbox)
+
+        assert env is not None
+        self.assertEqual(env["HOME"], sandbox["home_root"])
+        self.assertEqual(env["ZDOTDIR"], sandbox["home_root"])
+
     def test_build_bitloops_task_environment_preserves_existing_aws_env(self) -> None:
         sandbox = {
             "mode": "per_task_daemon",
