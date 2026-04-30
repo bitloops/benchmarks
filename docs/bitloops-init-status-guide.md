@@ -31,6 +31,17 @@ Run it against one task in one benchmark run:
   --instance-id tokio-rs__axum-1119
 ```
 
+If the run is using parallel attempts, either pass `--attempt` or let the
+script prompt you to choose one:
+
+```bash
+./.venv/bin/python scripts/swebench/bitloops_init_status.py \
+  --run-id 20260430_144543_c48652 \
+  --repo nushell/nushell \
+  --instance-id nushell__nushell-13831 \
+  --attempt 1
+```
+
 Keep each trailing `\` as the final character on its line. If a line ends with
 `\ ` instead, `zsh` splits the command and later flags such as `--repo` look
 like separate commands.
@@ -78,6 +89,10 @@ If you do not pass enough filters:
 - in an interactive terminal, the script prompts you to choose a repo and task
 - in a non-interactive context, it exits and tells you to re-run with `--repo`
   and `--instance-id`
+
+For parallel-attempt runs, the same applies to attempts:
+- in an interactive terminal, the script prompts you to choose an attempt
+- in a non-interactive context, re-run with `--attempt`
 
 ## 5) Watch mode
 

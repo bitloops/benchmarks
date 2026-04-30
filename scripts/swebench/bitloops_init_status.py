@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +17,7 @@ class WorkspacePaths(NamedTuple):
     workspace_root: Path
     sandbox_root: Path
     bitloops_home: Path
+    attempt: int | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,6 +38,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--instance-id",
         help="Benchmark instance id, for example tokio-rs__axum-1119.",
+    )
+    parser.add_argument(
+        "--attempt",
+        type=int,
+        help="Attempt number for parallel-attempt runs, for example 1 or 2.",
     )
     parser.add_argument(
         "--watch",
@@ -189,7 +196,63 @@ def _repo_slug(repo: str) -> str:
     return repo.replace("/", "__")
 
 
-def resolve_workspace_paths(run_root: Path, record: dict[str, Any]) -> WorkspacePaths:
+_ATTEMPT_DIR_PATTERN = re.compile(r"^attempt-(\d+)$")
+
+
+def _workspace_paths_for_task_root(
+    workspace_root: Path,
+    *,
+    instance_id: str,
+) -> WorkspacePaths:
+    sandbox_root = (workspace_root.parent / f"{instance_id}__bitloops").resolve()
+    return WorkspacePaths(
+        workspace_root=workspace_root.resolve(),
+        sandbox_root=sandbox_root,
+        bitloops_home=(sandbox_root / "home").resolve(),
+        attempt=None,
+    )
+
+
+def _workspace_paths_for_attempts(instance_root: Path) -> list[WorkspacePaths]:
+    candidates: list[WorkspacePaths] = []
+    if not instance_root.exists() or not instance_root.is_dir():
+        return candidates
+    for child in sorted(instance_root.iterdir()):
+        if not child.is_dir():
+            continue
+        match = _ATTEMPT_DIR_PATTERN.fullmatch(child.name)
+        if match is None:
+            continue
+        attempt = int(match.group(1))
+        sandbox_root = (instance_root / f"{child.name}__bitloops").resolve()
+        candidates.append(
+            WorkspacePaths(
+                workspace_root=child.resolve(),
+                sandbox_root=sandbox_root,
+                bitloops_home=(sandbox_root / "home").resolve(),
+                attempt=attempt,
+            )
+        )
+    return candidates
+
+
+def _prompt_attempt_choice(candidates: list[WorkspacePaths]) -> WorkspacePaths:
+    attempt_map = {
+        str(candidate.attempt): candidate
+        for candidate in candidates
+        if candidate.attempt is not None
+    }
+    selected = _prompt_choice("attempt", sorted(attempt_map))
+    return attempt_map[selected]
+
+
+def resolve_workspace_paths(
+    run_root: Path,
+    record: dict[str, Any],
+    *,
+    attempt: int | None = None,
+    interactive: bool = False,
+) -> WorkspacePaths:
     repo = str(record.get("repo", "")).strip()
     base_commit = str(record.get("base_commit", "")).strip()
     instance_id = str(record.get("instance_id", "")).strip()
@@ -205,13 +268,48 @@ def resolve_workspace_paths(run_root: Path, record: dict[str, Any]) -> Workspace
         raise FileNotFoundError(
             f"Could not find workspace for repo={repo} instance_id={instance_id} under {run_root}"
         )
-    workspace_root = matches[0].resolve()
-    sandbox_root = (workspace_root.parent / f"{instance_id}__bitloops").resolve()
-    bitloops_home = (sandbox_root / "home").resolve()
-    return WorkspacePaths(
-        workspace_root=workspace_root,
-        sandbox_root=sandbox_root,
-        bitloops_home=bitloops_home,
+
+    candidates: list[WorkspacePaths] = []
+    for workspace_root in matches:
+        attempt_candidates = _workspace_paths_for_attempts(workspace_root)
+        if attempt_candidates:
+            candidates.extend(attempt_candidates)
+        else:
+            candidates.append(
+                _workspace_paths_for_task_root(
+                    workspace_root,
+                    instance_id=instance_id,
+                )
+            )
+
+    if attempt is not None:
+        if attempt <= 0:
+            raise ValueError("--attempt must be a positive integer.")
+        filtered = [candidate for candidate in candidates if candidate.attempt == attempt]
+        if len(filtered) == 1:
+            return filtered[0]
+        if not filtered:
+            raise ValueError(
+                f"Could not find attempt {attempt} for repo={repo!r} instance_id={instance_id!r}"
+            )
+        raise ValueError(
+            f"Multiple workspaces matched repo={repo!r} instance_id={instance_id!r} "
+            f"attempt={attempt!r}"
+        )
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if interactive and all(candidate.attempt is not None for candidate in candidates):
+        return _prompt_attempt_choice(candidates)
+
+    attempt_preview = ", ".join(
+        f"attempt {candidate.attempt}" if candidate.attempt is not None else "task workspace"
+        for candidate in candidates
+    )
+    raise ValueError(
+        "Multiple workspaces matched. Re-run with --attempt. "
+        f"Matches: {attempt_preview}"
     )
 
 
@@ -381,6 +479,7 @@ def render_snapshot(
     repo: str,
     instance_id: str,
     workspace_root: Path,
+    attempt: int | None,
     status_payload: dict[str, Any] | None,
     db_snapshot: dict[str, Any],
     status_error: str | None,
@@ -389,8 +488,10 @@ def render_snapshot(
         f"Run ID: {run_id}",
         f"Repo: {repo}",
         f"Instance: {instance_id}",
-        f"Workspace: {workspace_root}",
     ]
+    if attempt is not None:
+        lines.append(f"Attempt: {attempt}")
+    lines.append(f"Workspace: {workspace_root}")
 
     session = status_payload.get("session") if isinstance(status_payload, dict) else None
     if isinstance(session, dict):
@@ -473,6 +574,7 @@ def build_snapshot_payload(
         "run_id": run_root.name,
         "repo": str(record.get("repo", "")),
         "instance_id": str(record.get("instance_id", "")),
+        "attempt": paths.attempt,
         "workspace_root": str(paths.workspace_root),
         "bitloops_home": str(paths.bitloops_home),
         "status_payload": status_payload,
@@ -496,6 +598,7 @@ def _print_snapshot(snapshot: dict[str, Any], *, as_json: bool) -> None:
             repo=str(snapshot["repo"]),
             instance_id=str(snapshot["instance_id"]),
             workspace_root=Path(str(snapshot["workspace_root"])),
+            attempt=snapshot.get("attempt"),
             status_payload=snapshot.get("status_payload"),
             db_snapshot=dict(snapshot.get("db_snapshot", {})),
             status_error=snapshot.get("status_error"),
@@ -514,7 +617,12 @@ def main(argv: list[str] | None = None) -> int:
         instance_id=args.instance_id,
         interactive=sys.stdin.isatty(),
     )
-    paths = resolve_workspace_paths(run_root, record)
+    paths = resolve_workspace_paths(
+        run_root,
+        record,
+        attempt=args.attempt,
+        interactive=sys.stdin.isatty(),
+    )
 
     try:
         while True:

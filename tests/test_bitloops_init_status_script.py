@@ -99,6 +99,77 @@ class BitloopsInitStatusScriptTests(unittest.TestCase):
             self.assertEqual(resolved.workspace_root, workspace_root.resolve())
             self.assertEqual(resolved.sandbox_root, sandbox_root.resolve())
             self.assertEqual(resolved.bitloops_home, bitloops_home.resolve())
+            self.assertIsNone(resolved.attempt)
+
+    def test_resolve_workspace_paths_supports_attempt_scoped_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_root = Path(temp_dir) / "20260430_144543_c48652"
+            repo_slug = "nushell__nushell"
+            base_commit = "fb34a4fc6c9ca882cc6dc95d437902a45c402e9a"
+            instance_id = "nushell__nushell-13831"
+            instance_root = (
+                run_root
+                / "workspaces"
+                / "_isolated"
+                / "20260430_144543_c48652"
+                / repo_slug
+                / base_commit
+                / instance_id
+            )
+            attempt_one = instance_root / "attempt-01"
+            attempt_two = instance_root / "attempt-02"
+            attempt_one_bitloops = instance_root / "attempt-01__bitloops" / "home"
+            attempt_two_bitloops = instance_root / "attempt-02__bitloops" / "home"
+            attempt_one.mkdir(parents=True)
+            attempt_two.mkdir(parents=True)
+            attempt_one_bitloops.mkdir(parents=True)
+            attempt_two_bitloops.mkdir(parents=True)
+
+            resolved = script.resolve_workspace_paths(
+                run_root,
+                {
+                    "repo": "nushell/nushell",
+                    "base_commit": base_commit,
+                    "instance_id": instance_id,
+                },
+                attempt=2,
+            )
+
+            self.assertEqual(resolved.workspace_root, attempt_two.resolve())
+            self.assertEqual(
+                resolved.sandbox_root,
+                (instance_root / "attempt-02__bitloops").resolve(),
+            )
+            self.assertEqual(resolved.bitloops_home, attempt_two_bitloops.resolve())
+            self.assertEqual(resolved.attempt, 2)
+
+    def test_resolve_workspace_paths_requires_attempt_when_parallel_attempts_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_root = Path(temp_dir) / "20260430_144543_c48652"
+            repo_slug = "nushell__nushell"
+            base_commit = "fb34a4fc6c9ca882cc6dc95d437902a45c402e9a"
+            instance_id = "nushell__nushell-13831"
+            instance_root = (
+                run_root
+                / "workspaces"
+                / "_isolated"
+                / "20260430_144543_c48652"
+                / repo_slug
+                / base_commit
+                / instance_id
+            )
+            (instance_root / "attempt-01").mkdir(parents=True)
+            (instance_root / "attempt-02").mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "--attempt"):
+                script.resolve_workspace_paths(
+                    run_root,
+                    {
+                        "repo": "nushell/nushell",
+                        "base_commit": base_commit,
+                        "instance_id": instance_id,
+                    },
+                )
 
     def test_render_snapshot_includes_lane_and_db_sections(self) -> None:
         rendered = script.render_snapshot(
@@ -106,6 +177,7 @@ class BitloopsInitStatusScriptTests(unittest.TestCase):
             repo="tokio-rs/axum",
             instance_id="tokio-rs__axum-1119",
             workspace_root=Path("/tmp/workspace"),
+            attempt=None,
             status_payload={
                 "session": {
                     "status": "running",
