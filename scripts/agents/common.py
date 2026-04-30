@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from collections import Counter
 from copy import deepcopy
 import contextlib
@@ -255,6 +255,248 @@ def call_command(
     )
     elapsed_ms = int((time.time() - start) * 1000)
     return completed.stdout, completed.stderr, completed.returncode, elapsed_ms
+
+
+class AgentCommandResult:
+    def __init__(
+        self,
+        *,
+        command: list[str],
+        stdout: str,
+        stderr: str,
+        return_code: int,
+        elapsed_ms: int,
+    ) -> None:
+        self.command = command
+        self.stdout = stdout
+        self.stderr = stderr
+        self.return_code = return_code
+        self.elapsed_ms = elapsed_ms
+
+
+class AgentWrapperRunResult:
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        bitloops_sandbox: dict[str, Any] | None,
+        bitloops_env: dict[str, str] | None,
+        command_env: dict[str, str] | None,
+        bitloops_metadata: dict[str, Any],
+        execution: AgentCommandResult,
+        patch: str,
+        patch_source: str,
+        command_details: dict[str, Any],
+    ) -> None:
+        self.workspace = workspace
+        self.bitloops_sandbox = bitloops_sandbox
+        self.bitloops_env = bitloops_env
+        self.command_env = command_env
+        self.bitloops_metadata = bitloops_metadata
+        self.execution = execution
+        self.patch = patch
+        self.patch_source = patch_source
+        self.command_details = command_details
+
+
+def add_bitloops_wrapper_args(parser: Any) -> Any:
+    parser.add_argument(
+        "--bitloops-init",
+        action="store_true",
+        help="Initialize Bitloops before running the agent command.",
+    )
+    parser.add_argument(
+        "--bitloops-sync",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue sync.",
+    )
+    parser.add_argument(
+        "--bitloops-ingest",
+        choices=("true", "false"),
+        default="true",
+        help="Whether Bitloops init should queue ingest.",
+    )
+    parser.add_argument(
+        "--bitloops-embeddings-runtime",
+        choices=("local", "platform"),
+        help="Embeddings runtime to configure during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-embeddings",
+        action="store_true",
+        help="Disable embeddings setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-no-summaries",
+        action="store_true",
+        help="Disable summaries setup during Bitloops init.",
+    )
+    parser.add_argument(
+        "--bitloops-summary-mode",
+        choices=("auto", "off"),
+        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
+    )
+    parser.add_argument(
+        "--bitloops-embedding-mode",
+        choices=("off", "deterministic", "refresh_on_upgrade", "semantic_aware_once"),
+        help="Repo-local Bitloops embedding mode override to apply after init.",
+    )
+    return parser
+
+
+def _coerce_timeout_value(value: object) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def resolve_timeout_seconds(
+    payload: dict[str, object],
+    *,
+    env_var: str,
+    default_seconds: int,
+    extra_values: tuple[object, ...] = (),
+) -> int:
+    env_value = _coerce_timeout_value(os.environ.get(env_var, "").strip())
+
+    run = payload.get("run", {})
+    run_value = 0
+    if isinstance(run, dict):
+        run_value = _coerce_timeout_value(run.get("timeout_seconds"))
+
+    candidates = [env_value, run_value, default_seconds]
+    candidates.extend(_coerce_timeout_value(value) for value in extra_values)
+    return max(candidates)
+
+
+def resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
+    return resolve_timeout_seconds(
+        payload,
+        env_var="BITLOOPS_SETUP_TIMEOUT_SECONDS",
+        default_seconds=1500,
+    )
+
+
+def _default_patch_extractor(stdout: str) -> tuple[str, str]:
+    parsed_payload = parse_agent_payload(stdout)
+    parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
+    return extract_git_patch(parsed_text)
+
+
+def run_agent_wrapper(
+    *,
+    payload: dict[str, Any],
+    args: Any,
+    agent_name: str,
+    bitloops_setup_timeout_seconds: int,
+    timeout_seconds: int | None = None,
+    failure_message: str,
+    command_runner: Callable[..., AgentCommandResult],
+    command_env: dict[str, str] | None = None,
+    failure_details: dict[str, Any] | None = None,
+    post_command: Callable[[AgentCommandResult], dict[str, Any] | None] | None = None,
+    patch_extractor: Callable[[str], tuple[str, str]] | None = None,
+) -> AgentWrapperRunResult:
+    workspace = resolve_workspace(payload)
+    bitloops_sandbox = resolve_bitloops_sandbox(payload)
+    bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
+
+    try:
+        reset_workspace(workspace)
+    except Exception as exc:
+        fatal_error(
+            "workspace reset failed",
+            details={"error": str(exc), "workspace": str(workspace)},
+        )
+
+    bitloops_metadata: dict[str, Any] = {}
+    task_daemon_handle = None
+    if getattr(args, "bitloops_init", False):
+        try:
+            if bitloops_env is not None and bitloops_sandbox is not None:
+                task_daemon_handle = start_bitloops_task_daemon(
+                    binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
+                    timeout=bitloops_setup_timeout_seconds,
+                    env=bitloops_env,
+                    sandbox=bitloops_sandbox,
+                    cwd=str(workspace),
+                )
+            bitloops_metadata = setup_bitloops_for_workspace(
+                agent_name=agent_name,
+                timeout_seconds=bitloops_setup_timeout_seconds,
+                sync=getattr(args, "bitloops_sync", "true") == "true",
+                ingest=getattr(args, "bitloops_ingest", "true") == "true",
+                embeddings_runtime=getattr(args, "bitloops_embeddings_runtime", None),
+                no_embeddings=getattr(args, "bitloops_no_embeddings", False),
+                no_summaries=getattr(args, "bitloops_no_summaries", False),
+                summary_mode=getattr(args, "bitloops_summary_mode", None),
+                embedding_mode=getattr(args, "bitloops_embedding_mode", None),
+                sandbox=bitloops_sandbox,
+                env=bitloops_env,
+                cwd=str(workspace),
+                task_daemon_handle=task_daemon_handle,
+            )
+        except Exception as exc:
+            stop_bitloops_task_daemon(task_daemon_handle)
+            fatal_error(
+                "bitloops setup failed",
+                details={"error": str(exc), "workspace": str(workspace)},
+            )
+
+    effective_command_env = bitloops_env
+    if command_env is not None:
+        if effective_command_env is None:
+            effective_command_env = dict(command_env)
+        else:
+            merged_command_env = dict(effective_command_env)
+            merged_command_env.update(command_env)
+            effective_command_env = merged_command_env
+    effective_timeout_seconds = timeout_seconds or bitloops_setup_timeout_seconds
+    try:
+        execution = command_runner(
+            timeout_seconds=effective_timeout_seconds,
+            env=effective_command_env,
+            cwd=str(workspace),
+        )
+    finally:
+        stop_bitloops_task_daemon(task_daemon_handle)
+
+    command_details = dict(failure_details or {})
+    if post_command is not None:
+        command_details.update(post_command(execution) or {})
+
+    workspace_patch = capture_workspace_patch(workspace)
+    if workspace_patch:
+        patch = f"{workspace_patch}\n"
+        patch_source = "workspace_git_diff"
+    elif execution.return_code != 0:
+        failure_summary = summarize_command_failure(execution.stdout, execution.stderr)
+        fatal_error(
+            failure_message,
+            details={
+                "return_code": execution.return_code,
+                "command": execution.command,
+                **command_details,
+                **failure_summary,
+            },
+        )
+    else:
+        patch, patch_source = (patch_extractor or _default_patch_extractor)(execution.stdout)
+
+    return AgentWrapperRunResult(
+        workspace=workspace,
+        bitloops_sandbox=bitloops_sandbox,
+        bitloops_env=bitloops_env,
+        command_env=effective_command_env,
+        bitloops_metadata=bitloops_metadata,
+        execution=execution,
+        patch=patch,
+        patch_source=patch_source,
+        command_details=command_details,
+    )
 
 
 class BitloopsTaskDaemonHandle:

@@ -2621,6 +2621,175 @@ class AgentWrapperCommonTests(unittest.TestCase):
             )
         mock_urlopen.assert_called_once()
 
+    def test_run_agent_wrapper_returns_workspace_patch_and_stops_daemon(self) -> None:
+        workspace = Path("/tmp/bench-workspace")
+        args = SimpleNamespace(
+            bitloops_init=True,
+            bitloops_sync="true",
+            bitloops_ingest="true",
+            bitloops_embeddings_runtime=None,
+            bitloops_no_embeddings=False,
+            bitloops_no_summaries=False,
+            bitloops_summary_mode=None,
+            bitloops_embedding_mode=None,
+        )
+        daemon_handle = object()
+        captured_call: dict[str, object] = {}
+
+        def fake_runner(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> object:
+            captured_call["timeout_seconds"] = timeout_seconds
+            captured_call["env"] = env
+            captured_call["cwd"] = cwd
+            return common.AgentCommandResult(
+                command=["agent", "--json"],
+                stdout="ignored",
+                stderr="",
+                return_code=0,
+                elapsed_ms=321,
+            )
+
+        with (
+            patch.object(common, "resolve_workspace", return_value=workspace),
+            patch.object(common, "resolve_bitloops_sandbox", return_value={"mode": "per_task_daemon"}),
+            patch.object(common, "build_bitloops_task_environment", return_value={"BITLOOPS": "1"}),
+            patch.object(common, "reset_workspace"),
+            patch.object(common, "start_bitloops_task_daemon", return_value=daemon_handle),
+            patch.object(common, "setup_bitloops_for_workspace", return_value={"bitloops_ready": True}),
+            patch.object(common, "capture_workspace_patch", return_value="diff --git a/x b/x"),
+            patch.object(common, "stop_bitloops_task_daemon") as mock_stop,
+        ):
+            result = common.run_agent_wrapper(
+                payload={"run": {"workspace_root": str(workspace)}},
+                args=args,
+                agent_name="codex",
+                bitloops_setup_timeout_seconds=1500,
+                failure_message="agent command failed and no workspace changes were made",
+                command_runner=fake_runner,
+            )
+
+        self.assertEqual(result.workspace, workspace)
+        self.assertEqual(result.patch, "diff --git a/x b/x\n")
+        self.assertEqual(result.patch_source, "workspace_git_diff")
+        self.assertEqual(result.bitloops_metadata, {"bitloops_ready": True})
+        self.assertEqual(result.command_env, {"BITLOOPS": "1"})
+        self.assertEqual(captured_call["timeout_seconds"], 1500)
+        self.assertEqual(captured_call["env"], {"BITLOOPS": "1"})
+        self.assertEqual(captured_call["cwd"], str(workspace))
+        mock_stop.assert_called_once_with(daemon_handle)
+
+    def test_run_agent_wrapper_falls_back_to_stdout_patch_when_workspace_clean(self) -> None:
+        workspace = Path("/tmp/bench-workspace")
+        args = SimpleNamespace(bitloops_init=False)
+        stdout = '{"type":"result","result":"diff --git a/x b/x\\n--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-a\\n+b\\n"}'
+
+        def fake_runner(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> object:
+            return common.AgentCommandResult(
+                command=["agent", "--json"],
+                stdout=stdout,
+                stderr="",
+                return_code=0,
+                elapsed_ms=111,
+            )
+
+        with (
+            patch.object(common, "resolve_workspace", return_value=workspace),
+            patch.object(common, "resolve_bitloops_sandbox", return_value=None),
+            patch.object(common, "build_bitloops_task_environment", return_value=None),
+            patch.object(common, "reset_workspace"),
+            patch.object(common, "capture_workspace_patch", return_value=""),
+            patch.object(common, "stop_bitloops_task_daemon") as mock_stop,
+        ):
+            result = common.run_agent_wrapper(
+                payload={"run": {"workspace_root": str(workspace)}},
+                args=args,
+                agent_name="cursor",
+                bitloops_setup_timeout_seconds=1500,
+                failure_message="agent command failed and no workspace changes were made",
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(result.patch.startswith("diff --git"))
+        self.assertEqual(result.patch_source, "diff_header")
+        mock_stop.assert_called_once_with(None)
+
+    def test_run_agent_wrapper_fatal_on_failed_command_without_patch(self) -> None:
+        workspace = Path("/tmp/bench-workspace")
+        args = SimpleNamespace(bitloops_init=False)
+
+        def fake_runner(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> object:
+            return common.AgentCommandResult(
+                command=["agent", "--json"],
+                stdout='{"type":"result","result":"failure"}',
+                stderr="boom",
+                return_code=7,
+                elapsed_ms=100,
+            )
+
+        with (
+            patch.object(common, "resolve_workspace", return_value=workspace),
+            patch.object(common, "resolve_bitloops_sandbox", return_value=None),
+            patch.object(common, "build_bitloops_task_environment", return_value=None),
+            patch.object(common, "reset_workspace"),
+            patch.object(common, "capture_workspace_patch", return_value=""),
+            patch.object(common, "stop_bitloops_task_daemon"),
+            patch.object(common, "fatal_error", side_effect=RuntimeError("fatal")) as mock_fatal,
+        ):
+            with self.assertRaises(RuntimeError):
+                common.run_agent_wrapper(
+                    payload={"run": {"workspace_root": str(workspace)}},
+                    args=args,
+                    agent_name="claude-code",
+                    bitloops_setup_timeout_seconds=1500,
+                    failure_message="agent command failed and no workspace changes were made",
+                    command_runner=fake_runner,
+                    failure_details={"raw_stdout_path": "/tmp/out.jsonl"},
+                )
+
+        mock_fatal.assert_called_once()
+        args_out, kwargs_out = mock_fatal.call_args
+        self.assertEqual(args_out[0], "agent command failed and no workspace changes were made")
+        self.assertEqual(kwargs_out["details"]["return_code"], 7)
+        self.assertEqual(kwargs_out["details"]["command"], ["agent", "--json"])
+        self.assertEqual(kwargs_out["details"]["raw_stdout_path"], "/tmp/out.jsonl")
+
+    def test_run_agent_wrapper_stops_daemon_when_command_runner_raises(self) -> None:
+        workspace = Path("/tmp/bench-workspace")
+        args = SimpleNamespace(
+            bitloops_init=True,
+            bitloops_sync="true",
+            bitloops_ingest="true",
+            bitloops_embeddings_runtime=None,
+            bitloops_no_embeddings=False,
+            bitloops_no_summaries=False,
+            bitloops_summary_mode=None,
+            bitloops_embedding_mode=None,
+        )
+        daemon_handle = object()
+
+        def fake_runner(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> object:
+            raise ValueError("boom")
+
+        with (
+            patch.object(common, "resolve_workspace", return_value=workspace),
+            patch.object(common, "resolve_bitloops_sandbox", return_value={"mode": "per_task_daemon"}),
+            patch.object(common, "build_bitloops_task_environment", return_value={"BITLOOPS": "1"}),
+            patch.object(common, "reset_workspace"),
+            patch.object(common, "start_bitloops_task_daemon", return_value=daemon_handle),
+            patch.object(common, "setup_bitloops_for_workspace", return_value={}),
+            patch.object(common, "stop_bitloops_task_daemon") as mock_stop,
+        ):
+            with self.assertRaises(ValueError):
+                common.run_agent_wrapper(
+                    payload={"run": {"workspace_root": str(workspace)}},
+                    args=args,
+                    agent_name="opencode",
+                    bitloops_setup_timeout_seconds=1500,
+                    failure_message="agent command failed and no workspace changes were made",
+                    command_runner=fake_runner,
+                )
+
+        mock_stop.assert_called_once_with(daemon_handle)
+
 
 if __name__ == "__main__":
     unittest.main()

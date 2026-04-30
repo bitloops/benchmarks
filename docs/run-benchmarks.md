@@ -141,6 +141,8 @@ When you pass `--mode baseline` or `--mode with_bitloops` to `benchkit.swebench.
 
 Other `[run]` keys exist in presets (for example `prepare_workspace`, `workspace_isolation_mode`, `bitloops_sandbox_mode`, `repo_url_template`, `prompt_context`). Edit them only when you need behavior beyond the stock `codex` / `opencode` overlays.
 
+When `prepare_workspace = true`, benchkit now prepares strict benchmark workspaces by cloning only the requested `base_commit` history and removing all configured Git remotes from the prepared repo. This is intentional anti-cheating isolation so agents cannot inspect or fetch later commits from the benchmark repository during a run.
+
 ### `[model]`
 
 | Field | Meaning |

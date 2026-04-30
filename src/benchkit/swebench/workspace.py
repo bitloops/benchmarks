@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -8,6 +9,9 @@ import time
 import uuid
 
 from benchkit.swebench.types import BenchmarkInstance
+
+WORKSPACE_PREP_MARKER = ".benchkit_workspace_prep.json"
+STRICT_PREP_MODE = "strict_revision_clone"
 
 
 @dataclass(slots=True)
@@ -59,7 +63,7 @@ def prepare_instance_workspace(
     repo_url = _resolve_repo_url(instance.repo, repo_url_template)
 
     try:
-        if _is_checkout_ready(target, instance.base_commit, git_bin, timeout_seconds):
+        if _is_checkout_ready(target, instance.repo, instance.base_commit, git_bin, timeout_seconds):
             return WorkspacePrepResult(
                 status="reused",
                 workspace_path=target,
@@ -72,8 +76,14 @@ def prepare_instance_workspace(
             target = target.with_name(f"{target.name}_{uuid.uuid4().hex[:6]}")
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        _run([git_bin, "clone", repo_url, str(target)], timeout_seconds)
-        _checkout_commit(target, instance.base_commit, git_bin, timeout_seconds)
+        _strict_clone_workspace(
+            target=target,
+            repo=instance.repo,
+            repo_url=repo_url,
+            commit=instance.base_commit,
+            git_bin=git_bin,
+            timeout_seconds=timeout_seconds,
+        )
 
         return WorkspacePrepResult(
             status="prepared",
@@ -115,23 +125,90 @@ def _resolve_workspace_target(
     return base / repo_slug / commit_slug
 
 
-def _checkout_commit(path: Path, commit: str, git_bin: str, timeout_seconds: int) -> None:
-    direct = _run(
-        [git_bin, "-C", str(path), "checkout", "--detach", commit],
+def _strict_clone_workspace(
+    *,
+    target: Path,
+    repo: str,
+    repo_url: str,
+    commit: str,
+    git_bin: str,
+    timeout_seconds: int,
+) -> None:
+    _run(
+        [git_bin, "clone", f"--revision={commit}", repo_url, str(target)],
+        timeout_seconds,
+    )
+    _remove_all_remotes(target, git_bin, timeout_seconds)
+    _write_prep_marker(target, repo=repo, commit=commit)
+
+
+def _remove_all_remotes(path: Path, git_bin: str, timeout_seconds: int) -> None:
+    completed = _run(
+        [git_bin, "-C", str(path), "remote"],
         timeout_seconds,
         check=False,
     )
-    if direct.returncode == 0:
-        return
-    _run([git_bin, "-C", str(path), "fetch", "--all", "--tags", "--prune"], timeout_seconds)
-    _run([git_bin, "-C", str(path), "checkout", "--detach", commit], timeout_seconds)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Command failed (exit={completed.returncode}): {git_bin} -C {path} remote :: "
+            f"{completed.stderr.strip()}"
+        )
+    remotes = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    for remote in remotes:
+        _run(
+            [git_bin, "-C", str(path), "remote", "remove", remote],
+            timeout_seconds,
+        )
 
 
-def _is_checkout_ready(path: Path, commit: str, git_bin: str, timeout_seconds: int) -> bool:
+def _write_prep_marker(path: Path, *, repo: str, commit: str) -> None:
+    marker_path = path / WORKSPACE_PREP_MARKER
+    marker_path.write_text(
+        json.dumps(
+            {
+                "prep_mode": STRICT_PREP_MODE,
+                "repo": repo,
+                "base_commit": commit,
+                "remotes_removed": True,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _read_prep_marker(path: Path) -> dict[str, object] | None:
+    marker_path = path / WORKSPACE_PREP_MARKER
+    if not marker_path.exists():
+        return None
+    try:
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _is_checkout_ready(path: Path, repo: str, commit: str, git_bin: str, timeout_seconds: int) -> bool:
     if not path.exists():
         return False
     git_dir = path / ".git"
     if not git_dir.exists():
+        return False
+    marker = _read_prep_marker(path)
+    if marker is None:
+        return False
+    if marker.get("prep_mode") != STRICT_PREP_MODE:
+        return False
+    if str(marker.get("repo", "")).strip() != repo:
+        return False
+    marker_commit = str(marker.get("base_commit", "")).strip()
+    if marker_commit != commit:
+        return False
+    if marker.get("remotes_removed") is not True:
         return False
     completed = _run(
         [git_bin, "-C", str(path), "rev-parse", "HEAD"],
@@ -141,7 +218,16 @@ def _is_checkout_ready(path: Path, commit: str, git_bin: str, timeout_seconds: i
     if completed.returncode != 0:
         return False
     head = completed.stdout.strip()
-    return head.startswith(commit) or commit.startswith(head)
+    if not (head.startswith(commit) or commit.startswith(head)):
+        return False
+    remotes = _run(
+        [git_bin, "-C", str(path), "remote"],
+        timeout_seconds,
+        check=False,
+    )
+    if remotes.returncode != 0:
+        return False
+    return not any(line.strip() for line in remotes.stdout.splitlines())
 
 
 def _resolve_repo_url(repo: str, template: str) -> str:

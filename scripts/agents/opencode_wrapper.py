@@ -7,17 +7,15 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 from copy import deepcopy
 
 from common import (  # type: ignore[import-not-found]
+    AgentCommandResult,
+    add_bitloops_wrapper_args,
     call_command,
-    build_bitloops_task_environment,
-    capture_workspace_patch,
     emit_success,
     env_args,
     env_flag,
-    extract_git_patch,
     extract_tool_invocation_sequence,
     extract_tool_invocations_curated,
     extract_tool_invocations_raw,
@@ -26,17 +24,13 @@ from common import (  # type: ignore[import-not-found]
     fatal_error,
     load_hook_metrics,
     merge_metric_metadata,
-    parse_agent_output,
     parse_agent_payload,
     prompt_template_metadata,
     read_payload_from_stdin,
     render_task_prompt,
-    reset_workspace,
-    resolve_bitloops_sandbox,
-    resolve_workspace,
-    setup_bitloops_for_workspace,
-    start_bitloops_task_daemon,
-    stop_bitloops_task_daemon,
+    resolve_bitloops_setup_timeout_seconds as common_resolve_bitloops_setup_timeout_seconds,
+    resolve_timeout_seconds,
+    run_agent_wrapper,
     summarize_command_failure,
     summarize_tool_invocation_counts,
 )
@@ -44,92 +38,21 @@ from common import (  # type: ignore[import-not-found]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--bitloops-init",
-        action="store_true",
-        help="Initialize Bitloops before running the agent command.",
-    )
-    parser.add_argument(
-        "--bitloops-sync",
-        choices=("true", "false"),
-        default="true",
-        help="Whether Bitloops init should queue sync.",
-    )
-    parser.add_argument(
-        "--bitloops-ingest",
-        choices=("true", "false"),
-        default="true",
-        help="Whether Bitloops init should queue ingest.",
-    )
-    parser.add_argument(
-        "--bitloops-embeddings-runtime",
-        choices=("local", "platform"),
-        help="Embeddings runtime to configure during Bitloops init.",
-    )
-    parser.add_argument(
-        "--bitloops-no-embeddings",
-        action="store_true",
-        help="Disable embeddings setup during Bitloops init.",
-    )
-    parser.add_argument(
-        "--bitloops-no-summaries",
-        action="store_true",
-        help="Disable summaries setup during Bitloops init.",
-    )
-    parser.add_argument(
-        "--bitloops-summary-mode",
-        choices=("auto", "off"),
-        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
-    )
-    parser.add_argument(
-        "--bitloops-embedding-mode",
-        choices=("off", "deterministic", "refresh_on_upgrade", "semantic_aware_once"),
-        help="Repo-local Bitloops embedding mode override to apply after init.",
-    )
+    add_bitloops_wrapper_args(parser)
     args, _ = parser.parse_known_args()
     return args
 
 
 def _resolve_opencode_timeout_seconds(payload: dict[str, object]) -> int:
-    env_timeout = os.environ.get("OPENCODE_TIMEOUT_SECONDS", "").strip()
-    env_value = 0
-    if env_timeout:
-        try:
-            env_value = int(env_timeout)
-        except ValueError:
-            env_value = 0
-
-    run = payload.get("run", {})
-    run_value = 0
-    if isinstance(run, dict):
-        raw_timeout = run.get("timeout_seconds")
-        try:
-            run_value = int(raw_timeout)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            run_value = 0
-
-    return max(env_value, run_value, 900)
+    return resolve_timeout_seconds(
+        payload,
+        env_var="OPENCODE_TIMEOUT_SECONDS",
+        default_seconds=900,
+    )
 
 
 def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
-    env_timeout = os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "").strip()
-    env_value = 0
-    if env_timeout:
-        try:
-            env_value = int(env_timeout)
-        except ValueError:
-            env_value = 0
-
-    run = payload.get("run", {})
-    run_value = 0
-    if isinstance(run, dict):
-        raw_timeout = run.get("timeout_seconds")
-        try:
-            run_value = int(raw_timeout)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            run_value = 0
-
-    return max(env_value, run_value, 1500)
+    return common_resolve_bitloops_setup_timeout_seconds(payload)
 
 
 def _normalize_opencode_provider_id(provider_id: str | None) -> str | None:
@@ -427,70 +350,11 @@ def main() -> None:
     model_name = _normalize_opencode_model_reference(raw_model_name)
     agent_name = os.environ.get("OPENCODE_AGENT", "").strip() or "build"
 
-    workspace = resolve_workspace(payload)
-    bitloops_sandbox = resolve_bitloops_sandbox(payload)
-    bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
     prompt = render_task_prompt(payload, wrapper_name="opencode")
     prompt_meta = prompt_template_metadata(payload)
-
-    try:
-        reset_workspace(workspace)
-    except Exception as exc:
-        fatal_error(
-            "workspace reset failed",
-            details={"error": str(exc), "workspace": str(workspace)},
-        )
-
-    bitloops_metadata: dict[str, object] = {}
-    task_daemon_handle = None
-    if args.bitloops_init:
-        bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
-        try:
-            if bitloops_env is not None and bitloops_sandbox is not None:
-                task_daemon_handle = start_bitloops_task_daemon(
-                    binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
-                    timeout=bitloops_setup_timeout_seconds,
-                    env=bitloops_env,
-                    sandbox=bitloops_sandbox,
-                    cwd=str(workspace),
-                )
-            bitloops_metadata = setup_bitloops_for_workspace(
-                agent_name="opencode",
-                timeout_seconds=bitloops_setup_timeout_seconds,
-                sync=args.bitloops_sync == "true",
-                ingest=args.bitloops_ingest == "true",
-                embeddings_runtime=args.bitloops_embeddings_runtime,
-                no_embeddings=args.bitloops_no_embeddings,
-                no_summaries=args.bitloops_no_summaries,
-                summary_mode=args.bitloops_summary_mode,
-                embedding_mode=args.bitloops_embedding_mode,
-                sandbox=bitloops_sandbox,
-                env=bitloops_env,
-                cwd=str(workspace),
-                task_daemon_handle=task_daemon_handle,
-            )
-        except Exception as exc:
-            stop_bitloops_task_daemon(task_daemon_handle)
-            fatal_error(
-                "bitloops setup failed",
-                details={"error": str(exc), "workspace": str(workspace)},
-            )
-
-    command = [
-        os.environ.get("OPENCODE_BIN", "opencode"),
-        "run",
-        "--format",
-        "json",
-        "--model",
-        model_name,
-        "--agent",
-        agent_name,
-        "--dangerously-skip-permissions",
-    ]
-    command.extend(env_args("OPENCODE_EXTRA_ARGS"))
-    command.append(prompt)
+    bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
     timeout_seconds = _resolve_opencode_timeout_seconds(payload)
-    command_env = bitloops_env
+    command_env = None
     repo_config_path = _resolve_repo_opencode_config_path()
     existing_config_content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
     try:
@@ -512,79 +376,96 @@ def main() -> None:
                 "invalid OpenCode config",
                 details={"error": str(exc)},
             )
-        command_env = dict(bitloops_env) if bitloops_env is not None else dict(os.environ)
-        command_env["OPENCODE_CONFIG_CONTENT"] = encoded_invocation_config
+        command_env = {"OPENCODE_CONFIG_CONTENT": encoded_invocation_config}
 
-    try:
-        stdout, stderr, return_code, elapsed_ms = call_command(
-            command,
-            timeout_seconds,
-            env=command_env,
-            cwd=str(workspace),
+    def run_opencode_command(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> AgentCommandResult:
+        command = [
+            os.environ.get("OPENCODE_BIN", "opencode"),
+            "run",
+            "--format",
+            "json",
+            "--model",
+            model_name,
+            "--agent",
+            agent_name,
+            "--dangerously-skip-permissions",
+        ]
+        command.extend(env_args("OPENCODE_EXTRA_ARGS"))
+        command.append(prompt)
+        try:
+            stdout, stderr, return_code, elapsed_ms = call_command(
+                command,
+                timeout_seconds,
+                env=env,
+                cwd=cwd,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timeout_stdout = _coerce_command_output(exc.stdout)
+            timeout_stderr = _coerce_command_output(exc.stderr)
+            raw_stdout_path, raw_stderr_path = _persist_raw_opencode_output(
+                payload=payload,
+                stdout=timeout_stdout,
+                stderr=timeout_stderr,
+            )
+            failure_summary = summarize_command_failure(timeout_stdout, timeout_stderr)
+            fatal_error(
+                "opencode command timed out",
+                details={
+                    "timeout_seconds": timeout_seconds,
+                    "command": command,
+                    "workspace": cwd,
+                    "raw_stdout_path": raw_stdout_path,
+                    "raw_stderr_path": raw_stderr_path,
+                    **failure_summary,
+                },
+            )
+        return AgentCommandResult(
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            return_code=return_code,
+            elapsed_ms=elapsed_ms,
         )
-    except subprocess.TimeoutExpired as exc:
-        timeout_stdout = _coerce_command_output(exc.stdout)
-        timeout_stderr = _coerce_command_output(exc.stderr)
+
+    def persist_execution_output(execution: AgentCommandResult) -> dict[str, str | None]:
         raw_stdout_path, raw_stderr_path = _persist_raw_opencode_output(
             payload=payload,
-            stdout=timeout_stdout,
-            stderr=timeout_stderr,
+            stdout=execution.stdout,
+            stderr=execution.stderr,
         )
-        failure_summary = summarize_command_failure(timeout_stdout, timeout_stderr)
-        fatal_error(
-            "opencode command timed out",
-            details={
-                "timeout_seconds": timeout_seconds,
-                "command": command,
-                "workspace": str(workspace),
-                "raw_stdout_path": raw_stdout_path,
-                "raw_stderr_path": raw_stderr_path,
-                **failure_summary,
-            },
-        )
-    finally:
-        stop_bitloops_task_daemon(task_daemon_handle)
-    raw_stdout_path, raw_stderr_path = _persist_raw_opencode_output(
+        return {
+            "raw_stdout_path": raw_stdout_path,
+            "raw_stderr_path": raw_stderr_path,
+        }
+
+    run_result = run_agent_wrapper(
         payload=payload,
-        stdout=stdout,
-        stderr=stderr,
+        args=args,
+        agent_name="opencode",
+        bitloops_setup_timeout_seconds=bitloops_setup_timeout_seconds,
+        timeout_seconds=timeout_seconds,
+        failure_message="opencode command failed and no workspace changes were made",
+        command_runner=run_opencode_command,
+        command_env=command_env,
+        post_command=persist_execution_output,
     )
-
-    workspace_patch = capture_workspace_patch(workspace)
-
-    if workspace_patch:
-        patch = workspace_patch + "\n"
-        patch_source = "workspace_git_diff"
-    elif return_code != 0:
-        failure_summary = summarize_command_failure(stdout, stderr)
-        fatal_error(
-            "opencode command failed and no workspace changes were made",
-            details={
-                "return_code": return_code,
-                "command": command,
-                "raw_stdout_path": raw_stdout_path,
-                "raw_stderr_path": raw_stderr_path,
-                **failure_summary,
-            },
-        )
-    else:
-        parsed_payload = parse_agent_payload(stdout)
-        parsed_text = parse_agent_output(stdout, parsed_payload=parsed_payload)
-        patch, patch_source = extract_git_patch(parsed_text)
+    execution = run_result.execution
+    raw_stdout_path = run_result.command_details.get("raw_stdout_path")
+    raw_stderr_path = run_result.command_details.get("raw_stderr_path")
 
     _ensure_nonempty_patch_or_exit(
-        patch=patch,
-        return_code=return_code,
-        patch_source=patch_source,
-        stdout=stdout,
-        stderr=stderr,
-        command=command,
-        workspace=workspace,
+        patch=run_result.patch,
+        return_code=execution.return_code,
+        patch_source=run_result.patch_source,
+        stdout=execution.stdout,
+        stderr=execution.stderr,
+        command=execution.command,
+        workspace=run_result.workspace,
         raw_stdout_path=raw_stdout_path,
         raw_stderr_path=raw_stderr_path,
     )
 
-    parsed_payload = parse_agent_payload(stdout)
+    parsed_payload = parse_agent_payload(execution.stdout)
     usage_metrics = extract_usage_metrics(parsed_payload)
     tool_usage_breakdown = extract_tool_usage_breakdown(parsed_payload)
     tool_invocations_raw = extract_tool_invocations_raw(parsed_payload)
@@ -603,8 +484,8 @@ def main() -> None:
             "opencode tool capture missing",
             details={
                 "error": missing_tool_capture_error,
-                "command": command,
-                "workspace": str(workspace),
+                "command": execution.command,
+                "workspace": str(run_result.workspace),
                 "raw_stdout_path": raw_stdout_path,
                 "raw_stderr_path": raw_stderr_path,
                 "tool_usage_breakdown": tool_usage_breakdown,
@@ -625,10 +506,10 @@ def main() -> None:
 
     model_manifest = model if isinstance(model, dict) else {}
     emit_success(
-        patch=patch,
+        patch=run_result.patch,
         metadata={
             "wrapper": "opencode",
-            "command": command,
+            "command": execution.command,
             "agent_mode": agent_name,
             "canonical_model_name": canonical_model_name or model_name,
             "resolved_model_name": model_name,
@@ -636,11 +517,11 @@ def main() -> None:
             "benchmark_manifest_temperature": model_manifest.get("temperature"),
             "benchmark_manifest_seed": model_manifest.get("seed"),
             "benchmark_manifest_max_tokens": model_manifest.get("max_tokens"),
-            "elapsed_ms": elapsed_ms,
-            "patch_source": patch_source,
+            "elapsed_ms": execution.elapsed_ms,
+            "patch_source": run_result.patch_source,
             "prompt_text": prompt,
             **prompt_meta,
-            "stderr": stderr.strip(),
+            "stderr": execution.stderr.strip(),
             "raw_stdout_path": raw_stdout_path,
             "raw_stderr_path": raw_stderr_path,
             "tool_usage_breakdown": tool_usage_breakdown,
@@ -649,7 +530,7 @@ def main() -> None:
             "tool_invocation_sequence": tool_invocation_sequence,
             "tool_invocation_counts": tool_invocation_counts,
             **merged_metrics,
-            **bitloops_metadata,
+            **run_result.bitloops_metadata,
         },
     )
 
