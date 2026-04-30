@@ -143,7 +143,7 @@ class AgentBaseTests(unittest.TestCase):
             adapter.generate_patch(instance, context)
 
         self.assertEqual(captured_payload["run"]["timeout_seconds"], 3600)
-        self.assertEqual(captured_payload["run"]["prompt_protocol"], "swe")
+        self.assertEqual(captured_payload["run"]["prompt_protocol"], "minimal")
         self.assertEqual(captured_payload["run"]["retrieval_file_source"], "bm25")
         self.assertEqual(captured_payload["run"]["retrieval_k"], 10)
 

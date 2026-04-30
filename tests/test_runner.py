@@ -311,10 +311,10 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(manifest["workspace"]["isolation_mode"], "shared_repo_commit")
             self.assertEqual(manifest["bitloops_sandbox_mode"], "disabled")
             self.assertEqual(manifest["model"]["seed"], 1234)
-            self.assertEqual(manifest["prompt_protocol"], "swe")
+            self.assertEqual(manifest["prompt_protocol"], "minimal")
             self.assertEqual(manifest["retrieval"]["file_source"], "bm25")
             self.assertEqual(manifest["retrieval"]["k"], 10)
-            self.assertEqual(manifest["prompt_template_version"], "swe_v1")
+            self.assertEqual(manifest["prompt_template_version"], "minimal_v1")
             self.assertRegex(str(manifest["prompt_template_hash"]), r"^[0-9a-f]{16}$")
 
     def test_execute_run_records_task_scoped_isolation_for_bitloops(self) -> None:

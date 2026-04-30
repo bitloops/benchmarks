@@ -1,7 +1,6 @@
 # Dry run: ./.venv/bin/python -m benchkit.swebench.cli plan --config configs/swebench/rust_opencode_baseline.toml
 # Run: ./.venv/bin/python -m benchkit.swebench.cli run --config configs/swebench/rust_opencode_baseline.toml
 [run]
-prompt_protocol = "swe"
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
 split = "test"

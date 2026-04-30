@@ -2871,11 +2871,11 @@ PATCH_EXAMPLE = """--- a/file.py
 def _resolve_prompt_protocol(payload: dict[str, Any]) -> str:
     run = payload.get("run", {})
     if not isinstance(run, dict):
-        return "swe"
-    protocol_raw = str(run.get("prompt_protocol", "swe")).strip().lower()
+        return "minimal"
+    protocol_raw = str(run.get("prompt_protocol", "minimal")).strip().lower()
     if protocol_raw == "style3":
         return "swe"
-    return protocol_raw if protocol_raw in {"minimal", "swe"} else "swe"
+    return protocol_raw if protocol_raw in {"minimal", "swe"} else "minimal"
 
 
 def _resolve_retrieval_settings(payload: dict[str, Any]) -> tuple[str, int]:

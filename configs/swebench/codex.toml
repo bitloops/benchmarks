@@ -3,7 +3,6 @@ preset = "codex"
 
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
-prompt_protocol = "swe"
 include_repos = []
 include_instance_ids = []
 max_instances = 1

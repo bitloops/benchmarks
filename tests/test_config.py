@@ -65,7 +65,7 @@ timeout_seconds = 3600
             self.assertEqual(cfg.workspace_isolation_mode, "shared_repo_commit")
             self.assertFalse(cfg.bitloops_enabled)
             self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
-            self.assertEqual(cfg.prompt_protocol, "swe")
+            self.assertEqual(cfg.prompt_protocol, "minimal")
             self.assertEqual(cfg.retrieval_file_source, "bm25")
             self.assertEqual(cfg.retrieval_k, 10)
             self.assertEqual(

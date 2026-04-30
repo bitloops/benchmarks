@@ -26,7 +26,7 @@ class RunContext:
     benchmark: str
     condition: str | None = None
     prompt_context: str | None = None
-    prompt_protocol: str = "swe"
+    prompt_protocol: str = "minimal"
     retrieval_file_source: str = "bm25"
     retrieval_k: int = 10
     bitloops_sandbox: dict[str, Any] | None = None
