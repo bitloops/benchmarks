@@ -41,6 +41,13 @@ Notes:
   - `cache_creation_input_tokens`
   - `total_input_processed_tokens`
   - `total_processed_tokens`
+- Those fields mean:
+  - `input_tokens`: fresh, non-cached input tokens sent to the model.
+  - `output_tokens`: generated output tokens, excluding reasoning tokens.
+  - `cache_read_input_tokens`: input tokens reused from cache.
+  - `cache_creation_input_tokens`: input tokens written into cache.
+  - `total_input_processed_tokens`: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`.
+  - `total_processed_tokens`: `total_input_processed_tokens + output_tokens`.
 - Raw provider-native token fields remain in the underlying trace metadata for
   debugging and remapping, but they are intentionally not surfaced in the
   appendix or SQLite reporting tables.

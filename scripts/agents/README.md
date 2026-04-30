@@ -70,6 +70,13 @@ Token usage metadata includes:
   - `cache_creation_input_tokens`
   - `total_input_processed_tokens`
   - `total_processed_tokens`
+- Canonical token glossary:
+  - `input_tokens`: fresh, non-cached input tokens sent to the model.
+  - `output_tokens`: generated output tokens, excluding reasoning tokens.
+  - `cache_read_input_tokens`: input tokens reused from cache.
+  - `cache_creation_input_tokens`: input tokens written into cache.
+  - `total_input_processed_tokens`: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`.
+  - `total_processed_tokens`: `total_input_processed_tokens + output_tokens`.
 - Agent semantics for canonical token fields:
   - Claude: `input_tokens = token_input`; cache read/write come from the transcript fields directly.
   - Codex: `input_tokens = token_input - cached_input_tokens`; `cache_read_input_tokens = cached_input_tokens`; `cache_creation_input_tokens = 0` unless explicitly reported later.
