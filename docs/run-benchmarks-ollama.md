@@ -36,7 +36,7 @@ docker info
 
 For **`with_bitloops`**, also `command -v bitloops` as in the main doc.
 
-Start Ollama (or point the wrapper at your API base URL; see [Runtime JSON and overrides](#runtime-json-and-overrides)). Pull or otherwise ensure the model you configure is available to that server.
+Start Ollama (or point the wrapper at your API base URL; see [Runtime JSON and overrides](#runtime-json-and-overrides)). For **cloud** models (names ending in `:cloud`, e.g. DeepSeek via Ollama Cloud), run **`ollama sign in`** once so the daemon is authenticated; without that, cloud routes usually fail. Pull or otherwise ensure the model you configure is available to that server.
 
 ## 2. Pick mode
 
