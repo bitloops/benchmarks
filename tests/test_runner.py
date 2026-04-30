@@ -314,7 +314,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(manifest["prompt_protocol"], "minimal")
             self.assertEqual(manifest["retrieval"]["file_source"], "bm25")
             self.assertEqual(manifest["retrieval"]["k"], 10)
-            self.assertEqual(manifest["prompt_template_version"], "minimal_v1")
+            self.assertEqual(manifest["prompt_template_version"], "minimal_v3")
             self.assertRegex(str(manifest["prompt_template_hash"]), r"^[0-9a-f]{16}$")
 
     def test_execute_run_records_task_scoped_isolation_for_bitloops(self) -> None:

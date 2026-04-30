@@ -2867,6 +2867,8 @@ PATCH_EXAMPLE = """--- a/file.py
 +    return a + b
 """
 
+_MINIMAL_PROMPT_INTRO = "Investigate and fix the following issue by editing files directly in the workspace."
+
 
 def _resolve_prompt_protocol(payload: dict[str, Any]) -> str:
     run = payload.get("run", {})
@@ -3043,7 +3045,7 @@ def _build_swe_prompt(payload: dict[str, Any]) -> str:
 def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     protocol = _resolve_prompt_protocol(payload)
     file_source, retrieval_k = _resolve_retrieval_settings(payload)
-    version = "swe_v1" if protocol == "swe" else "minimal_v1"
+    version = "swe_v1" if protocol == "swe" else "minimal_v3"
     hash_input = f"{version}|protocol={protocol}|source={file_source}|k={retrieval_k}"
     return {
         "prompt_protocol": protocol,
@@ -3061,6 +3063,7 @@ def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     if protocol == "swe":
         return _build_swe_prompt(payload)
     return (
+        f"{_MINIMAL_PROMPT_INTRO}\n\n"
         "Do not commit your changes; just leave the edited files in place.\n\n"
         f"{problem}"
     )

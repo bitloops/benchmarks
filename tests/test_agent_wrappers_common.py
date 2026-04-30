@@ -40,6 +40,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
             wrapper_name="claude_code",
         )
 
+        self.assertTrue(prompt.startswith("Investigate and fix the following issue by editing files directly in the workspace."))
         self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
         self.assertTrue(prompt.endswith("Fix the failing lint behavior."))
         self.assertNotIn("bitloops devql", prompt)
@@ -59,6 +60,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
             wrapper_name="claude_code",
         )
 
+        self.assertTrue(prompt.startswith("Investigate and fix the following issue by editing files directly in the workspace."))
         self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
         self.assertTrue(prompt.endswith("Fix the failing lint behavior."))
         self.assertNotIn("bitloops devql", prompt)

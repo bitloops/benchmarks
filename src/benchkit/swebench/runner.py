@@ -27,7 +27,7 @@ def _prompt_template_version(prompt_protocol: str) -> str:
     normalized = str(prompt_protocol or "").strip().lower()
     if normalized in {"swe", "style3"}:
         return "swe_v1"
-    return "minimal_v1"
+    return "minimal_v3"
 
 
 def _prompt_template_hash(
