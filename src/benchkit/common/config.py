@@ -13,6 +13,9 @@ DEFAULT_PREPARE_WORKSPACE = False
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 32000
 DEFAULT_SWEBENCH_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
+DEFAULT_PROMPT_PROTOCOL = "swe"
+DEFAULT_RETRIEVAL_FILE_SOURCE = "bm25"
+DEFAULT_RETRIEVAL_K = 10
 
 
 @dataclass(slots=True)
@@ -60,6 +63,9 @@ class RunConfig:
     prompt_context: str | None
     evaluation: "EvaluationConfig"
     source_path: Path
+    prompt_protocol: str = DEFAULT_PROMPT_PROTOCOL
+    retrieval_file_source: str = DEFAULT_RETRIEVAL_FILE_SOURCE
+    retrieval_k: int = DEFAULT_RETRIEVAL_K
 
 
 @dataclass(slots=True)
@@ -157,6 +163,23 @@ def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
     prompt_context = (
         str(prompt_context_raw).strip() if isinstance(prompt_context_raw, str) and prompt_context_raw.strip() else None
     )
+    prompt_protocol_raw = str(run.get("prompt_protocol", DEFAULT_PROMPT_PROTOCOL)).strip().lower()
+    prompt_protocol = "swe" if prompt_protocol_raw == "style3" else prompt_protocol_raw
+    if prompt_protocol not in {"minimal", "swe"}:
+        raise ValueError("run.prompt_protocol must be one of: 'minimal', 'swe'")
+    retrieval_raw = run.get("retrieval", {})
+    if retrieval_raw is None:
+        retrieval_raw = {}
+    if not isinstance(retrieval_raw, dict):
+        raise ValueError("run.retrieval must be a table")
+    retrieval_file_source = str(
+        retrieval_raw.get("file_source", DEFAULT_RETRIEVAL_FILE_SOURCE)
+    ).strip().lower()
+    if retrieval_file_source not in {"bm25"}:
+        raise ValueError("run.retrieval.file_source must be one of: 'bm25'")
+    retrieval_k = int(retrieval_raw.get("k", DEFAULT_RETRIEVAL_K))
+    if retrieval_k < 1:
+        raise ValueError("run.retrieval.k must be >= 1")
     bitloops_enabled = _detect_bitloops_enabled(condition=condition, agent=agent_cfg)
     workspace_isolation_mode = _resolve_workspace_isolation_mode(
         requested=workspace_isolation_mode_raw,
@@ -195,6 +218,9 @@ def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
         agent=agent_cfg,
         model=model_cfg,
         prompt_context=prompt_context,
+        prompt_protocol=prompt_protocol,
+        retrieval_file_source=retrieval_file_source,
+        retrieval_k=retrieval_k,
         model_map=model_map,
         evaluation=evaluation_cfg,
         source_path=config_path,

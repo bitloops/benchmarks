@@ -24,6 +24,7 @@ from common import (  # type: ignore[import-not-found]
     merge_metric_metadata,
     parse_agent_payload,
     parse_agent_output,
+    prompt_template_metadata,
     read_payload_from_stdin,
     render_task_prompt,
     reset_workspace,
@@ -143,6 +144,7 @@ def main() -> None:
     bitloops_sandbox = resolve_bitloops_sandbox(payload)
     bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
     prompt = render_task_prompt(payload, wrapper_name="claude_code")
+    prompt_meta = prompt_template_metadata(payload)
 
     try:
         reset_workspace(workspace)
@@ -353,6 +355,7 @@ def main() -> None:
             "elapsed_ms": elapsed_ms,
             "patch_source": patch_source,
             "prompt_text": prompt,
+            **prompt_meta,
             "stderr": stderr.strip(),
             "tool_usage_breakdown": tool_usage_breakdown,
             "tool_invocations_raw": tool_invocations_raw,

@@ -4,6 +4,7 @@ from pathlib import Path
 import contextlib
 import importlib.util
 import json
+import re
 import sqlite3
 import tempfile
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ common = _load_common_module()
 
 
 class AgentWrapperCommonTests(unittest.TestCase):
-    def test_render_task_prompt_leaves_issue_text_unprefixed_for_bitloops_condition(self) -> None:
+    def test_render_task_prompt_is_minimal_for_bitloops_condition(self) -> None:
         prompt = common.render_task_prompt(
             {
                 "instance_id": "ruff__1",
@@ -39,18 +40,12 @@ class AgentWrapperCommonTests(unittest.TestCase):
             wrapper_name="claude_code",
         )
 
-        self.assertIn("Issue:\nFix the failing lint behavior.", prompt)
-        self.assertNotIn("Issue:\nUsing DevQL\n\nFix the failing lint behavior.", prompt)
-        self.assertIn(
-            "- For code understanding and exploration, you must use `bitloops devql` first.\n",
-            prompt,
-        )
-        self.assertIn(
-            "- Only fall back to grep/read/glob or directory crawling if DevQL returns nothing useful.\n",
-            prompt,
-        )
+        self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
+        self.assertTrue(prompt.endswith("Fix the failing lint behavior."))
+        self.assertNotIn("bitloops devql", prompt)
+        self.assertNotIn("Issue:\n", prompt)
 
-    def test_render_task_prompt_leaves_non_bitloops_issue_text_unchanged(self) -> None:
+    def test_render_task_prompt_is_minimal_for_baseline_condition(self) -> None:
         prompt = common.render_task_prompt(
             {
                 "instance_id": "ruff__1",
@@ -64,9 +59,74 @@ class AgentWrapperCommonTests(unittest.TestCase):
             wrapper_name="claude_code",
         )
 
-        self.assertIn("Issue:\nFix the failing lint behavior.", prompt)
-        self.assertNotIn("Issue:\nUsing DevQL\n\nFix the failing lint behavior.", prompt)
+        self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
+        self.assertTrue(prompt.endswith("Fix the failing lint behavior."))
         self.assertNotIn("bitloops devql", prompt)
+        self.assertNotIn("Issue:\n", prompt)
+
+    def test_render_task_prompt_swe_includes_expected_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src").mkdir(parents=True)
+            (workspace / "src" / "math.py").write_text(
+                "def add(a, b):\n    return a + b\n",
+                encoding="utf-8",
+            )
+            prompt = common.render_task_prompt(
+                {
+                    "instance_id": "ruff__1",
+                    "repo": "astral-sh/ruff",
+                    "base_commit": "abc123",
+                    "language": "rust",
+                    "problem_statement": "Fix add behavior for zero",
+                    "metadata": {
+                        "hints_text": "secret",
+                        "FAIL_TO_PASS": ["x"],
+                        "PASS_TO_PASS": ["y"],
+                    },
+                    "run": {
+                        "condition": "baseline",
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 10,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="claude_code",
+            )
+
+        self.assertIn("<issue>", prompt)
+        self.assertIn("</issue>", prompt)
+        self.assertIn("<code>", prompt)
+        self.assertIn("</code>", prompt)
+        self.assertIn("<patch>", prompt)
+        self.assertIn("</patch>", prompt)
+        self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
+        self.assertNotIn("FAIL_TO_PASS", prompt)
+        self.assertNotIn("PASS_TO_PASS", prompt)
+        self.assertNotIn("hints_text", prompt)
+
+    def test_render_task_prompt_swe_respects_retrieval_k(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+            (workspace / "b.py").write_text("def alpha_beta():\n    return 2\n", encoding="utf-8")
+            (workspace / "c.py").write_text("def gamma():\n    return 3\n", encoding="utf-8")
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "Fix alpha behavior",
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 1,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="codex",
+            )
+
+        start_blocks = re.findall(r"\[start of [^\]]+\]", prompt)
+        self.assertEqual(len(start_blocks), 1)
 
     def test_parse_agent_output_prefers_json_result(self) -> None:
         raw = '{"type":"result","result":"diff --git a/x b/x\\n--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-a\\n+b\\n"}'

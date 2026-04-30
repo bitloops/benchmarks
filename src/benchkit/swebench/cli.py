@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -302,6 +303,48 @@ def default_appendix_output_dir(config: RunConfig, run_id: str) -> Path:
     return Path("reports/appendix") / f"{agent}_{variant}_{ts}"
 
 
+def default_transcripts_output_dir(config: RunConfig, run_id: str) -> Path:
+    agent_id = "agent"
+    variant = "baseline"
+    try:
+        agent_obj = getattr(config, "agent", None)
+        if agent_obj is not None:
+            agent_id = str(getattr(agent_obj, "id", "")).strip() or "agent"
+        variant = "bitloops" if bool(getattr(config, "bitloops_enabled", False)) else "baseline"
+    except Exception:
+        pass
+    agent = _filesystem_slug(agent_id)
+    ts = _appendix_timestamp_segment(run_id)
+    return Path("reports/transcripts") / f"{agent}_{variant}_{ts}"
+
+
+def copy_run_transcripts_to_reports(run_root: Path, transcripts_root: Path) -> Path:
+    run_root = run_root.resolve()
+    destination = transcripts_root.resolve() / run_root.name
+    destination.mkdir(parents=True, exist_ok=True)
+    attempts_root = run_root / "attempts"
+    if not attempts_root.exists():
+        return destination
+    for attempt_dir in sorted(attempts_root.glob("attempt-*")):
+        if not attempt_dir.is_dir():
+            continue
+        target_attempt = destination / "attempts" / attempt_dir.name
+        target_attempt.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "trace.jsonl",
+            "predictions.jsonl",
+            "evaluation.json",
+            "evaluation.tasks.jsonl",
+            "evaluation.parsed.json",
+            "evaluation.stdout.log",
+            "evaluation.stderr.log",
+        ):
+            source = attempt_dir / filename
+            if source.exists():
+                shutil.copy2(source, target_attempt / filename)
+    return destination
+
+
 def _filesystem_slug(value: str) -> str:
     lowered = value.strip().lower()
     out: list[str] = []
@@ -383,6 +426,12 @@ def run_execute(
         print("Generating appendix files...")
         print(f"Appendix output: {effective_appendix_dir}")
         run_appendix(run_roots=[result.run_root], output_dir=effective_appendix_dir)
+
+    copied_to = copy_run_transcripts_to_reports(
+        result.run_root,
+        default_transcripts_output_dir(config, result.run_id),
+    )
+    print(f"Transcripts copied to: {copied_to}")
 
 
 def run_export_hf(

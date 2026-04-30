@@ -1,6 +1,7 @@
 # BenchKit: canonical multi-repo Claude + Bitloops (Rust subset). Not the bat-2260 recovery slice.
 # Dataset: 43 tasks (tokio, axum, ruff, bat, ripgrep, nushell, coreutils); export via BENCHMARKING.md.
 [run]
+prompt_protocol = "swe"
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
 include_repos = []

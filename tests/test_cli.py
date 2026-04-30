@@ -12,7 +12,9 @@ from unittest.mock import patch
 from benchkit.swebench.cli import (
     _appendix_timestamp_segment,
     _filesystem_slug,
+    copy_run_transcripts_to_reports,
     default_appendix_output_dir,
+    default_transcripts_output_dir,
     run_execute,
     run_plan,
 )
@@ -39,6 +41,8 @@ class CliRunTests(unittest.TestCase):
                 patch("benchkit.swebench.cli.load_run_config", return_value=object()),
                 patch("benchkit.swebench.cli.execute_run", return_value=result),
                 patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
+                patch("benchkit.swebench.cli.default_transcripts_output_dir", return_value=root / "reports" / "transcripts"),
+                patch("benchkit.swebench.cli.copy_run_transcripts_to_reports") as copy_transcripts_mock,
             ):
                 run_execute(
                     config_path=config_path,
@@ -53,6 +57,7 @@ class CliRunTests(unittest.TestCase):
                 run_roots=[run_root],
                 output_dir=root / "appendix",
             )
+            copy_transcripts_mock.assert_called_once()
 
     def test_run_execute_skips_appendix_when_output_dir_not_set(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -73,6 +78,8 @@ class CliRunTests(unittest.TestCase):
                 patch("benchkit.swebench.cli.load_run_config", return_value=object()),
                 patch("benchkit.swebench.cli.execute_run", return_value=result),
                 patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
+                patch("benchkit.swebench.cli.default_transcripts_output_dir", return_value=root / "reports" / "transcripts"),
+                patch("benchkit.swebench.cli.copy_run_transcripts_to_reports") as copy_transcripts_mock,
             ):
                 run_execute(
                     config_path=config_path,
@@ -84,6 +91,30 @@ class CliRunTests(unittest.TestCase):
                 )
 
             run_appendix_mock.assert_not_called()
+            copy_transcripts_mock.assert_called_once()
+
+    def test_copy_run_transcripts_to_reports_uses_dedicated_reports_subfolder(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "runs" / "swebench_multilingual" / "20260101" / "run-1"
+            attempt = run_root / "attempts" / "attempt-01"
+            attempt.mkdir(parents=True, exist_ok=True)
+            (attempt / "trace.jsonl").write_text('{"instance_id":"a"}\n', encoding="utf-8")
+            (attempt / "predictions.jsonl").write_text('{"instance_id":"a"}\n', encoding="utf-8")
+            transcripts_root = root / "reports" / "transcripts" / "opencode_baseline_20260101_120000"
+
+            copied_to = copy_run_transcripts_to_reports(run_root, transcripts_root)
+
+            self.assertTrue((copied_to / "attempts" / "attempt-01" / "trace.jsonl").exists())
+            self.assertTrue((copied_to / "attempts" / "attempt-01" / "predictions.jsonl").exists())
+
+    def test_default_transcripts_output_dir(self) -> None:
+        config = SimpleNamespace(
+            agent=SimpleNamespace(id="opencode"),
+            bitloops_enabled=True,
+        )
+        output = default_transcripts_output_dir(config, "20260101_120000_abc123")
+        self.assertEqual(output, Path("reports/transcripts/opencode_bitloops_20260101_120000"))
 
     def test_run_execute_appendix_auto_dir_bitloops(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from collections import Counter
 from copy import deepcopy
 import contextlib
 import fcntl
+import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -2712,49 +2715,214 @@ def _ensure_trailing_newline(text: str) -> str:
     return f"{text}\n" if text and not text.endswith("\n") else text
 
 
-def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
-    instance_id = str(payload.get("instance_id", "unknown"))
-    repo = str(payload.get("repo", "unknown"))
-    base_commit = str(payload.get("base_commit", "unknown"))
-    language = str(payload.get("language", "unknown"))
-    problem = str(payload.get("problem_statement", "")).strip()
-    extra_notes = payload.get("metadata", {})
-    prompt_context = payload.get("prompt_context")
-    run = payload.get("run", {})
-    condition = str(run.get("condition", "")).strip().lower() if isinstance(run, dict) else ""
-    condition_instructions = ""
+PATCH_EXAMPLE = """--- a/file.py
++++ b/file.py
+@@ -1,3 +1,5 @@
+-def add(a, b):
+-    return a - b
++def add(a, b):
++    if b == 0:
++        return a
++    return a + b
+"""
 
-    if condition == "with_bitloops" and problem:
-        condition_instructions = (
-            "- For code understanding and exploration, you must use `bitloops devql` first.\n"
-            "- Only fall back to grep/read/glob or directory crawling if DevQL returns nothing useful.\n"
+
+def _resolve_prompt_protocol(payload: dict[str, Any]) -> str:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return "swe"
+    protocol_raw = str(run.get("prompt_protocol", "swe")).strip().lower()
+    if protocol_raw == "style3":
+        return "swe"
+    return protocol_raw if protocol_raw in {"minimal", "swe"} else "swe"
+
+
+def _resolve_retrieval_settings(payload: dict[str, Any]) -> tuple[str, int]:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return "bm25", 10
+    file_source = str(run.get("retrieval_file_source", "bm25")).strip().lower() or "bm25"
+    try:
+        k = int(run.get("retrieval_k", 10))
+    except (TypeError, ValueError):
+        k = 10
+    return file_source, max(k, 1)
+
+
+def _add_line_numbers(content: str) -> str:
+    lines = content.splitlines()
+    return "\n".join(f"{idx} {line}" for idx, line in enumerate(lines, start=1))
+
+
+def _tokenize(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]+", text)]
+
+
+def _candidate_files(workspace: Path) -> list[Path]:
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode == 0:
+            files = [
+                workspace / line.strip()
+                for line in completed.stdout.splitlines()
+                if line.strip()
+            ]
+            return sorted(path for path in files if path.is_file())
+    except Exception:
+        pass
+    return sorted(path for path in workspace.rglob("*") if path.is_file() and ".git" not in path.parts)
+
+
+def _read_text_file(path: Path, max_bytes: int = 120_000) -> str:
+    try:
+        with path.open("rb") as handle:
+            chunk = handle.read(max_bytes)
+        if b"\x00" in chunk:
+            return ""
+        return chunk.decode("utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _retrieve_bm25_code_context(*, workspace: Path, problem: str, k: int) -> list[tuple[str, str]]:
+    query_terms = _tokenize(problem)
+    if not query_terms:
+        return []
+
+    files = _candidate_files(workspace)
+    if not files:
+        return []
+
+    docs: list[dict[str, Any]] = []
+    df: Counter[str] = Counter()
+    term_set = set(query_terms)
+    for file_path in files:
+        rel_path = file_path.relative_to(workspace).as_posix()
+        text = _read_text_file(file_path)
+        if not text:
+            continue
+        # Keep prompt size bounded while still feeding meaningful local context.
+        preview = "\n".join(text.splitlines()[:220])
+        tokens = _tokenize(f"{rel_path}\n{preview}")
+        if not tokens:
+            continue
+        counts = Counter(tokens)
+        matched_terms = term_set.intersection(counts.keys())
+        if not matched_terms:
+            continue
+        for term in matched_terms:
+            df[term] += 1
+        docs.append(
+            {
+                "path": rel_path,
+                "content": preview,
+                "length": len(tokens),
+                "counts": counts,
+            }
         )
 
-    parts = [
-        f"You are {wrapper_name} running in benchmark mode.\n"
-        f"You have access to a workspace containing the source code of {repo} "
-        f"at commit {base_commit}.\n\n"
-        "Task: Investigate and fix the following issue by editing files "
-        "directly in the workspace.\n\n"
-        "Instructions:\n"
-        f"{condition_instructions}"
-        "- Read the relevant source files to understand the code.\n"
-        "- Identify the root cause of the issue described below.\n"
-        "- Edit the necessary files to fix the bug.\n"
-        "- Do not commit your changes; just leave the edited files in place.\n"
-        "- Do not add explanations or commentary to your final response.\n\n"
-        f"Instance ID: {instance_id}\n"
-        f"Repository: {repo}\n"
-        f"Base commit: {base_commit}\n"
-        f"Language: {language}\n\n"
-        f"Issue:\n{problem}\n\n"
-        f"Additional metadata:\n{json.dumps(extra_notes, ensure_ascii=False)}"
+    if not docs:
+        return []
+
+    avgdl = sum(int(doc["length"]) for doc in docs) / float(len(docs))
+    k1 = 1.5
+    b = 0.75
+    total_docs = len(docs)
+    scored: list[tuple[float, str, str]] = []
+    for doc in docs:
+        length = max(int(doc["length"]), 1)
+        counts: Counter[str] = doc["counts"]
+        score = 0.0
+        for term in query_terms:
+            tf = counts.get(term, 0)
+            if tf <= 0:
+                continue
+            term_df = df.get(term, 0)
+            idf = math.log(1.0 + ((total_docs - term_df + 0.5) / (term_df + 0.5)))
+            denom = tf + k1 * (1.0 - b + b * (length / max(avgdl, 1.0)))
+            score += idf * (tf * (k1 + 1.0)) / denom
+        if score > 0:
+            scored.append((score, str(doc["path"]), str(doc["content"])))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected = scored[:k]
+    return [(path, content) for _, path, content in selected]
+
+
+def _build_swe_prompt(payload: dict[str, Any]) -> str:
+    problem = str(payload.get("problem_statement", "")).strip()
+    workspace = resolve_workspace(payload)
+    file_source, retrieval_k = _resolve_retrieval_settings(payload)
+    snippets: list[tuple[str, str]] = []
+    if file_source == "bm25":
+        snippets = _retrieve_bm25_code_context(
+            workspace=workspace,
+            problem=problem,
+            k=retrieval_k,
+        )
+
+    code_blocks: list[str] = []
+    for path, content in snippets:
+        code_blocks.append(f"[start of {path}]")
+        code_blocks.append(_add_line_numbers(content))
+        code_blocks.append(f"[end of {path}]")
+    code_text = "\n".join(code_blocks).strip()
+    if not code_text:
+        code_text = "[start of context]\nNo retrieval context available.\n[end of context]"
+
+    final_text = [
+        "You will be provided with a partial code base and an issue statement explaining a problem to resolve.",
+        "<issue>",
+        problem,
+        "</issue>",
+        "",
+        "<code>",
+        code_text,
+        "</code>",
+        "",
+        "Here is an example of a patch file. It consists of changes to the code base.",
+        "<patch>",
+        PATCH_EXAMPLE.strip(),
+        "</patch>",
+        "",
+        "Solve the issue by generating a single patch file applicable with git apply.",
+        "Do not commit your changes; just leave the edited files in place.",
+        "Respond with only the patch.",
     ]
+    return "\n".join(final_text).strip()
 
-    if isinstance(prompt_context, str) and prompt_context.strip():
-        parts.append(f"\n\nAdditional context:\n{prompt_context.strip()}")
 
-    return "".join(parts)
+def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    protocol = _resolve_prompt_protocol(payload)
+    file_source, retrieval_k = _resolve_retrieval_settings(payload)
+    version = "swe_v1" if protocol == "swe" else "minimal_v1"
+    hash_input = f"{version}|protocol={protocol}|source={file_source}|k={retrieval_k}"
+    return {
+        "prompt_protocol": protocol,
+        "retrieval_file_source": file_source,
+        "retrieval_k": retrieval_k,
+        "prompt_template_version": version,
+        "prompt_template_hash": hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:16],
+    }
+
+
+def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
+    problem = str(payload.get("problem_statement", "")).strip()
+    _ = wrapper_name  # Signature kept for wrapper compatibility.
+    protocol = _resolve_prompt_protocol(payload)
+    if protocol == "swe":
+        return _build_swe_prompt(payload)
+    return (
+        "Do not commit your changes; just leave the edited files in place.\n\n"
+        f"{problem}"
+    )
 
 
 def resolve_workspace(payload: dict[str, Any]) -> Path:

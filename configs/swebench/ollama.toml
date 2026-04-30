@@ -1,5 +1,5 @@
 # Field reference: docs/run-benchmarks.md#swe-bench-config-reference
-preset = "codex"
+preset = "ollama"
 
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
@@ -9,15 +9,18 @@ include_instance_ids = []
 max_instances = 1
 attempts = 1
 max_workers = 1
-timeout_seconds = 1200
-workspace_timeout_seconds = 600
+timeout_seconds = 900
+workspace_timeout_seconds = 1800
 
 [model]
-# Runtime Codex settings come from configs/codex/codex.json.
-name = "gpt-5.4"
+# Runtime Ollama settings come from configs/ollama/ollama.json.
+name = "deepseek-v4-flash:cloud"
+
+[model_map.ollama]
+"deepseek-v4-flash:cloud" = "deepseek-v4-flash:cloud"
 
 [evaluation]
-max_workers = 4
+max_workers = 2
 timeout_seconds = 7200
 
 [modes.baseline.agent]

@@ -1,4 +1,5 @@
 [run]
+prompt_protocol = "swe"
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/swebench_multilingual.dev.jsonl"
 split = "dev"
