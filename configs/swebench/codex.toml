@@ -4,10 +4,10 @@ preset = "codex"
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
 include_repos = []
-include_instance_ids = []
-max_instances = 1
+include_instance_ids = ["nushell__nushell-12950","nushell__nushell-13246"]
+max_instances = 2
 attempts = 1
-max_workers = 1
+max_workers = 2
 timeout_seconds = 1200
 workspace_timeout_seconds = 600
 

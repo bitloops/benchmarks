@@ -1,0 +1,11 @@
+{
+  "base_url": "http://localhost:11434",
+  "model": "deepseek-v4-flash:cloud",
+  "timeout_seconds": 900,
+  "max_num_predict": 4096,
+  "options": {
+    "temperature": 0,
+    "num_predict": 4096,
+    "seed": 42
+  }
+}

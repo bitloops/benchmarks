@@ -2281,6 +2281,10 @@ def _infer_token_usage_semantics(
         return "opencode_step_finish"
 
     events = payload if isinstance(payload, list) else [payload]
+    if isinstance(payload, dict) and any(
+        key in payload for key in ("prompt_eval_count", "promptEvalCount", "eval_count", "evalCount")
+    ):
+        return "ollama_response"
     for event in events:
         if not isinstance(event, dict):
             continue
@@ -2311,6 +2315,9 @@ def _infer_token_usage_semantics(
                 return "claude_result_usage"
             if any(key in usage for key in ("inputTokens", "outputTokens")):
                 return "cursor_result_usage"
+        if event_type in {"done", "response"}:
+            if any(key in event for key in ("prompt_eval_count", "eval_count")):
+                return "ollama_response"
 
     return "generic"
 
@@ -2424,10 +2431,14 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("usage", "inputTokens"),
         ("usage", "prompt_tokens"),
         ("usage", "promptTokens"),
+        ("usage", "prompt_eval_count"),
+        ("usage", "promptEvalCount"),
         ("usage", "tokensIn",),
         ("properties", "info", "info", "tokens", "input"),
         ("info", "info", "tokens", "input"),
         ("tokens", "input"),
+        ("prompt_eval_count",),
+        ("promptEvalCount",),
         ("input_tokens",),
         ("inputTokens",),
         ("modelUsage", "*", "inputTokens"),
@@ -2438,10 +2449,14 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         ("usage", "outputTokens"),
         ("usage", "completion_tokens"),
         ("usage", "completionTokens"),
+        ("usage", "eval_count"),
+        ("usage", "evalCount"),
         ("usage", "tokensOut",),
         ("properties", "info", "info", "tokens", "output"),
         ("info", "info", "tokens", "output"),
         ("tokens", "output"),
+        ("eval_count",),
+        ("evalCount",),
         ("output_tokens",),
         ("outputTokens",),
         ("modelUsage", "*", "outputTokens"),

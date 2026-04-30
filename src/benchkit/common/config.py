@@ -358,6 +358,52 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                 },
             },
         },
+        "ollama": {
+            "run": {
+                **common_run,
+                "timeout_seconds": 900,
+                "workspace_timeout_seconds": 1800,
+            },
+            "agent": {
+                "id": "ollama",
+                "command": ["python3", "scripts/agents/ollama_wrapper.py"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "ollama",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": {
+                **common_evaluation,
+                "max_workers": 2,
+            },
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                        "timeout_seconds": 1500,
+                        "bitloops_sandbox_mode": "per_task_daemon",
+                    },
+                    "agent": {
+                        "extra_args": [
+                            "--bitloops-init",
+                            "--bitloops-embeddings-runtime",
+                            "platform",
+                            "--bitloops-summary-mode",
+                            "off",
+                        ],
+                    },
+                },
+            },
+        },
     }
 
 
