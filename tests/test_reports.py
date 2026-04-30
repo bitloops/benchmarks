@@ -68,8 +68,10 @@ class ReportsTests(unittest.TestCase):
             self.assertEqual(row["output_tokens_total"], 890)
             self.assertEqual(row["cache_creation_input_tokens_total"], 50)
             self.assertEqual(row["cache_read_input_tokens_total"], 90)
-            self.assertEqual(row["derived_total_input_processed_tokens"], 4150)
-            self.assertEqual(row["derived_total_processed_tokens"], 5040)
+            self.assertEqual(row["total_input_processed_tokens_total"], 4150)
+            self.assertEqual(row["total_processed_tokens_total"], 5040)
+            self.assertNotIn("derived_total_input_processed_tokens", row)
+            self.assertNotIn("derived_total_processed_tokens", row)
             self.assertAlmostEqual(row["runtime_total_sec"], 15.0)
             self.assertAlmostEqual(row["runtime_mean_sec"], 5.0)
             self.assertAlmostEqual(row["runtime_median_sec"], 5.0)
@@ -87,6 +89,8 @@ class ReportsTests(unittest.TestCase):
                 csv_rows[0]["session_ids"],
                 "init-session-1;init-session-3;init-session-4",
             )
+            self.assertNotIn("derived_total_input_processed_tokens", csv_rows[0])
+            self.assertNotIn("derived_total_processed_tokens", csv_rows[0])
 
     def test_generate_report_files_keeps_existing_appendix_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,6 +110,98 @@ class ReportsTests(unittest.TestCase):
             self.assertTrue(outputs.appendix.results_csv.exists())
             self.assertTrue(outputs.run_summary.run_summary_jsonl.exists())
             self.assertTrue(outputs.run_summary.run_summary_csv.exists())
+
+    def test_generate_run_summary_files_normalizes_codex_cached_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "run_id": "run-1",
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "language": "rust",
+                    "condition": "baseline",
+                    "agent": {"id": "codex"},
+                    "model": {
+                        "canonical_name": "gpt-5.4",
+                        "resolved_name": "gpt-5.4",
+                    },
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:codex",
+                        "model_patch": "diff --git a/a b/a\n",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {
+                            "token_input": 12024,
+                            "token_output": 27,
+                            "cached_input_tokens": 3456,
+                            "token_input_uncached": 8568,
+                            "total_tokens": 12051,
+                            "tool_calls": 1,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "evaluation.tasks.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "solved",
+                        "resolved": True,
+                        "raw": {"resolved": True},
+                    }
+                ],
+            )
+
+            outputs = generate_run_summary_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+            rows = [
+                json.loads(line)
+                for line in outputs.run_summary_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            row = rows[0]
+
+            self.assertEqual(row["input_tokens_total"], 8568)
+            self.assertEqual(row["output_tokens_total"], 27)
+            self.assertEqual(row["cache_read_input_tokens_total"], 3456)
+            self.assertEqual(row["cache_creation_input_tokens_total"], 0)
+            self.assertEqual(row["total_input_processed_tokens_total"], 12024)
+            self.assertEqual(row["total_processed_tokens_total"], 12051)
 
     def test_resolve_agent_cli_version_prefers_metadata_before_probe(self) -> None:
         version = _resolve_agent_cli_version(

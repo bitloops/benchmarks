@@ -63,6 +63,19 @@ For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also inc
 Token usage metadata includes:
 - `token_input` / `token_output` extracted from the terminal Claude `type="result"` event when using stream-json output (same canonical semantics as non-stream JSON output).
 - `token_metrics_source` indicating extraction provenance (`result_usage`, `result_model_usage`, `fallback_scan`, or `fallback_max_candidate`).
+- Canonical cross-agent dashboard fields:
+  - `input_tokens`
+  - `output_tokens`
+  - `cache_read_input_tokens`
+  - `cache_creation_input_tokens`
+  - `total_input_processed_tokens`
+  - `total_processed_tokens`
+- Agent semantics for canonical token fields:
+  - Claude: `input_tokens = token_input`; cache read/write come from the transcript fields directly.
+  - Codex: `input_tokens = token_input - cached_input_tokens`; `cache_read_input_tokens = cached_input_tokens`; `cache_creation_input_tokens = 0` unless explicitly reported later.
+  - OpenCode: `input_tokens = token_input`; cache read/write come from `tokens.cache.read` and `tokens.cache.write`.
+  - Cursor: `input_tokens = token_input`; cache read/write default to `0` when not reported.
+- Raw provider-native token fields remain in trace metadata for audit/debugging, but report tables should expose only the canonical cross-agent fields above.
 
 The wrapper uses `payload.model.name` as the concrete CLI model ID. The runner can
 map a canonical benchmark model to this value via `model_map` in TOML config.

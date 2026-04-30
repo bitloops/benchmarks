@@ -249,6 +249,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("search_actions"), 2)
         self.assertEqual(metrics.get("tool_calls"), 5)
         self.assertEqual(metrics.get("total_tokens"), 1555)
+        self.assertEqual(metrics.get("input_tokens"), 1234)
+        self.assertEqual(metrics.get("output_tokens"), 321)
+        self.assertEqual(metrics.get("total_input_processed_tokens"), 2066)
+        self.assertEqual(metrics.get("total_processed_tokens"), 2387)
 
     def test_extract_usage_metrics_from_cursor_style_json(self) -> None:
         payload = [
@@ -274,6 +278,12 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("tool_calls"), 7)
         self.assertEqual(metrics.get("shell_commands"), 5)
         self.assertEqual(metrics.get("file_reads"), 3)
+        self.assertEqual(metrics.get("input_tokens"), 2222)
+        self.assertEqual(metrics.get("output_tokens"), 444)
+        self.assertEqual(metrics.get("cache_creation_input_tokens"), 0)
+        self.assertEqual(metrics.get("cache_read_input_tokens"), 0)
+        self.assertEqual(metrics.get("total_input_processed_tokens"), 2222)
+        self.assertEqual(metrics.get("total_processed_tokens"), 2666)
 
     def test_extract_usage_metrics_prefers_terminal_result_usage(self) -> None:
         payload = [
@@ -448,6 +458,12 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("reasoning_output_tokens"), 11)
         self.assertEqual(metrics.get("total_tokens"), 12051)
         self.assertEqual(metrics.get("token_metrics_source"), "result_usage")
+        self.assertEqual(metrics.get("input_tokens"), 8568)
+        self.assertEqual(metrics.get("output_tokens"), 27)
+        self.assertEqual(metrics.get("cache_read_input_tokens"), 3456)
+        self.assertEqual(metrics.get("cache_creation_input_tokens"), 0)
+        self.assertEqual(metrics.get("total_input_processed_tokens"), 12024)
+        self.assertEqual(metrics.get("total_processed_tokens"), 12051)
 
     def test_extract_usage_metrics_from_opencode_assistant_message(self) -> None:
         payload = [
@@ -529,6 +545,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metrics.get("total_tokens"), 11203)
         self.assertAlmostEqual(float(metrics.get("estimated_cost", 0)), 0.506207)
         self.assertEqual(metrics.get("token_metrics_source"), "opencode_step_finish_sum")
+        self.assertEqual(metrics.get("input_tokens"), 10684)
+        self.assertEqual(metrics.get("output_tokens"), 312)
+        self.assertEqual(metrics.get("total_input_processed_tokens"), 10888)
+        self.assertEqual(metrics.get("total_processed_tokens"), 11200)
 
     def test_extract_usage_metrics_emits_zero_cache_counts_for_opencode_step_finish(
         self,
@@ -895,6 +915,26 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(merged["cache_creation_ephemeral_1h_input_tokens"], 3)
         self.assertEqual(merged["hook_metrics_path"], "/tmp/hook.jsonl")
         self.assertEqual(merged["token_metrics_source"], "result_usage")
+        self.assertEqual(merged["input_tokens"], 100)
+        self.assertIsNone(merged.get("output_tokens"))
+
+    def test_merge_metric_metadata_derives_codex_canonical_token_fields(self) -> None:
+        merged = common.merge_metric_metadata(
+            {
+                "token_input": 12024,
+                "token_output": 27,
+                "cached_input_tokens": 3456,
+                "token_input_uncached": 8568,
+                "token_usage_semantics": "codex_turn_completed",
+            }
+        )
+
+        self.assertEqual(merged["input_tokens"], 8568)
+        self.assertEqual(merged["output_tokens"], 27)
+        self.assertEqual(merged["cache_read_input_tokens"], 3456)
+        self.assertEqual(merged["cache_creation_input_tokens"], 0)
+        self.assertEqual(merged["total_input_processed_tokens"], 12024)
+        self.assertEqual(merged["total_processed_tokens"], 12051)
 
     def test_setup_bitloops_starts_daemon_when_stopped(self) -> None:
         responses = [

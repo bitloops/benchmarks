@@ -73,8 +73,8 @@ RUN_SUMMARY_FIELDS = [
     "output_tokens_total",
     "cache_creation_input_tokens_total",
     "cache_read_input_tokens_total",
-    "derived_total_input_processed_tokens",
-    "derived_total_processed_tokens",
+    "total_input_processed_tokens_total",
+    "total_processed_tokens_total",
     "estimated_cost_total",
     "tool_calls_total",
     "tool_calls_mean",
@@ -171,20 +171,29 @@ def _build_run_summary_row(run_root: Path) -> dict[str, Any]:
         task_attempt_rows or len(metadata_rows),
     )
 
-    input_tokens_total = _sum_int(per_task_rows, "token_input")
-    output_tokens_total = _sum_int(per_task_rows, "token_output")
+    input_tokens_total = _sum_int(per_task_rows, "input_tokens")
+    output_tokens_total = _sum_int(per_task_rows, "output_tokens")
     cache_creation_input_tokens_total = _sum_int(per_task_rows, "cache_creation_input_tokens")
     cache_read_input_tokens_total = _sum_int(per_task_rows, "cache_read_input_tokens")
-    derived_total_input_processed_tokens = _sum_present(
-        input_tokens_total,
-        cache_creation_input_tokens_total,
-        cache_read_input_tokens_total,
+    total_input_processed_tokens_total = _sum_int(
+        per_task_rows,
+        "total_input_processed_tokens",
     )
-    derived_total_processed_tokens = _sum_present(
-        derived_total_input_processed_tokens,
-        output_tokens_total,
+    if total_input_processed_tokens_total is None:
+        total_input_processed_tokens_total = _sum_present(
+            input_tokens_total,
+            cache_creation_input_tokens_total,
+            cache_read_input_tokens_total,
+        )
+    total_processed_tokens_total = _sum_int(
+        per_task_rows,
+        "total_processed_tokens",
     )
-
+    if total_processed_tokens_total is None:
+        total_processed_tokens_total = _sum_present(
+            total_input_processed_tokens_total,
+            output_tokens_total,
+        )
     session_ids = _extract_session_ids(metadata_rows)
     primary_session_id = session_ids[0] if session_ids else None
 
@@ -328,8 +337,8 @@ def _build_run_summary_row(run_root: Path) -> dict[str, Any]:
         "output_tokens_total": output_tokens_total,
         "cache_creation_input_tokens_total": cache_creation_input_tokens_total,
         "cache_read_input_tokens_total": cache_read_input_tokens_total,
-        "derived_total_input_processed_tokens": derived_total_input_processed_tokens,
-        "derived_total_processed_tokens": derived_total_processed_tokens,
+        "total_input_processed_tokens_total": total_input_processed_tokens_total,
+        "total_processed_tokens_total": total_processed_tokens_total,
         "estimated_cost_total": _sum_float(per_task_rows, "estimated_cost"),
         "tool_calls_total": tool_calls_total,
         "tool_calls_mean": _mean_float(per_task_rows, "tool_calls"),

@@ -46,19 +46,13 @@ PER_TASK_FIELDS = [
     "condition",
     "status",
     "runtime_sec",
-    "token_input",
-    "token_output",
-    "reasoning_output_tokens",
-    "total_tokens",
-    "cached_input_tokens",
-    "cached_output_tokens",
-    "token_input_uncached",
-    "token_output_uncached",
-    "estimated_cost",
-    "cache_creation_input_tokens",
+    "input_tokens",
+    "output_tokens",
     "cache_read_input_tokens",
-    "cache_creation_ephemeral_5m_input_tokens",
-    "cache_creation_ephemeral_1h_input_tokens",
+    "cache_creation_input_tokens",
+    "total_input_processed_tokens",
+    "total_processed_tokens",
+    "estimated_cost",
     "tool_calls",
     "shell_commands",
     "file_reads",
@@ -197,6 +191,7 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     instance_metadata,
                     ("repo_label", "repo_owner", "owner"),
                 ) or _derive_repo_label(str(repo or ""))
+                agent_id = _pick_string(manifest.get("agent", {}), ("id",))
                 model_version = (
                     manifest.get("model", {}).get("resolved_name")
                     or manifest.get("model", {}).get("canonical_name")
@@ -247,6 +242,14 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         token_output=token_output,
                         cached_input_tokens=cached_input_tokens,
                     )
+                canonical_token_metrics = _resolve_canonical_token_metrics(
+                    metadata=metadata,
+                    agent_id=agent_id,
+                    token_input=token_input,
+                    token_output=token_output,
+                    cached_input_tokens=cached_input_tokens,
+                    token_input_uncached=token_input_uncached,
+                )
 
                 row = {
                     "task_id": instance_id,
@@ -256,32 +259,26 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     "repo": repo,
                     "repo_label": repo_label,
                     "language": instance.get("language", manifest.get("language")),
-                    "agent": manifest.get("agent", {}).get("id"),
+                    "agent": agent_id,
                     "model_version": model_version,
                     "condition": manifest.get("condition", "baseline"),
                     "status": status,
                     "runtime_sec": _ms_to_sec(_pick_number(metadata, ("elapsed_ms",))),
-                    "token_input": token_input,
-                    "token_output": token_output,
-                    "reasoning_output_tokens": reasoning_output_tokens,
-                    "total_tokens": total_tokens,
-                    "cached_input_tokens": cached_input_tokens,
-                    "cached_output_tokens": cached_output_tokens,
-                    "token_input_uncached": token_input_uncached,
-                    "token_output_uncached": token_output_uncached,
+                    "input_tokens": canonical_token_metrics.get("input_tokens"),
+                    "output_tokens": canonical_token_metrics.get("output_tokens"),
+                    "cache_read_input_tokens": canonical_token_metrics.get(
+                        "cache_read_input_tokens"
+                    ),
+                    "cache_creation_input_tokens": canonical_token_metrics.get(
+                        "cache_creation_input_tokens"
+                    ),
+                    "total_input_processed_tokens": canonical_token_metrics.get(
+                        "total_input_processed_tokens"
+                    ),
+                    "total_processed_tokens": canonical_token_metrics.get(
+                        "total_processed_tokens"
+                    ),
                     "estimated_cost": estimated_cost,
-                    "cache_creation_input_tokens": _pick_number(
-                        metadata, ("cache_creation_input_tokens",)
-                    ),
-                    "cache_read_input_tokens": _pick_number(
-                        metadata, ("cache_read_input_tokens",)
-                    ),
-                    "cache_creation_ephemeral_5m_input_tokens": _pick_number(
-                        metadata, ("cache_creation_ephemeral_5m_input_tokens",)
-                    ),
-                    "cache_creation_ephemeral_1h_input_tokens": _pick_number(
-                        metadata, ("cache_creation_ephemeral_1h_input_tokens",)
-                    ),
                     "tool_calls": _pick_number(
                         metadata,
                         ("tool_calls", "total_tool_calls", "tools_count"),
@@ -350,8 +347,8 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                         },
                         "computed_metrics": {
                             "runtime_sec": row["runtime_sec"],
-                            "token_input_uncached": row["token_input_uncached"],
-                            "total_tokens": row["total_tokens"],
+                            "token_input_uncached": token_input_uncached,
+                            "total_tokens": total_tokens,
                             "estimated_cost": row["estimated_cost"],
                         },
                     },
@@ -370,6 +367,110 @@ def _derive_uncached_tokens(
     if cached_tokens is None:
         return int(float(total_tokens))
     return max(0, int(float(total_tokens) - float(cached_tokens)))
+
+
+def _sum_token_values(*values: int | float | None) -> int | None:
+    present = [int(float(value)) for value in values if value is not None]
+    if not present:
+        return None
+    return int(sum(present))
+
+
+def _resolve_token_usage_semantics(metadata: Any, agent_id: str | None) -> str:
+    explicit = _pick_string(metadata, ("token_usage_semantics",))
+    if explicit:
+        return explicit
+
+    wrapper = _pick_string(metadata, ("wrapper",))
+    candidates = [value.strip().lower() for value in (agent_id, wrapper) if isinstance(value, str)]
+
+    if any("codex" in value for value in candidates):
+        return "codex_turn_completed"
+    if _pick_string(metadata, ("token_metrics_source",)) == "opencode_step_finish_sum":
+        return "opencode_step_finish"
+    if any("opencode" in value for value in candidates):
+        return "opencode_message_updated"
+    if any("claude" in value for value in candidates):
+        return "claude_result_usage"
+    if any("cursor" in value for value in candidates):
+        return "cursor_result_usage"
+    return "generic"
+
+
+def _resolve_canonical_token_metrics(
+    *,
+    metadata: Any,
+    agent_id: str | None,
+    token_input: int | float | None,
+    token_output: int | float | None,
+    cached_input_tokens: int | float | None,
+    token_input_uncached: int | float | None,
+) -> dict[str, int | None]:
+    input_tokens = _pick_number(metadata, ("input_tokens",))
+    output_tokens = _pick_number(metadata, ("output_tokens",))
+    cache_read_input_tokens = _pick_number(metadata, ("cache_read_input_tokens",))
+    cache_creation_input_tokens = _pick_number(metadata, ("cache_creation_input_tokens",))
+    total_input_processed_tokens = _pick_number(metadata, ("total_input_processed_tokens",))
+    total_processed_tokens = _pick_number(metadata, ("total_processed_tokens",))
+
+    semantics = _resolve_token_usage_semantics(metadata, agent_id)
+    if semantics == "codex_turn_completed":
+        if input_tokens is None:
+            input_tokens = token_input_uncached
+        if input_tokens is None:
+            input_tokens = _derive_uncached_tokens(token_input, cached_input_tokens)
+        if cache_read_input_tokens is None:
+            cache_read_input_tokens = cached_input_tokens
+        if cache_read_input_tokens is None and (token_input is not None or token_output is not None):
+            cache_read_input_tokens = 0
+        if cache_creation_input_tokens is None and (
+            token_input is not None or token_output is not None
+        ):
+            cache_creation_input_tokens = 0
+    else:
+        if input_tokens is None:
+            input_tokens = token_input
+        if cache_read_input_tokens is None and (token_input is not None or token_output is not None):
+            cache_read_input_tokens = 0
+        if cache_creation_input_tokens is None and (
+            token_input is not None or token_output is not None
+        ):
+            cache_creation_input_tokens = 0
+
+    if output_tokens is None:
+        output_tokens = token_output
+    if total_input_processed_tokens is None:
+        total_input_processed_tokens = _sum_token_values(
+            input_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+        )
+    if total_processed_tokens is None:
+        total_processed_tokens = _sum_token_values(
+            total_input_processed_tokens,
+            output_tokens,
+        )
+
+    return {
+        "input_tokens": int(float(input_tokens)) if input_tokens is not None else None,
+        "output_tokens": int(float(output_tokens)) if output_tokens is not None else None,
+        "cache_read_input_tokens": (
+            int(float(cache_read_input_tokens)) if cache_read_input_tokens is not None else None
+        ),
+        "cache_creation_input_tokens": (
+            int(float(cache_creation_input_tokens))
+            if cache_creation_input_tokens is not None
+            else None
+        ),
+        "total_input_processed_tokens": (
+            int(float(total_input_processed_tokens))
+            if total_input_processed_tokens is not None
+            else None
+        ),
+        "total_processed_tokens": (
+            int(float(total_processed_tokens)) if total_processed_tokens is not None else None
+        ),
+    }
 
 
 def _compute_openai_cost_usd(
@@ -596,8 +697,8 @@ def _render_per_attempt_markdown(
                     str(row.get("task_id", "")),
                     str(row.get("status", "")),
                     _fmt_optional(row.get("runtime_sec")),
-                    _fmt_optional(row.get("token_input")),
-                    _fmt_optional(row.get("token_output")),
+                    _fmt_optional(row.get("input_tokens")),
+                    _fmt_optional(row.get("output_tokens")),
                     _fmt_optional(row.get("estimated_cost")),
                     _fmt_optional(row.get("tool_calls")),
                     _fmt_optional(row.get("files_edited")),

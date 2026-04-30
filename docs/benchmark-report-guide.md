@@ -33,3 +33,14 @@ Notes:
   `BENCHKIT_ENGINEER`, then `USER`.
 - `agent_cli_version` prefers trace metadata when available and otherwise probes
   the agent command recorded in trace metadata at report generation time.
+- `appendix_minimal_per_task_log.*` exposes only the canonical cross-agent token
+  fields:
+  - `input_tokens`
+  - `output_tokens`
+  - `cache_read_input_tokens`
+  - `cache_creation_input_tokens`
+  - `total_input_processed_tokens`
+  - `total_processed_tokens`
+- Raw provider-native token fields remain in the underlying trace metadata for
+  debugging and remapping, but they are intentionally not surfaced in the
+  appendix or SQLite reporting tables.

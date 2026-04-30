@@ -27,6 +27,8 @@ CANONICAL_METRIC_KEYS: tuple[str, ...] = (
     "token_output",
     "reasoning_output_tokens",
     "total_tokens",
+    "input_tokens",
+    "output_tokens",
     "cached_input_tokens",
     "cached_output_tokens",
     "token_input_uncached",
@@ -34,6 +36,8 @@ CANONICAL_METRIC_KEYS: tuple[str, ...] = (
     "estimated_cost",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
+    "total_input_processed_tokens",
+    "total_processed_tokens",
     "cache_creation_ephemeral_5m_input_tokens",
     "cache_creation_ephemeral_1h_input_tokens",
     "tool_calls",
@@ -2026,6 +2030,121 @@ def _extract_opencode_step_finish_usage_metrics(payload: Any) -> dict[str, float
     return metrics
 
 
+def _infer_token_usage_semantics(
+    payload: Any,
+    *,
+    has_opencode_step_finish_metrics: bool,
+) -> str:
+    if has_opencode_step_finish_metrics:
+        return "opencode_step_finish"
+
+    events = payload if isinstance(payload, list) else [payload]
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip().lower()
+        if event_type == "turn.completed":
+            return "codex_turn_completed"
+        if event_type == "message.updated":
+            properties = event.get("properties")
+            if isinstance(properties, dict):
+                info = properties.get("info")
+                if isinstance(info, dict):
+                    nested_info = info.get("info")
+                    if isinstance(nested_info, dict) and isinstance(nested_info.get("tokens"), dict):
+                        return "opencode_message_updated"
+        if event_type == "result":
+            usage = event.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            if any(
+                key in usage
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                )
+            ):
+                return "claude_result_usage"
+            if any(key in usage for key in ("inputTokens", "outputTokens")):
+                return "cursor_result_usage"
+
+    return "generic"
+
+
+def _coerce_token_int(value: Any) -> int | None:
+    number = _coerce_number(value)
+    if number is None:
+        return None
+    return int(float(number))
+
+
+def _sum_token_values(*values: Any) -> int | None:
+    present = [_coerce_token_int(value) for value in values]
+    filtered = [value for value in present if value is not None]
+    if not filtered:
+        return None
+    return int(sum(filtered))
+
+
+def _apply_canonical_token_metrics(metrics: dict[str, float | int | str]) -> None:
+    semantics = str(metrics.get("token_usage_semantics") or "").strip().lower() or "generic"
+
+    token_input = _coerce_token_int(metrics.get("token_input"))
+    token_output = _coerce_token_int(metrics.get("token_output"))
+    token_input_uncached = _coerce_token_int(metrics.get("token_input_uncached"))
+    cached_input_tokens = _coerce_token_int(metrics.get("cached_input_tokens"))
+    cache_read_input_tokens = _coerce_token_int(metrics.get("cache_read_input_tokens"))
+    cache_creation_input_tokens = _coerce_token_int(metrics.get("cache_creation_input_tokens"))
+
+    if semantics == "codex_turn_completed":
+        if token_input_uncached is None and token_input is not None and cached_input_tokens is not None:
+            token_input_uncached = max(0, int(token_input - cached_input_tokens))
+        input_tokens = token_input_uncached if token_input_uncached is not None else token_input
+        if cache_read_input_tokens is None:
+            if cached_input_tokens is not None:
+                cache_read_input_tokens = cached_input_tokens
+            elif token_input is not None:
+                cache_read_input_tokens = 0
+        if cache_creation_input_tokens is None and (
+            token_input is not None or token_output is not None
+        ):
+            cache_creation_input_tokens = 0
+    else:
+        input_tokens = token_input
+        if cache_read_input_tokens is None and (token_input is not None or token_output is not None):
+            cache_read_input_tokens = 0
+        if cache_creation_input_tokens is None and (
+            token_input is not None or token_output is not None
+        ):
+            cache_creation_input_tokens = 0
+
+    output_tokens = token_output
+    total_input_processed_tokens = _sum_token_values(
+        input_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    )
+    total_processed_tokens = _sum_token_values(
+        total_input_processed_tokens,
+        output_tokens,
+    )
+
+    if input_tokens is not None:
+        metrics["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        metrics["output_tokens"] = output_tokens
+    if cache_read_input_tokens is not None:
+        metrics["cache_read_input_tokens"] = cache_read_input_tokens
+    if cache_creation_input_tokens is not None:
+        metrics["cache_creation_input_tokens"] = cache_creation_input_tokens
+    if total_input_processed_tokens is not None:
+        metrics["total_input_processed_tokens"] = total_input_processed_tokens
+    if total_processed_tokens is not None:
+        metrics["total_processed_tokens"] = total_processed_tokens
+
+
 def _try_parse_json(raw_text: str) -> Any | None:
     try:
         return json.loads(raw_text)
@@ -2053,6 +2172,10 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         return {}
 
     opencode_step_finish_metrics = _extract_opencode_step_finish_usage_metrics(payload)
+    token_usage_semantics = _infer_token_usage_semantics(
+        payload,
+        has_opencode_step_finish_metrics=bool(opencode_step_finish_metrics),
+    )
 
     token_input_paths = [
         ("usage", "input_tokens"),
@@ -2344,6 +2467,8 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
         )
     if total_tokens is None and token_input is not None and token_output is not None:
         metrics["total_tokens"] = int(float(token_input) + float(token_output))
+    metrics["token_usage_semantics"] = token_usage_semantics
+    _apply_canonical_token_metrics(metrics)
 
     candidate_keys = {
         "input_tokens",
@@ -2462,6 +2587,7 @@ def extract_usage_metrics(payload: Any) -> dict[str, float | int | str]:
                 ),
             },
             "token_metrics_source": token_metrics_source,
+            "token_usage_semantics": token_usage_semantics,
         },
     )
     # endregion
@@ -2625,6 +2751,16 @@ def merge_metric_metadata(*metric_sources: dict[str, Any] | None) -> dict[str, f
             merged["token_metrics_source"] = token_metrics_source.strip()
             break
 
+    for source in metric_sources:
+        if not isinstance(source, dict):
+            continue
+        token_usage_semantics = source.get("token_usage_semantics")
+        if isinstance(token_usage_semantics, str) and token_usage_semantics.strip():
+            merged["token_usage_semantics"] = token_usage_semantics.strip()
+            break
+
+    _apply_canonical_token_metrics(merged)
+
     # region agent log
     _debug_log(
         hypothesis_id="H2",
@@ -2644,9 +2780,14 @@ def merge_metric_metadata(*metric_sources: dict[str, Any] | None) -> dict[str, f
                         "cache_read_input_tokens",
                         "cache_creation_ephemeral_5m_input_tokens",
                         "cache_creation_ephemeral_1h_input_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_input_processed_tokens",
+                        "total_processed_tokens",
                         "tool_calls",
                         "hook_metrics_path",
                         "token_metrics_source",
+                        "token_usage_semantics",
                     )
                 }
                 for source in metric_sources

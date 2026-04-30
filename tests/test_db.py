@@ -55,8 +55,12 @@ class SqliteImportTests(unittest.TestCase):
                         " condition",
                         " status",
                         " runtime_sec",
-                        " token_input",
-                        " token_output",
+                        " input_tokens",
+                        " output_tokens",
+                        " cache_read_input_tokens",
+                        " cache_creation_input_tokens",
+                        " total_input_processed_tokens",
+                        " total_processed_tokens",
                         " estimated_cost     ",
                         " tool_calls",
                         " shell_commands",
@@ -86,8 +90,12 @@ class SqliteImportTests(unittest.TestCase):
                         " condition": "baseline ",
                         " status": "solved",
                         " runtime_sec": "     208.408",
-                        " token_input": "         625",
-                        " token_output": "        6701",
+                        " input_tokens": "         625",
+                        " output_tokens": "        6701",
+                        " cache_read_input_tokens": "         55",
+                        " cache_creation_input_tokens": "         22",
+                        " total_input_processed_tokens": "         702",
+                        " total_processed_tokens": "        7403",
                         " estimated_cost     ": "0.8117682          ",
                         " tool_calls": "         29",
                         " shell_commands": "               ",
@@ -116,8 +124,12 @@ class SqliteImportTests(unittest.TestCase):
                         " condition": "baseline ",
                         " status": "unsolved",
                         " runtime_sec": "     355.139",
-                        " token_input": "          15",
-                        " token_output": "        15911",
+                        " input_tokens": "          15",
+                        " output_tokens": "        15911",
+                        " cache_read_input_tokens": "          0",
+                        " cache_creation_input_tokens": "          0",
+                        " total_input_processed_tokens": "          15",
+                        " total_processed_tokens": "        15926",
                         " estimated_cost     ": "0.92352475         ",
                         " tool_calls": "         14",
                         " shell_commands": "               ",
@@ -177,7 +189,9 @@ class SqliteImportTests(unittest.TestCase):
                 typed_row = connection.execute(
                     """
                     SELECT attempt, runtime_sec, typeof(runtime_sec), estimated_cost, typeof(estimated_cost),
-                           token_input, typeof(token_input), shell_commands, file_reads
+                           input_tokens, typeof(input_tokens), cache_read_input_tokens,
+                           cache_creation_input_tokens, total_input_processed_tokens,
+                           total_processed_tokens, shell_commands, file_reads
                     FROM task_attempts
                     WHERE run_id = ? AND task_id = ?
                     """,
@@ -190,8 +204,19 @@ class SqliteImportTests(unittest.TestCase):
                 self.assertEqual(typed_row[4], "real")
                 self.assertEqual(typed_row[5], 625)
                 self.assertEqual(typed_row[6], "integer")
-                self.assertIsNone(typed_row[7])
-                self.assertIsNone(typed_row[8])
+                self.assertEqual(typed_row[7], 55)
+                self.assertEqual(typed_row[8], 22)
+                self.assertEqual(typed_row[9], 702)
+                self.assertEqual(typed_row[10], 7403)
+                self.assertIsNone(typed_row[11])
+                self.assertIsNone(typed_row[12])
+
+                task_attempt_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(task_attempts)").fetchall()
+                }
+                self.assertNotIn("token_input", task_attempt_columns)
+                self.assertNotIn("token_output", task_attempt_columns)
 
                 joined = connection.execute(
                     """

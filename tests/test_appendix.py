@@ -165,25 +165,37 @@ class AppendixTests(unittest.TestCase):
             ]
             self.assertEqual(len(per_task), 4)
             self.assertEqual(per_task[0]["status"], "solved")
-            self.assertEqual(per_task[0]["token_input"], 1001)
-            self.assertEqual(per_task[0]["token_output"], 221)
-            self.assertEqual(per_task[0]["reasoning_output_tokens"], 31)
-            self.assertEqual(per_task[0]["total_tokens"], 1301)
             self.assertEqual(per_task[0]["estimated_cost"], 0.04)
             self.assertEqual(per_task[0]["cache_creation_input_tokens"], 11)
             self.assertEqual(per_task[0]["cache_read_input_tokens"], 21)
-            self.assertEqual(per_task[0]["cache_creation_ephemeral_5m_input_tokens"], 8)
-            self.assertEqual(per_task[0]["cache_creation_ephemeral_1h_input_tokens"], 3)
-            self.assertIsNone(per_task[0]["cached_input_tokens"])
-            self.assertIsNone(per_task[0]["cached_output_tokens"])
-            self.assertEqual(per_task[0]["token_input_uncached"], 1001)
-            self.assertEqual(per_task[0]["token_output_uncached"], 221)
+            self.assertEqual(per_task[0]["input_tokens"], 1001)
+            self.assertEqual(per_task[0]["output_tokens"], 221)
+            self.assertEqual(per_task[0]["total_input_processed_tokens"], 1033)
+            self.assertEqual(per_task[0]["total_processed_tokens"], 1254)
+            self.assertNotIn("token_input", per_task[0])
+            self.assertNotIn("token_output", per_task[0])
+            self.assertNotIn("reasoning_output_tokens", per_task[0])
+            self.assertNotIn("total_tokens", per_task[0])
+            self.assertNotIn("cached_input_tokens", per_task[0])
+            self.assertNotIn("cached_output_tokens", per_task[0])
+            self.assertNotIn("token_input_uncached", per_task[0])
+            self.assertNotIn("token_output_uncached", per_task[0])
+            self.assertNotIn("cache_creation_ephemeral_5m_input_tokens", per_task[0])
+            self.assertNotIn("cache_creation_ephemeral_1h_input_tokens", per_task[0])
             self.assertEqual(per_task[0]["tool_calls"], 7)
             self.assertEqual(per_task[0]["shell_commands"], 3)
             self.assertEqual(per_task[0]["file_reads"], 8)
             self.assertEqual(per_task[0]["search_actions"], 2)
             self.assertIsNone(per_task[2]["runtime_sec"])
             self.assertIsNone(per_task[2]["estimated_cost"])
+
+            with outputs.per_task_csv.open("r", encoding="utf-8", newline="") as handle:
+                per_task_csv_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(per_task_csv_rows), 4)
+            self.assertNotIn("token_input", per_task_csv_rows[0])
+            self.assertNotIn("token_output", per_task_csv_rows[0])
+            self.assertNotIn("reasoning_output_tokens", per_task_csv_rows[0])
+            self.assertNotIn("total_tokens", per_task_csv_rows[0])
 
             with outputs.results_csv.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -233,6 +245,96 @@ class AppendixTests(unittest.TestCase):
             self.assertIn("Tool Invocation Breakdown", tool_invocation_markdown)
             self.assertIn("`path`=src/main.rs", tool_invocation_markdown)
             self.assertIn("`command`=pytest -q", tool_invocation_markdown)
+
+    def test_generate_appendix_files_normalizes_codex_cached_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "run_id": "run-1",
+                    "benchmark": "swebench_multilingual",
+                    "dataset_path": "datasets/sample.jsonl",
+                    "split": "dev",
+                    "language": "rust",
+                    "condition": "baseline",
+                    "agent": {"id": "codex"},
+                    "model": {"resolved_name": "gpt-5.4"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "language": "rust",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "model_name_or_path": "agent:codex",
+                        "model_patch": "diff --git a/a b/a\n",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "ok",
+                        "metadata": {
+                            "token_input": 12024,
+                            "token_output": 27,
+                            "cached_input_tokens": 3456,
+                            "token_input_uncached": 8568,
+                            "total_tokens": 12051,
+                            "tool_calls": 1,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "evaluation.tasks.jsonl",
+                [
+                    {
+                        "instance_id": "tokio__1",
+                        "status": "solved",
+                        "resolved": True,
+                        "raw": {"resolved": True},
+                    }
+                ],
+            )
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+            per_task = [
+                json.loads(line)
+                for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(per_task[0]["input_tokens"], 8568)
+            self.assertEqual(per_task[0]["output_tokens"], 27)
+            self.assertEqual(per_task[0]["cache_read_input_tokens"], 3456)
+            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 0)
+            self.assertEqual(per_task[0]["total_input_processed_tokens"], 12024)
+            self.assertEqual(per_task[0]["total_processed_tokens"], 12051)
+            self.assertNotIn("token_input", per_task[0])
+            self.assertNotIn("cached_input_tokens", per_task[0])
 
     def test_single_non_null_value_yields_mean_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -363,13 +465,17 @@ class AppendixTests(unittest.TestCase):
                 json.loads(line)
                 for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
             ]
-            self.assertIsNone(per_task[0]["cache_creation_input_tokens"])
-            self.assertIsNone(per_task[0]["cache_read_input_tokens"])
-            self.assertIsNone(per_task[0]["reasoning_output_tokens"])
-            self.assertEqual(per_task[0]["total_tokens"], 13)
-            self.assertEqual(per_task[0]["token_input_uncached"], 10)
-            self.assertEqual(per_task[0]["token_output_uncached"], 3)
+            self.assertEqual(per_task[0]["cache_creation_input_tokens"], 0)
+            self.assertEqual(per_task[0]["cache_read_input_tokens"], 0)
+            self.assertEqual(per_task[0]["input_tokens"], 10)
+            self.assertEqual(per_task[0]["output_tokens"], 3)
+            self.assertEqual(per_task[0]["total_input_processed_tokens"], 10)
+            self.assertEqual(per_task[0]["total_processed_tokens"], 13)
             self.assertAlmostEqual(per_task[0]["estimated_cost"], 0.00007)
+            self.assertNotIn("reasoning_output_tokens", per_task[0])
+            self.assertNotIn("total_tokens", per_task[0])
+            self.assertNotIn("token_input_uncached", per_task[0])
+            self.assertNotIn("token_output_uncached", per_task[0])
 
     def test_cached_token_columns_and_uncached_derivation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -442,14 +548,18 @@ class AppendixTests(unittest.TestCase):
                 json.loads(line)
                 for line in outputs.per_task_jsonl.read_text(encoding="utf-8").splitlines()
             ]
-            self.assertEqual(per_task[0]["cached_input_tokens"], 4)
-            self.assertEqual(per_task[0]["cached_output_tokens"], 1)
-            self.assertEqual(per_task[0]["total_tokens"], 13)
-            self.assertEqual(per_task[0]["token_input_uncached"], 6)
-            self.assertEqual(per_task[0]["token_output_uncached"], 2)
+            self.assertEqual(per_task[0]["input_tokens"], 6)
+            self.assertEqual(per_task[0]["output_tokens"], 3)
             self.assertEqual(per_task[0]["cache_creation_input_tokens"], 2)
             self.assertEqual(per_task[0]["cache_read_input_tokens"], 1)
+            self.assertEqual(per_task[0]["total_input_processed_tokens"], 9)
+            self.assertEqual(per_task[0]["total_processed_tokens"], 12)
             self.assertAlmostEqual(per_task[0]["estimated_cost"], 0.000061)
+            self.assertNotIn("cached_input_tokens", per_task[0])
+            self.assertNotIn("cached_output_tokens", per_task[0])
+            self.assertNotIn("total_tokens", per_task[0])
+            self.assertNotIn("token_input_uncached", per_task[0])
+            self.assertNotIn("token_output_uncached", per_task[0])
 
     def test_estimated_cost_remains_blank_for_unknown_model_without_explicit_cost(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
