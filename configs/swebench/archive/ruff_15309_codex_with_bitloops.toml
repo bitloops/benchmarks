@@ -20,7 +20,7 @@ bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "codex"
-command = ["python3", "scripts/agents/codex_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"]
 extra_args = ["--bitloops-init"]
 
 [model]

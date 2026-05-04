@@ -13,7 +13,7 @@ class AgentRegistryTests(unittest.TestCase):
         adapter = build_agent_adapter(
             AgentConfig(
                 id="codex",
-                command=["python3", "scripts/agents/codex_wrapper.py"],
+                command=["python3", "-m", "benchkit.swebench.agents.codex.wrapper"],
                 extra_args=[],
             )
         )
@@ -28,7 +28,7 @@ class AgentRegistryTests(unittest.TestCase):
         adapter = build_agent_adapter(
             AgentConfig(
                 id="opencode",
-                command=["python3", "scripts/agents/opencode_wrapper.py"],
+                command=["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
             )
         )
 

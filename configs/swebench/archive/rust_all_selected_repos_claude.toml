@@ -17,7 +17,7 @@ workspace_timeout_seconds = 600
 
 [agent]
 id = "claude_code"
-command = ["python3", "scripts/agents/claude_code_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.claude_code_wrapper"]
 extra_args = []
 
 [model]

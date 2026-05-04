@@ -287,7 +287,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             },
             "agent": {
                 "id": "codex",
-                "command": ["python3", "scripts/agents/codex_wrapper.py"],
+                "command": ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"],
                 "extra_args": [],
             },
             "model": {
@@ -320,7 +320,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             },
             "agent": {
                 "id": "opencode",
-                "command": ["python3", "scripts/agents/opencode_wrapper.py"],
+                "command": ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
                 "extra_args": [],
             },
             "model": {
@@ -367,7 +367,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             },
             "agent": {
                 "id": "ollama",
-                "command": ["python3", "scripts/agents/ollama_wrapper.py"],
+                "command": ["python3", "-m", "benchkit.swebench.agents.ollama.wrapper"],
                 "extra_args": [],
             },
             "model": {

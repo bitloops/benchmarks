@@ -7,7 +7,7 @@ This page is the Ollama-specific companion to [Run Benchmarks](run-benchmarks.md
 - Benchmark TOML: **`configs/swebench/ollama.toml`**
 - Runtime JSON: **`configs/ollama/ollama.json`**
 - Preset: **`ollama`** (defaults in [`src/benchkit/common/config.py`](../src/benchkit/common/config.py) under `_config_presets()["ollama"]`)
-- Agent process: `python3 scripts/agents/ollama_wrapper.py` (JSON on stdin, JSON patch result on stdout), same adapter pattern as Codex/OpenCode wrappers.
+- Agent process: `python3 -m benchkit.swebench.agents.ollama.wrapper` (JSON on stdin, JSON patch result on stdout), same adapter pattern as Codex/OpenCode wrappers.
 
 Modes match the other agents:
 
@@ -30,7 +30,7 @@ Additional prerequisites:
 
 ```bash
 command -v ollama    # Ollama CLI; daemon must be reachable for chat API
-command -v python3   # runs scripts/agents/ollama_wrapper.py
+command -v python3   # launches -m benchkit.swebench.agents.ollama.wrapper
 command -v docker
 docker info
 ```
@@ -74,7 +74,7 @@ The wrapper resolves the actual model id in this order: payload from benchkit â†
 
 ### Prompt protocol and retrieval
 
-Ollama runs use the retrieval-backed **`swe`** prompt protocol by default. This wrapper asks the model for a single `git apply`-ready patch and does not give it interactive repo tools, so the default prompt includes BM25-selected code snippets from the workspace.
+Ollama runs use the retrieval-backed **`swe`** prompt protocol by default. The wrapper now runs a bounded local agent loop over Ollama `/api/chat`: it can inspect files, search the repo, edit files, and run repo-local commands through wrapper-provided tools before the benchmark captures the final workspace diff.
 
 - Default protocol: `run.prompt_protocol = "swe"`
 - Default retrieval: `run.retrieval.file_source = "bm25"` and `run.retrieval.k = 10`
@@ -101,7 +101,7 @@ Useful **environment overrides** (all optional; these are advanced overrides, no
 | `OLLAMA_AUTH_TOKEN` | Optional bearer token for custom authenticated endpoints. |
 | `OLLAMA_CONFIG_CONTENT` | Raw JSON object merged over the runtime JSON (handy for CI tweaks). |
 
-Strict / smoke-related knobs used by the wrapper include `BENCHKIT_OLLAMA_STRICT_APPLY` and `BENCHKIT_ALLOW_EMPTY_OLLAMA_PATCH` (see `scripts/agents/ollama_wrapper.py`).
+Strict / smoke-related knobs used by the wrapper include `BENCHKIT_OLLAMA_STRICT_APPLY` and `BENCHKIT_ALLOW_EMPTY_OLLAMA_PATCH` (see `src/benchkit/swebench/agents/ollama/wrapper.py`).
 
 ### Local vs cloud models
 

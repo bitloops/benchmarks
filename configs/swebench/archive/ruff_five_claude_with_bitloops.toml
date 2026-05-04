@@ -19,7 +19,7 @@ bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "claude_code"
-command = ["python3", "scripts/agents/claude_code_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.claude_code_wrapper"]
 extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform"]
 
 [model]

@@ -4,18 +4,17 @@ from __future__ import annotations
 import argparse
 import os
 
-from common import (  # type: ignore[import-not-found]
+from .common import (
     AgentCommandResult,
     add_bitloops_wrapper_args,
     call_command,
     emit_success,
     env_args,
-    extract_usage_metrics,
+    extract_tool_invocation_sequence,
     extract_tool_invocations_curated,
     extract_tool_invocations_raw,
-    extract_tool_invocation_sequence,
     extract_tool_usage_breakdown,
-    fatal_error,
+    extract_usage_metrics,
     load_hook_metrics,
     merge_metric_metadata,
     parse_agent_payload,

@@ -461,7 +461,7 @@ prepare_workspace = false
 
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 
 [model]
 provider = "test"

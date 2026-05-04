@@ -4,19 +4,19 @@ from __future__ import annotations
 import argparse
 import os
 
-from common import (  # type: ignore[import-not-found]
+from .common import (
     AgentCommandResult,
-    add_bitloops_wrapper_args,
     _debug_log,
+    add_bitloops_wrapper_args,
     call_command,
     emit_success,
     env_args,
     env_flag,
-    extract_usage_metrics,
+    extract_tool_invocation_sequence,
     extract_tool_invocations_curated,
     extract_tool_invocations_raw,
-    extract_tool_invocation_sequence,
     extract_tool_usage_breakdown,
+    extract_usage_metrics,
     fatal_error,
     load_hook_metrics,
     merge_metric_metadata,
@@ -183,10 +183,9 @@ def main() -> None:
     )
     merged_metrics = merge_metric_metadata(usage_metrics, hook_metrics)
 
-    # region agent log
     _debug_log(
         hypothesis_id="H5",
-        location="scripts/agents/claude_code_wrapper.py:main",
+        location="src/benchkit/swebench/agents/claude_code_wrapper.py:main",
         message="claude raw stdout summary",
         data={
             "stdout_nonempty_line_count": len(stdout_lines),
@@ -195,12 +194,10 @@ def main() -> None:
             "parsed_payload_len": len(parsed_payload) if isinstance(parsed_payload, list) else None,
         },
     )
-    # endregion
 
-    # region agent log
     _debug_log(
         hypothesis_id="H4",
-        location="scripts/agents/claude_code_wrapper.py:main",
+        location="src/benchkit/swebench/agents/claude_code_wrapper.py:main",
         message="claude wrapper output summary",
         data={
             "command_prefix": execution.command[:-1],
@@ -213,7 +210,6 @@ def main() -> None:
             "merged_metrics": merged_metrics,
         },
     )
-    # endregion
 
     emit_success(
         patch=run_result.patch,

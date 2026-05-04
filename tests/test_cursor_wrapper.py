@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-import importlib.util
+import importlib
 import sys
 import unittest
 from unittest.mock import patch
 
 
 def _load_wrapper_module():
-    module_path = (
-        Path(__file__).resolve().parents[1] / "scripts" / "agents" / "cursor_wrapper.py"
-    )
-    sys.path.insert(0, str(module_path.parent))
-    try:
-        spec = importlib.util.spec_from_file_location("cursor_wrapper", module_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("Failed to load scripts/agents/cursor_wrapper.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path.pop(0)
+    return importlib.import_module("benchkit.swebench.agents.cursor_wrapper")
 
 
 wrapper = _load_wrapper_module()

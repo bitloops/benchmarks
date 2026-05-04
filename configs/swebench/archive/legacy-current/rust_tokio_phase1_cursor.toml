@@ -19,7 +19,7 @@ workspace_timeout_seconds = 600
 
 [agent]
 id = "cursor"
-command = ["python3", "scripts/agents/cursor_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.cursor_wrapper"]
 extra_args = []
 
 [model]

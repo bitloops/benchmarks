@@ -23,7 +23,7 @@ bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 
 [model]
 provider = "fireworks-ai"

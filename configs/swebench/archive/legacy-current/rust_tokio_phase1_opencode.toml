@@ -19,7 +19,7 @@ workspace_timeout_seconds = 600
 
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 extra_args = []
 
 [model]

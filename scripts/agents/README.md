@@ -40,10 +40,11 @@ Use `mock_agent.py` as a minimal reference implementation.
 
 ## Implemented Wrappers
 
-- `claude_code_wrapper.py`
-- `cursor_wrapper.py`
-- `opencode_wrapper.py`
-- `codex_wrapper.py`
+- `benchkit.swebench.agents.claude_code_wrapper` (module entrypoint)
+- `benchkit.swebench.agents.cursor_wrapper` (module entrypoint)
+- `benchkit.swebench.agents.codex.wrapper` (module entrypoint)
+- `benchkit.swebench.agents.opencode.wrapper` (module entrypoint)
+- `benchkit.swebench.agents.ollama.wrapper` (module entrypoint)
 
 All wrappers:
 
@@ -53,8 +54,8 @@ All wrappers:
 4. Parse output and extract a unified diff patch.
 5. Print JSON response with `patch` and `metadata`.
 
-`codex_wrapper.py` follows the same contract and metadata shape.
-`opencode_wrapper.py` follows the same contract and metadata shape.
+`benchkit.swebench.agents.codex.wrapper` follows the same contract and metadata shape.
+`benchkit.swebench.agents.opencode.wrapper` follows the same contract and metadata shape.
 
 For Claude Bedrock runs with `BENCHKIT_REQUIRE_EXACT_TOOLS=1`, metadata also includes:
 - `tool_invocations_raw` (exact per-call tool-use events)
@@ -235,7 +236,7 @@ Claude:
 ```toml
 [agent]
 id = "claude_code"
-command = ["python3", "scripts/agents/claude_code_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.claude_code_wrapper"]
 ```
 
 Cursor:
@@ -243,7 +244,7 @@ Cursor:
 ```toml
 [agent]
 id = "cursor"
-command = ["python3", "scripts/agents/cursor_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.cursor_wrapper"]
 ```
 
 Codex:
@@ -251,7 +252,7 @@ Codex:
 ```toml
 [agent]
 id = "codex"
-command = ["python3", "scripts/agents/codex_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"]
 ```
 
 OpenCode:
@@ -259,5 +260,13 @@ OpenCode:
 ```toml
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
+```
+
+Ollama:
+
+```toml
+[agent]
+id = "ollama"
+command = ["python3", "-m", "benchkit.swebench.agents.ollama.wrapper"]
 ```

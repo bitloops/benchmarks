@@ -19,7 +19,7 @@ workspace_timeout_seconds = 600
 
 [agent]
 id = "codex"
-command = ["python3", "scripts/agents/codex_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"]
 extra_args = []
 
 [model]

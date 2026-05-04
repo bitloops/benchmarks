@@ -113,7 +113,7 @@ condition = "baseline"
 
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 
 [model]
 provider = "openai"
@@ -132,7 +132,7 @@ seed = 4242
             self.assertEqual(cfg.agent.id, "opencode")
             self.assertEqual(
                 cfg.agent.command,
-                ["python3", "scripts/agents/opencode_wrapper.py"],
+                ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
             )
             self.assertEqual(cfg.model.provider, "openai")
             self.assertEqual(cfg.model.name, "gpt-5")
@@ -244,7 +244,7 @@ name = "gpt-5.4"
             self.assertEqual(cfg.agent.id, "codex")
             self.assertEqual(
                 cfg.agent.command,
-                ["python3", "scripts/agents/codex_wrapper.py"],
+                ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"],
             )
             self.assertEqual(cfg.agent.extra_args, [])
             self.assertEqual(cfg.model.provider, "openai")
@@ -307,6 +307,10 @@ name = "deepseek-v4-pro:cloud"
 
             self.assertEqual(cfg.config_mode, "baseline")
             self.assertEqual(cfg.agent.id, "ollama")
+            self.assertEqual(
+                cfg.agent.command,
+                ["python3", "-m", "benchkit.swebench.agents.ollama.wrapper"],
+            )
             self.assertEqual(cfg.model.provider, "ollama")
             self.assertEqual(cfg.prompt_protocol, "swe")
             self.assertEqual(cfg.retrieval_file_source, "bm25")
@@ -339,7 +343,7 @@ name = "deepseek-v4-pro"
             self.assertEqual(cfg.agent.id, "opencode")
             self.assertEqual(
                 cfg.agent.command,
-                ["python3", "scripts/agents/opencode_wrapper.py"],
+                ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
             )
             self.assertEqual(cfg.model.provider, "fireworks-ai")
             self.assertEqual(cfg.timeout_seconds, 1500)
@@ -388,7 +392,7 @@ git_bin = "git"
 
 [agent]
 id = "opencode"
-command = ["python3", "scripts/agents/opencode_wrapper.py"]
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 extra_args = ["base-arg"]
 
 [model]
