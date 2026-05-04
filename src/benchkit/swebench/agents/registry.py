@@ -4,10 +4,10 @@ from benchkit.common.config import AgentConfig
 
 from .base import AgentAdapter, NoopAgentAdapter
 from .claude_code import ClaudeCodeAdapter
+from .cursor import CursorAdapter
 from .codex import CodexAdapter
 from .ollama import OllamaAdapter
 from .opencode import OpencodeAdapter
-from .cursor import CursorAdapter
 
 
 def build_agent_adapter(config: AgentConfig) -> AgentAdapter:

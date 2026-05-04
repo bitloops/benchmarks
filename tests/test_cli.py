@@ -5,12 +5,14 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 import io
 import json
+import os
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from benchkit.swebench.cli import (
     _appendix_timestamp_segment,
+    _load_cli_dotenv,
     _filesystem_slug,
     copy_run_transcripts_to_reports,
     default_appendix_output_dir,
@@ -22,6 +24,40 @@ from benchkit.swebench.runner import RunResult
 
 
 class CliRunTests(unittest.TestCase):
+    def test_load_cli_dotenv_reads_repo_root_env_without_overriding_existing_env(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "configs" / "swebench" / "ollama.toml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text("", encoding="utf-8")
+            env_path = root / ".env"
+            env_path.write_text(
+                "OLLAMA_TIMEOUT_SECONDS=1200\n"
+                "export OLLAMA_MAX_PREDICT=2048\n"
+                "OLLAMA_MODEL=deepseek-v4-flash:cloud\n",
+                encoding="utf-8",
+            )
+            cwd = root / "scripts"
+            cwd.mkdir()
+
+            with patch.dict(os.environ, {"OLLAMA_MODEL": "existing-model"}, clear=True):
+                loaded = _load_cli_dotenv(config_path=config_path, cwd=cwd)
+                self.assertEqual([path.resolve() for path in loaded], [env_path.resolve()])
+                self.assertEqual(os.environ["OLLAMA_TIMEOUT_SECONDS"], "1200")
+                self.assertEqual(os.environ["OLLAMA_MAX_PREDICT"], "2048")
+                self.assertEqual(os.environ["OLLAMA_MODEL"], "existing-model")
+
+    def test_load_cli_dotenv_reads_cwd_env_when_no_config_is_available(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cwd = Path(temp_dir)
+            env_path = cwd / ".env"
+            env_path.write_text("HF_TOKEN=hf-secret\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {}, clear=True):
+                loaded = _load_cli_dotenv(config_path=None, cwd=cwd)
+                self.assertEqual([path.resolve() for path in loaded], [env_path.resolve()])
+                self.assertEqual(os.environ["HF_TOKEN"], "hf-secret")
+
     def test_run_execute_generates_appendix_when_output_dir_is_set(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -312,6 +348,55 @@ extra_args = ["--bitloops-init"]
             self.assertIn("Config mode: with_bitloops", rendered)
             self.assertIn("Condition: with_bitloops", rendered)
             self.assertIn("Selected instances: 1", rendered)
+
+    def test_run_plan_for_ollama_prints_effective_runtime_config(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_path = root / "dataset.jsonl"
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "instance_id": "tokio__1",
+                        "repo": "tokio-rs/tokio",
+                        "base_commit": "0" * 40,
+                        "problem_statement": "Fix it",
+                        "language": "rust",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config_path = root / "config.toml"
+            config_path.write_text(
+                f"""
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "{dataset_path}"
+language = "rust"
+include_repos = []
+include_instance_ids = []
+
+[agent]
+id = "ollama"
+
+[model]
+provider = "test"
+name = "deepseek-v4-flash:cloud"
+
+[model_map.ollama]
+"deepseek-v4-flash:cloud" = "deepseek-v4-flash:cloud"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                run_plan(config_path, show=1, mode=None)
+
+            rendered = output.getvalue()
+            self.assertIn("Effective Ollama run config", rendered)
+            self.assertIn("Seed: 42", rendered)
+            self.assertIn("num_predict: 4096", rendered)
 
     def test_run_execute_dry_run_writes_mode_manifest_and_summary(self) -> None:
         with TemporaryDirectory() as temp_dir:

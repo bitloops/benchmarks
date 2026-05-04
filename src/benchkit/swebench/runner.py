@@ -14,11 +14,12 @@ from benchkit.common.config import AgentConfig, RunConfig
 from benchkit.common.io import read_jsonl, write_json, write_jsonl
 from benchkit.swebench.agents.base import AgentAdapter, RunContext
 from benchkit.swebench.agents.registry import build_agent_adapter
-from benchkit.swebench.codex_config_metadata import build_codex_run_metadata
+from benchkit.swebench.agents.codex.config import build_codex_run_metadata
+from benchkit.swebench.agents.ollama.config import build_ollama_run_metadata
+from benchkit.swebench.agents.opencode.config import build_opencode_run_metadata
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.evaluation import AttemptEvaluationResult, evaluate_predictions_with_harness
 from benchkit.swebench.model_mapper import resolve_model_name
-from benchkit.swebench.opencode_config_metadata import build_opencode_run_metadata
 from benchkit.swebench.types import BenchmarkInstance, PredictionRecord
 from benchkit.swebench.workspace import WorkspacePrepResult, prepare_instance_workspace
 
@@ -454,6 +455,11 @@ def _build_manifest(
             "extra_args": config.evaluation.extra_args,
         },
     }
+    if config.agent.id == "ollama":
+        manifest["ollama"] = build_ollama_run_metadata(
+            config=config,
+            resolved_model_name=str(model_resolution["resolved_name"]),
+        )
     if config.agent.id == "opencode":
         manifest["opencode"] = build_opencode_run_metadata()
     if config.agent.id == "codex":

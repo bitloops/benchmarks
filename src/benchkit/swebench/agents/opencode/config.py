@@ -7,17 +7,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .runtime import resolve_repo_opencode_config_path
+
 _SAMPLING_KEYS = ("temperature", "seed", "max_tokens")
 
-
-def _repo_root() -> Path:
-    import benchkit
-
-    return Path(benchkit.__file__).resolve().parents[2]
-
-
 def default_opencode_json_path() -> Path:
-    return _repo_root() / "configs" / "opencode" / "opencode.json"
+    return resolve_repo_opencode_config_path()
 
 
 def _pick_agent_sampling(agent_cfg: object) -> dict[str, Any] | None:
@@ -65,7 +60,7 @@ def build_opencode_run_metadata(
     includes error when the file is missing or invalid JSON.
     """
     path = (opencode_json_path or default_opencode_json_path()).resolve()
-    repo_root = _repo_root()
+    repo_root = path.parents[2]
     try:
         rel = str(path.relative_to(repo_root))
     except ValueError:

@@ -285,6 +285,33 @@ name = "gpt-5.4"
             self.assertEqual(cfg.workspace_isolation_mode, "task_scoped")
             self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
 
+    def test_load_run_config_applies_ollama_preset_with_swe_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(
+                """
+preset = "ollama"
+
+[run]
+dataset_path = "datasets/sample.jsonl"
+include_instance_ids = ["tokio__a"]
+
+[model]
+name = "deepseek-v4-pro:cloud"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(path, mode="baseline")
+
+            self.assertEqual(cfg.config_mode, "baseline")
+            self.assertEqual(cfg.agent.id, "ollama")
+            self.assertEqual(cfg.model.provider, "ollama")
+            self.assertEqual(cfg.prompt_protocol, "swe")
+            self.assertEqual(cfg.retrieval_file_source, "bm25")
+            self.assertEqual(cfg.retrieval_k, 10)
+
     def test_load_run_config_applies_opencode_preset_with_bitloops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)

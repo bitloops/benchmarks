@@ -5,6 +5,12 @@ Use these two configs for normal benchmark work:
 - `codex.toml`
 - `opencode.toml`
 
+Ollama benchmark configs:
+
+- `ollama.toml` for the local Ollama daemon route
+  Switch between local and cloud inference by changing `[model].name`:
+  use a normal model name for local inference, or a `:cloud` model name for cloud inference after `ollama signin`.
+
 Both support the same modes:
 
 ```bash

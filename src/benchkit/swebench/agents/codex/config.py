@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .runtime import resolve_repo_codex_config_path
+
 _PICK_KEYS = (
     "model",
     "model_reasoning_effort",
@@ -19,15 +21,8 @@ _PICK_KEYS = (
     "extra_args",
 )
 
-
-def _repo_root() -> Path:
-    import benchkit
-
-    return Path(benchkit.__file__).resolve().parents[2]
-
-
 def default_codex_json_path() -> Path:
-    return _repo_root() / "configs" / "codex" / "codex.json"
+    return resolve_repo_codex_config_path()
 
 
 def build_codex_run_metadata(
@@ -41,7 +36,7 @@ def build_codex_run_metadata(
     includes error when the file is missing or invalid JSON.
     """
     path = (codex_json_path or default_codex_json_path()).resolve()
-    repo_root = _repo_root()
+    repo_root = path.parents[2]
     try:
         rel = str(path.relative_to(repo_root))
     except ValueError:

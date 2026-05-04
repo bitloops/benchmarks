@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from benchkit.common.config import AgentConfig, EvaluationConfig, ModelConfig, RunConfig
-from benchkit.swebench.opencode_config_metadata import (
+from benchkit.swebench.agents.opencode.config import (
     build_opencode_run_metadata,
     default_opencode_json_path,
     format_opencode_plan_lines,

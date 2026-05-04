@@ -363,6 +363,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                 **common_run,
                 "timeout_seconds": 900,
                 "workspace_timeout_seconds": 1800,
+                "prompt_protocol": "swe",
             },
             "agent": {
                 "id": "ollama",

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import os
 import shutil
 import sys
 from pathlib import Path
 
 from benchkit.common.config import RunConfig, load_run_config
 from benchkit.swebench.appendix import generate_appendix_files
-from benchkit.swebench.codex_config_metadata import (
+from benchkit.swebench.agents.codex.config import (
     build_codex_run_metadata,
     format_codex_plan_lines,
 )
@@ -15,11 +17,90 @@ from benchkit.swebench.db import import_appendix_csv_to_sqlite
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
 from benchkit.swebench.model_mapper import resolve_model_name
-from benchkit.swebench.opencode_config_metadata import (
+from benchkit.swebench.agents.ollama.config import (
+    build_ollama_run_metadata,
+    format_ollama_plan_lines,
+)
+from benchkit.swebench.agents.opencode.config import (
     build_opencode_run_metadata,
     format_opencode_plan_lines,
 )
 from benchkit.swebench.runner import execute_run
+
+
+def _parse_dotenv_assignment(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export ") :].lstrip()
+
+    key, separator, value = stripped.partition("=")
+    if not separator:
+        return None
+
+    key = key.strip()
+    if not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
+        return None
+
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            value = value[1:-1]
+        else:
+            value = parsed if isinstance(parsed, str) else str(parsed)
+    return key, value
+
+
+def _candidate_dotenv_paths(
+    *,
+    config_path: Path | None = None,
+    cwd: Path | None = None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    start_dir = (cwd or Path.cwd()).resolve()
+    candidates.append(start_dir / ".env")
+
+    if config_path is not None:
+        config_parent = config_path.expanduser().resolve().parent
+        for parent in (config_parent, *config_parent.parents):
+            candidates.append(parent / ".env")
+
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for candidate in candidates:
+        normalized = str(candidate.resolve())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(Path(normalized))
+    return ordered
+
+
+def _load_dotenv_file(env_path: Path) -> bool:
+    if not env_path.is_file():
+        return False
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_dotenv_assignment(raw_line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        os.environ.setdefault(key, value)
+    return True
+
+
+def _load_cli_dotenv(
+    *,
+    config_path: Path | None = None,
+    cwd: Path | None = None,
+) -> list[Path]:
+    for candidate in _candidate_dotenv_paths(config_path=config_path, cwd=cwd):
+        if _load_dotenv_file(candidate):
+            return [candidate]
+    return []
 
 
 def main() -> None:
@@ -236,6 +317,7 @@ def main() -> None:
 
 
 def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
+    _load_cli_dotenv(config_path=config_path)
     try:
         config = load_run_config(config_path, mode=mode)
     except ValueError as exc:
@@ -266,10 +348,19 @@ def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
     print(f"Resolved model: {model_resolution.resolved_name}")
     print(f"Model resolution source: {model_resolution.source}")
     print(f"Model map key: {model_resolution.map_key}")
-    print("Benchmark TOML model manifest (run.json payload; runtime JSON may override):")
-    print(f"  Temperature: {config.model.temperature}")
-    print(f"  Max tokens: {config.model.max_tokens}")
-    print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
+    if config.agent.id == "ollama":
+        for line in format_ollama_plan_lines(
+            build_ollama_run_metadata(
+                config=config,
+                resolved_model_name=model_resolution.resolved_name,
+            )
+        ):
+            print(line)
+    else:
+        print("Benchmark TOML model manifest (run.json payload; runtime JSON may override):")
+        print(f"  Temperature: {config.model.temperature}")
+        print(f"  Max tokens: {config.model.max_tokens}")
+        print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
     if config.agent.id == "codex":
         for line in format_codex_plan_lines(build_codex_run_metadata()):
             print(line)
@@ -384,6 +475,7 @@ def run_execute(
     appendix_output_dir: Path | None = None,
     appendix: bool = False,
 ) -> None:
+    _load_cli_dotenv(config_path=config_path)
     try:
         config = load_run_config(config_path, mode=mode)
     except ValueError as exc:
@@ -450,6 +542,7 @@ def run_export_hf(
     overwrite: bool,
     token_env: str,
 ) -> None:
+    _load_cli_dotenv()
     if instance_ids_file:
         include_instance_ids = include_instance_ids + _load_line_items(instance_ids_file)
     try:
@@ -495,6 +588,7 @@ def _load_line_items(path: Path) -> list[str]:
 
 
 def run_appendix(run_roots: list[Path], output_dir: Path) -> None:
+    _load_cli_dotenv()
     outputs = generate_appendix_files(run_roots=run_roots, output_dir=output_dir)
     print(f"Per-task JSONL: {outputs.per_task_jsonl}")
     print(f"Per-task CSV: {outputs.per_task_csv}")
@@ -507,6 +601,7 @@ def run_appendix(run_roots: list[Path], output_dir: Path) -> None:
 
 
 def run_db_import(appendix_csvs: list[Path], run_roots: list[Path], db_path: Path) -> None:
+    _load_cli_dotenv()
     if len(appendix_csvs) != len(run_roots):
         raise SystemExit(
             "db-import error: --appendix-csv and --run-root must be provided the same number of times"

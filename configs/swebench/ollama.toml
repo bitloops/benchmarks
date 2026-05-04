@@ -4,19 +4,25 @@ preset = "ollama"
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
 include_repos = []
-include_instance_ids = []
+include_instance_ids = ["tokio-rs__axum-1119"]
+#  "tokio-rs__tokio-6551"
 max_instances = 1
 attempts = 1
 max_workers = 1
 timeout_seconds = 900
 workspace_timeout_seconds = 1800
+prompt_protocol = "swe"
+
+[run.retrieval]
+file_source = "bm25"
+k = 10
 
 [model]
 # Runtime Ollama settings come from configs/ollama/ollama.json.
-name = "deepseek-v4-flash:cloud"
+name = "qwen2.5-coder:14b"
 
 [model_map.ollama]
-"deepseek-v4-flash:cloud" = "deepseek-v4-flash:cloud"
+"qwen2.5-coder:14b" = "qwen2.5-coder:14b"
 
 [evaluation]
 max_workers = 2

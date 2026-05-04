@@ -9,6 +9,7 @@ Main configs:
 
 - `configs/swebench/codex.toml`
 - `configs/swebench/opencode.toml`
+- `configs/swebench/ollama.toml`
 
 Both configs use the same mode flag:
 

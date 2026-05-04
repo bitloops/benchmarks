@@ -5,6 +5,7 @@ This page is the Ollama-specific companion to [Run Benchmarks](run-benchmarks.md
 ## Config and preset
 
 - Benchmark TOML: **`configs/swebench/ollama.toml`**
+- Runtime JSON: **`configs/ollama/ollama.json`**
 - Preset: **`ollama`** (defaults in [`src/benchkit/common/config.py`](../src/benchkit/common/config.py) under `_config_presets()["ollama"]`)
 - Agent process: `python3 scripts/agents/ollama_wrapper.py` (JSON on stdin, JSON patch result on stdout), same adapter pattern as Codex/OpenCode wrappers.
 
@@ -36,7 +37,7 @@ docker info
 
 For **`with_bitloops`**, also `command -v bitloops` as in the main doc.
 
-Start Ollama (or point the wrapper at your API base URL; see [Runtime JSON and overrides](#runtime-json-and-overrides)). For **cloud** models (names ending in `:cloud`, e.g. DeepSeek via Ollama Cloud), run **`ollama sign in`** once so the daemon is authenticated; without that, cloud routes usually fail. Pull or otherwise ensure the model you configure is available to that server.
+Start Ollama. For **cloud** models used through the local daemon (names ending in `:cloud`, for example `deepseek-v4-flash:cloud`), run **`ollama signin`** once so the daemon can authenticate cloud requests. For local models, sign-in is not required.
 
 ## 2. Pick mode
 
@@ -64,7 +65,20 @@ Everything in the shared [config reference](run-benchmarks.md#swe-bench-config-r
 
 ### `[model]`
 
-`model.name` is the canonical label for the run. The wrapper resolves the actual model id in this order: payload from benchkit → **`OLLAMA_MODEL`** env → `model` in **`configs/ollama/ollama.json`** → default string in code.
+`model.name` is the normal source of truth for model selection in benchmark runs. In practice:
+
+- Use a **local model** name like `qwen3-coder` to run inference on your own hardware.
+- Use a **cloud model** name ending in `:cloud` like `deepseek-v4-flash:cloud` to keep the local Ollama API but offload model inference to Ollama Cloud after `ollama signin`.
+
+The wrapper resolves the actual model id in this order: payload from benchkit → **`OLLAMA_MODEL`** env → runtime JSON `model` (if present) → default string in code.
+
+### Prompt protocol and retrieval
+
+Ollama runs use the retrieval-backed **`swe`** prompt protocol by default. This wrapper asks the model for a single `git apply`-ready patch and does not give it interactive repo tools, so the default prompt includes BM25-selected code snippets from the workspace.
+
+- Default protocol: `run.prompt_protocol = "swe"`
+- Default retrieval: `run.retrieval.file_source = "bm25"` and `run.retrieval.k = 10`
+- You can still override these in the benchmark TOML if you want to compare prompt shapes intentionally.
 
 ### `[model_map.ollama]`
 
@@ -72,20 +86,48 @@ Same idea as OpenCode’s `[model_map.opencode]`: keys are canonical names (matc
 
 ### Runtime JSON and overrides
 
-- **File:** `configs/ollama/ollama.json` — `base_url`, `model`, `timeout_seconds`, `max_num_predict`, `options` (e.g. `temperature`, `num_predict`, `seed`), merged with optional inline JSON from **`OLLAMA_CONFIG_CONTENT`** (see `scripts/agents/ollama_wrapper.py`).
+- **File:** `configs/ollama/ollama.json`
+- Standard route: local Ollama daemon at `http://localhost:11434`
+- Purpose: transport/runtime settings such as `base_url`, `timeout_seconds`, `max_num_predict`, and `options` (for example `temperature`, `num_predict`, `seed`)
 
-Useful **environment overrides** (all optional; see wrapper for full behavior):
+Useful **environment overrides** (all optional; these are advanced overrides, not the normal setup):
 
 | Variable | Role |
 | --- | --- |
 | `OLLAMA_BASE_URL` | Overrides `base_url` (default from JSON or `http://localhost:11434`). |
-| `OLLAMA_MODEL` | Overrides resolved model name. |
+| `OLLAMA_MODEL` | Advanced override; normal benchmark runs should set the model in `ollama.toml` instead. |
 | `OLLAMA_TIMEOUT_SECONDS` | Participates in timeout resolution with config and run payload. |
 | `OLLAMA_MAX_PREDICT` | Caps / sets max tokens for generation where applicable. |
-| `OLLAMA_AUTH_TOKEN` | Bearer token for APIs that require it (e.g. some cloud endpoints). |
-| `OLLAMA_CONFIG_CONTENT` | Raw JSON object merged over the repo file (handy for CI secrets-free tweaks). |
+| `OLLAMA_AUTH_TOKEN` | Optional bearer token for custom authenticated endpoints. |
+| `OLLAMA_CONFIG_CONTENT` | Raw JSON object merged over the runtime JSON (handy for CI tweaks). |
 
 Strict / smoke-related knobs used by the wrapper include `BENCHKIT_OLLAMA_STRICT_APPLY` and `BENCHKIT_ALLOW_EMPTY_OLLAMA_PATCH` (see `scripts/agents/ollama_wrapper.py`).
+
+### Local vs cloud models
+
+There is one supported repo flow: the benchmark talks to your **local Ollama daemon**.
+
+- If `model.name` is a normal local model, inference happens on your machine.
+- If `model.name` ends with `:cloud`, inference is offloaded to Ollama Cloud, but the benchmark still talks to `http://localhost:11434`.
+- In the `:cloud` case you usually want `ollama signin`, not an API key.
+
+### Using a `.env` file
+
+The benchmark CLI now auto-loads the first `.env` file it finds from:
+
+- your current working directory, or
+- the selected config path and its parent directories
+
+That means a repo-root `.env` works for commands like `plan`, `run`, and `export-hf` without a manual `source .env`. Existing shell exports still take precedence over `.env` values.
+
+Example repo-root `.env` for optional overrides:
+
+```bash
+OLLAMA_TIMEOUT_SECONDS=1200
+OLLAMA_MAX_PREDICT=2048
+```
+
+There is also a starter file at `./.env.example`.
 
 ## 4. Preview and run
 
@@ -117,5 +159,5 @@ Same layout as [Run Benchmarks §7](run-benchmarks.md#7-find-results): `runs/swe
 ## Notes
 
 - For Codex/OpenCode, use [Run Benchmarks](run-benchmarks.md).
-- TOML controls **what** runs; **`configs/ollama/ollama.json`** controls **how** the wrapper talks to Ollama (unless env vars override).
+- `ollama.toml` controls **what** runs; `configs/ollama/ollama.json` controls **how** the wrapper talks to Ollama (unless env vars override).
 - Cloud-tagged models (name ending with `:cloud`) get conservative generation defaults in the wrapper when `max_num_predict` is not set; adjust JSON or env if you need different limits.

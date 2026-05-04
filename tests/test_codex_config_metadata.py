@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from benchkit.common.config import AgentConfig, EvaluationConfig, ModelConfig, RunConfig
-from benchkit.swebench.codex_config_metadata import (
+from benchkit.swebench.agents.codex.config import (
     build_codex_run_metadata,
     default_codex_json_path,
     format_codex_plan_lines,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import contextlib
+import importlib
 import importlib.util
 import json
 import re
@@ -23,6 +24,7 @@ def _load_common_module():
 
 
 common = _load_common_module()
+common_impl = importlib.import_module("benchkit.swebench.agents.common")
 
 
 class AgentWrapperCommonTests(unittest.TestCase):
@@ -129,6 +131,198 @@ class AgentWrapperCommonTests(unittest.TestCase):
 
         start_blocks = re.findall(r"\[start of [^\]]+\]", prompt)
         self.assertEqual(len(start_blocks), 1)
+
+    def test_bm25_retrieval_prefers_source_files_over_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src" / "routing").mkdir(parents=True)
+            (workspace / "src" / "routing" / "mod.rs").write_text(
+                (
+                    "fn handle_trailing_slash_redirect() {\n"
+                    "    // remove trailing slash redirects from routing fallback\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+            (workspace / "CHANGELOG.md").write_text(
+                "breaking remove trailing slash redirects from routing fallback\n",
+                encoding="utf-8",
+            )
+
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "remove trailing slash redirects from routing fallback",
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 2,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="ollama",
+            )
+
+        start_blocks = re.findall(r"\[start of ([^\]]+)\]", prompt)
+        self.assertEqual(start_blocks[0], "src/routing/mod.rs")
+
+    def test_render_task_prompt_swe_uses_relevant_file_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src" / "routing").mkdir(parents=True)
+            filler = "\n".join(f"fn unrelated_{idx}() {{}}" for idx in range(260))
+            (workspace / "src" / "routing" / "mod.rs").write_text(
+                (
+                    f"{filler}\n"
+                    "fn handle_trailing_slash_redirect() {\n"
+                    "    // remove trailing slash redirects from routing fallback\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "remove trailing slash redirects from routing fallback",
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 1,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="ollama",
+            )
+
+        self.assertIn("handle_trailing_slash_redirect", prompt)
+
+    def test_render_task_prompt_swe_uses_fail_to_pass_tests_for_retrieval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src" / "routing" / "tests").mkdir(parents=True)
+            (workspace / "src" / "routing" / "tests" / "mod.rs").write_text(
+                (
+                    "#[tokio::test]\n"
+                    "async fn not_found_for_extra_trailing_slash() {}\n"
+                ),
+                encoding="utf-8",
+            )
+            (workspace / "README.md").write_text(
+                "remove surprising redirect behavior\n",
+                encoding="utf-8",
+            )
+
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "remove surprising redirect behavior",
+                    "metadata": {
+                        "FAIL_TO_PASS": ["routing::tests::not_found_for_extra_trailing_slash"],
+                    },
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 1,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="ollama",
+            )
+
+        self.assertIn("not_found_for_extra_trailing_slash", prompt)
+
+    def test_tokenize_splits_camel_and_snake_case_identifiers(self) -> None:
+        snake_tokens = common_impl._tokenize("routing::tests::not_found_for_extra_trailing_slash")
+        tokens = snake_tokens + common_impl._tokenize("MatchError::ExtraTrailingSlash")
+
+        self.assertIn("not_found_for_extra_trailing_slash", tokens)
+        self.assertIn("extratrailingslash", tokens)
+        self.assertIn("extratrailingslash", snake_tokens)
+        self.assertIn("extra", tokens)
+        self.assertIn("trailing", tokens)
+        self.assertIn("slash", tokens)
+
+    def test_render_task_prompt_swe_matches_fail_to_pass_to_camel_case_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src" / "routing").mkdir(parents=True)
+            (workspace / "src" / "response").mkdir(parents=True)
+            (workspace / "src" / "routing" / "mod.rs").write_text(
+                (
+                    "match err {\n"
+                    "    MatchError::ExtraTrailingSlash => Redirect::permanent(\"/foo\"),\n"
+                    "    MatchError::MissingTrailingSlash => Redirect::permanent(\"/foo/\"),\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+            (workspace / "src" / "response" / "redirect.rs").write_text(
+                (
+                    "pub fn permanent_redirect() {}\n"
+                    "pub fn redirect() {}\n"
+                    "pub fn redirect_again() {}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "remove trailing slash redirects",
+                    "metadata": {
+                        "FAIL_TO_PASS": ["routing::tests::not_found_for_extra_trailing_slash"],
+                    },
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 1,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="ollama",
+            )
+
+        self.assertIn("MatchError::ExtraTrailingSlash", prompt)
+
+    def test_render_task_prompt_swe_prefers_routing_code_over_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "src" / "routing").mkdir(parents=True)
+            (workspace / "examples" / "static-file-server" / "src").mkdir(parents=True)
+            (workspace / "src" / "routing" / "mod.rs").write_text(
+                (
+                    "match err {\n"
+                    "    MatchError::ExtraTrailingSlash => Redirect::permanent(\"/foo\"),\n"
+                    "    MatchError::MissingTrailingSlash => Redirect::permanent(\"/foo/\"),\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+            (workspace / "examples" / "static-file-server" / "src" / "main.rs").write_text(
+                (
+                    "let app = Router::new()\n"
+                    "    .route(\"/foo\", get(handler))\n"
+                    "    .route(\"/bar\", get(handler));\n"
+                    "// redirect redirect redirect trailing slash example\n"
+                ),
+                encoding="utf-8",
+            )
+
+            prompt = common.render_task_prompt(
+                {
+                    "problem_statement": "remove trailing slash redirects",
+                    "metadata": {
+                        "FAIL_TO_PASS": ["routing::tests::not_found_for_extra_trailing_slash"],
+                    },
+                    "run": {
+                        "prompt_protocol": "swe",
+                        "retrieval_file_source": "bm25",
+                        "retrieval_k": 1,
+                        "workspace_root": str(workspace),
+                    },
+                },
+                wrapper_name="ollama",
+            )
+
+        start_blocks = re.findall(r"\[start of ([^\]]+)\]", prompt)
+        self.assertEqual(start_blocks[0], "src/routing/mod.rs")
 
     def test_parse_agent_output_prefers_json_result(self) -> None:
         raw = '{"type":"result","result":"diff --git a/x b/x\\n--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-a\\n+b\\n"}'
