@@ -5,14 +5,14 @@ Use these configs for normal benchmark work:
 - `codex.toml`
 - `opencode.toml`
 - `opencode_ollama.toml`
+- `opencode_ollama_cloud.toml`
 
 Ollama benchmark configs:
 
-- `opencode_ollama.toml` for the OpenCode-via-Ollama route
-  This runs the normal OpenCode agent runtime and injects Ollama as a custom provider, matching the
-  `ollama launch opencode` architecture. Switch between local and cloud inference by changing
-  `[model].name`: use a normal model name for local inference, or a `:cloud` model name for cloud
-  inference after `ollama signin` / model pull setup.
+- `opencode_ollama.toml` for local OpenCode-via-Ollama runs
+- `opencode_ollama_cloud.toml` for Ollama Cloud-backed OpenCode runs
+  Both run the normal OpenCode agent runtime and inject Ollama as a custom provider, matching the
+  `ollama launch opencode` architecture.
 
 Both support the same modes:
 
@@ -48,8 +48,8 @@ Switching the LLM (for example from the default DeepSeek deployment to a Qwen de
 3. **Credentials**
    - Ensure your Fireworks/OpenCode auth can access the new deployment.
 
-For `opencode_ollama.toml`, map the canonical label under `[model_map.opencode]` to the OpenCode model id
-format `ollama/<model>`, for example `ollama/deepseek-v4-pro:cloud`.
+For the Ollama configs, map the canonical label under `[model_map.opencode]` to the OpenCode model id
+format `ollama/<model>`, for example `ollama/qwen2.5-coder:14b` or `ollama/deepseek-v4-pro:cloud`.
 
 There is no fixed list of model names in this repo: use the deployment ids from your Fireworks dashboard
 (or provider) when substituting Qwen for DeepSeek.

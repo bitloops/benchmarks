@@ -21,11 +21,10 @@ k = 10
 # OpenCode runs with Ollama as a custom provider overlay.
 # Local daemon settings come from configs/opencode/ollama.json.
 provider = "ollama"
-name = "qwen2.5-coder:14b"
-# Use configs/swebench/opencode_ollama_cloud.toml for Ollama Cloud-backed runs.
+name = "deepseek-v4-pro:cloud"
 
 [model_map.opencode]
-"qwen2.5-coder:14b" = "ollama/qwen2.5-coder:14b"
+"deepseek-v4-pro:cloud" = "ollama/deepseek-v4-pro:cloud"
 
 [evaluation]
 max_workers = 2

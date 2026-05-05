@@ -381,6 +381,30 @@ class AgentWrapperCommonTests(unittest.TestCase):
         parsed_text = common.parse_agent_output(raw)
         self.assertEqual(parsed_text, "Final answer with patch summary")
 
+    def test_parse_agent_output_prefers_final_opencode_text_event(self) -> None:
+        payload = [
+            {
+                "type": "step_start",
+                "part": {"type": "step-start"},
+            },
+            {
+                "type": "text",
+                "part": {
+                    "type": "text",
+                    "text": "<patch>\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n</patch>",
+                },
+            },
+            {
+                "type": "step_finish",
+                "part": {"type": "step-finish"},
+            },
+        ]
+
+        raw = "\n".join(json.dumps(item) for item in payload)
+        parsed_text = common.parse_agent_output(raw)
+        self.assertIn("--- a/x", parsed_text)
+        self.assertNotEqual(parsed_text, "step_start")
+
     def test_extract_git_patch_from_markdown_fence(self) -> None:
         raw = """Here is the fix:\n```diff\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n```\n"""
         patch, source = common.extract_git_patch(raw)
@@ -391,6 +415,45 @@ class AgentWrapperCommonTests(unittest.TestCase):
         patch, source = common.extract_git_patch("No code changes required.")
         self.assertEqual(patch, "")
         self.assertEqual(source, "no_patch_found")
+
+    def test_extract_git_patch_strips_patch_tags_and_repairs_hunk_context(self) -> None:
+        raw = (
+            "<patch>\n"
+            "--- a/x\n"
+            "+++ b/x\n"
+            "@@ -1,3 +1,3 @@\n"
+            " fn demo() {\n"
+            "-    old();\n"
+            "+    new();\n"
+            " }\n"
+            "</patch>\n"
+        )
+        patch, source = common.extract_git_patch(raw)
+        self.assertEqual(source, "unified_header")
+        self.assertNotIn("<patch>", patch)
+        self.assertNotIn("</patch>", patch)
+        self.assertIn("\n fn demo() {\n", patch)
+        self.assertIn("\n }\n", patch)
+
+    def test_extract_git_patch_repairs_hunk_header_counts(self) -> None:
+        raw = (
+            "<patch>\n"
+            "--- a/axum/src/routing/mod.rs\n"
+            "+++ b/axum/src/routing/mod.rs\n"
+            "@@ -123,7 +122,6 @@ impl<B> Service<Request<B>> for Router<B>\n"
+            "                     }\n"
+            "                 },\n"
+            "             } else {\n"
+            "-            fallback.call(req)\n"
+            "+                fallback.call(req)\n"
+            "             }\n"
+            "         }\n"
+            "     }\n"
+            "</patch>\n"
+        )
+        patch, source = common.extract_git_patch(raw)
+        self.assertEqual(source, "unified_header")
+        self.assertIn("@@ -123,7 +122,7 @@", patch)
 
     def test_call_command_tolerates_invalid_utf8_output(self) -> None:
         stdout, stderr, return_code, elapsed_ms = common.call_command(
@@ -412,6 +475,41 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(stdout, "\ufffd")
         self.assertEqual(stderr, "\ufffd")
         self.assertGreaterEqual(elapsed_ms, 0)
+
+    def test_call_command_starts_new_session_and_kills_process_group_on_timeout(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.pid = 4242
+                self.returncode = None
+                self.communicate_calls = 0
+                self.wait_calls: list[float | None] = []
+
+            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
+                self.communicate_calls += 1
+                if self.communicate_calls == 1:
+                    raise common_impl.subprocess.TimeoutExpired(
+                        ["cmd"],
+                        timeout,
+                        output="partial stdout",
+                        stderr="partial stderr",
+                    )
+                return ("partial stdout", "partial stderr")
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                self.wait_calls.append(timeout)
+                return 0
+
+        process = FakeProcess()
+        with patch.object(common_impl.subprocess, "Popen", return_value=process) as mock_popen:
+            with patch.object(common_impl.os, "killpg") as mock_killpg:
+                with self.assertRaises(common_impl.subprocess.TimeoutExpired) as raised:
+                    common_impl.call_command(["cmd"], 7)
+
+        self.assertEqual(raised.exception.output, "partial stdout")
+        self.assertEqual(raised.exception.stderr, "partial stderr")
+        self.assertEqual(mock_popen.call_args.kwargs.get("start_new_session"), True)
+        mock_killpg.assert_called_once_with(process.pid, common_impl.signal.SIGTERM)
+        self.assertEqual(process.wait_calls, [2])
 
     def test_extract_usage_metrics_from_claude_style_json(self) -> None:
         payload = {

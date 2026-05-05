@@ -4,7 +4,8 @@ This page is the Ollama-specific companion to [Run Benchmarks](run-benchmarks.md
 
 ## Config and preset
 
-- Benchmark TOML: **`configs/swebench/opencode_ollama.toml`**
+- Benchmark TOML: **`configs/swebench/opencode_ollama.toml`** for local inference
+- Benchmark TOML: **`configs/swebench/opencode_ollama_cloud.toml`** for Ollama Cloud-backed inference
 - OpenCode runtime JSON: **`configs/opencode/opencode.json`**
 - Ollama daemon JSON: **`configs/opencode/ollama.json`**
 - Preset: **`opencode`** with `[model] provider = "ollama"`
@@ -61,7 +62,7 @@ MODE=with_bitloops
 
 ## 3. Dataset and tasks
 
-Identical to [Run Benchmarks §3–4](run-benchmarks.md#3-create-dataset-if-missing): default dataset path in `opencode_ollama.toml`, `export-hf` if missing, edit `[run]` / `include_instance_ids` / `include_repos` / `max_instances` in **`configs/swebench/opencode_ollama.toml`**.
+Identical to [Run Benchmarks §3–4](run-benchmarks.md#3-create-dataset-if-missing): default dataset path in the selected Ollama config, `export-hf` if missing, edit `[run]` / `include_instance_ids` / `include_repos` / `max_instances` in the config you plan to run.
 
 ## Ollama-specific TOML fields
 
@@ -74,7 +75,7 @@ Everything in the shared [config reference](run-benchmarks.md#swe-bench-config-r
 - Use a **local model** name like `qwen3-coder` to run inference on your own hardware.
 - Use a **cloud model** name ending in `:cloud` like `deepseek-v4-flash:cloud` to keep the local Ollama API but offload model inference to Ollama Cloud after `ollama signin`.
 
-`configs/swebench/opencode_ollama.toml` uses `provider = "ollama"` so the OpenCode wrapper knows to inject an Ollama provider overlay. The resolved model id passed to OpenCode is `ollama/<model>`, for example `ollama/deepseek-v4-pro:cloud`.
+Both Ollama benchmark configs use `provider = "ollama"` so the OpenCode wrapper knows to inject an Ollama provider overlay. The resolved model id passed to OpenCode is `ollama/<model>`, for example `ollama/qwen2.5-coder:14b` or `ollama/deepseek-v4-pro:cloud`.
 
 ### Prompt protocol and retrieval
 
@@ -114,6 +115,7 @@ There is one supported repo flow: the benchmark launches **OpenCode**, and OpenC
 - If `model.name` is a normal local model, inference happens on your machine.
 - If `model.name` ends with `:cloud`, inference is offloaded to Ollama Cloud, but the benchmark still talks to the local Ollama-compatible endpoint.
 - In the `:cloud` case you usually want `ollama signin` and local model metadata pulled once, not a direct provider API key in benchkit.
+- In this repo, `opencode_ollama.toml` is the local default and `opencode_ollama_cloud.toml` is the explicit cloud variant so benchmark runs do not silently switch execution mode.
 
 ### Using a `.env` file
 
@@ -163,5 +165,5 @@ Same layout as [Run Benchmarks §7](run-benchmarks.md#7-find-results): `runs/swe
 ## Notes
 
 - For Codex/OpenCode, use [Run Benchmarks](run-benchmarks.md).
-- `opencode_ollama.toml` controls **what** runs; `configs/opencode/opencode.json` controls the OpenCode runtime defaults; `configs/opencode/ollama.json` controls the Ollama daemon endpoint that is injected into OpenCode.
-- `configs/swebench/opencode_ollama.toml` uses the OpenCode agent path so Ollama runs are comparable to the other agent runs.
+- The selected Ollama TOML controls **what** runs; `configs/opencode/opencode.json` controls the OpenCode runtime defaults; `configs/opencode/ollama.json` controls the Ollama daemon endpoint that is injected into OpenCode.
+- Both `configs/swebench/opencode_ollama.toml` and `configs/swebench/opencode_ollama_cloud.toml` use the OpenCode agent path so Ollama runs are comparable to the other agent runs.

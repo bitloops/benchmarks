@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -242,19 +243,48 @@ def call_command(
     cwd: str | None = None,
 ) -> tuple[str, str, int, int]:
     start = time.time()
-    completed = subprocess.run(
+    process = subprocess.Popen(
         command,
         text=True,
         encoding="utf-8",
         errors="replace",
-        capture_output=True,
-        timeout=timeout_seconds,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         env=env,
         cwd=cwd,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        partial_stdout = exc.output if isinstance(exc.output, str) else ""
+        partial_stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        if hasattr(os, "killpg"):
+            with contextlib.suppress(OSError):
+                os.killpg(process.pid, signal.SIGTERM)
+        else:
+            with contextlib.suppress(OSError):
+                process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            if hasattr(os, "killpg"):
+                with contextlib.suppress(OSError):
+                    os.killpg(process.pid, signal.SIGKILL)
+            else:
+                with contextlib.suppress(OSError):
+                    process.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                process.wait(timeout=2)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout_seconds,
+            output=stdout or partial_stdout,
+            stderr=stderr or partial_stderr,
+        ) from None
     elapsed_ms = int((time.time() - start) * 1000)
-    return completed.stdout, completed.stderr, completed.returncode, elapsed_ms
+    return stdout, stderr, int(process.returncode or 0), elapsed_ms
 
 
 class AgentCommandResult:
@@ -2103,6 +2133,10 @@ def _extract_terminal_agent_message(payload: Any) -> str:
         if not isinstance(event, dict):
             continue
         event_type = _normalize_event_type(event.get("type"))
+        if event_type == "text":
+            text = _extract_opencode_text_event_text(event)
+            if text:
+                return text
         if event_type in {"item_completed", "item_started", "item"}:
             item = event.get("item")
             if not isinstance(item, dict):
@@ -2153,6 +2187,15 @@ def _extract_message_part_text(event: dict[str, Any]) -> str:
     if not isinstance(properties, dict):
         return ""
     part = properties.get("part")
+    if not isinstance(part, dict):
+        return ""
+    if _normalize_event_type(part.get("type")) != "text":
+        return ""
+    return first_non_empty_text(part.get("text"))
+
+
+def _extract_opencode_text_event_text(event: dict[str, Any]) -> str:
+    part = event.get("part")
     if not isinstance(part, dict):
         return ""
     if _normalize_event_type(part.get("type")) != "text":
@@ -3086,14 +3129,22 @@ def extract_git_patch(raw_text: str) -> tuple[str, str]:
     if fence_patch:
         text = fence_patch
 
+    tagged_patch = _extract_from_patch_tags(text)
+    if tagged_patch:
+        text = tagged_patch
+
     diff_index = text.find("diff --git ")
     if diff_index >= 0:
-        return _ensure_trailing_newline(text[diff_index:].strip()), "diff_header"
+        return _ensure_trailing_newline(
+            _normalize_unified_diff(text[diff_index:].strip())
+        ), "diff_header"
 
     header_match = re.search(r"(?m)^---\s.+\n\+\+\+\s.+$", text)
     if header_match:
         start = header_match.start()
-        return _ensure_trailing_newline(text[start:].strip()), "unified_header"
+        return _ensure_trailing_newline(
+            _normalize_unified_diff(text[start:].strip())
+        ), "unified_header"
 
     return "", "no_patch_found"
 
@@ -3107,6 +3158,94 @@ def _extract_from_code_fence(text: str) -> str:
         if "diff --git " in stripped or re.search(r"(?m)^---\s.+\n\+\+\+\s.+$", stripped):
             return stripped
     return code_blocks[0].strip()
+
+
+def _extract_from_patch_tags(text: str) -> str:
+    blocks = re.findall(r"<patch>\s*(.*?)\s*</patch>", text, flags=re.DOTALL | re.IGNORECASE)
+    if not blocks:
+        return ""
+    for block in blocks:
+        stripped = block.strip()
+        if "diff --git " in stripped or re.search(r"(?m)^---\s.+\n\+\+\+\s.+$", stripped):
+            return stripped
+    return blocks[0].strip()
+
+
+def _normalize_unified_diff(text: str) -> str:
+    normalized_lines: list[str] = []
+    in_hunk = False
+    for line in text.splitlines():
+        stripped_line = line.strip().lower()
+        if stripped_line in {"<patch>", "</patch>"}:
+            continue
+        if line.startswith("diff --git "):
+            in_hunk = False
+            normalized_lines.append(line)
+            continue
+        if line.startswith("--- ") or line.startswith("+++ "):
+            in_hunk = False
+            normalized_lines.append(line)
+            continue
+        if line.startswith("@@"):
+            in_hunk = True
+            normalized_lines.append(line)
+            continue
+        if in_hunk:
+            if line == "":
+                normalized_lines.append(" ")
+                continue
+            if line.startswith((" ", "+", "-", "\\")):
+                normalized_lines.append(line)
+                continue
+            normalized_lines.append(f" {line}")
+            continue
+        normalized_lines.append(line)
+    repaired_lines: list[str] = []
+    hunk_header_pattern = re.compile(
+        r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+        r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?P<suffix>.*)$"
+    )
+
+    index = 0
+    while index < len(normalized_lines):
+        line = normalized_lines[index]
+        match = hunk_header_pattern.match(line)
+        if not match:
+            repaired_lines.append(line)
+            index += 1
+            continue
+
+        old_start = int(match.group("old_start"))
+        new_start = int(match.group("new_start"))
+        suffix = match.group("suffix") or ""
+        hunk_lines: list[str] = []
+        old_count = 0
+        new_count = 0
+        index += 1
+        while index < len(normalized_lines):
+            candidate = normalized_lines[index]
+            if hunk_header_pattern.match(candidate) or candidate.startswith(
+                ("diff --git ", "--- ", "+++ ")
+            ):
+                break
+            hunk_lines.append(candidate)
+            if candidate.startswith("\\"):
+                index += 1
+                continue
+            if candidate.startswith("+"):
+                new_count += 1
+            elif candidate.startswith("-"):
+                old_count += 1
+            else:
+                old_count += 1
+                new_count += 1
+            index += 1
+
+        repaired_lines.append(
+            f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}"
+        )
+        repaired_lines.extend(hunk_lines)
+    return "\n".join(repaired_lines).strip()
 
 
 def _ensure_trailing_newline(text: str) -> str:

@@ -310,7 +310,7 @@ name = "deepseek-v4-pro:cloud"
             ):
                 load_run_config(path, mode="baseline")
 
-    def test_repo_opencode_ollama_config_routes_through_opencode_with_ollama_provider(self) -> None:
+    def test_repo_opencode_ollama_config_routes_through_opencode_with_local_provider(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         cfg = load_run_config(
             repo_root / "configs" / "swebench" / "opencode_ollama.toml",
@@ -324,9 +324,33 @@ name = "deepseek-v4-pro:cloud"
         )
         self.assertEqual(cfg.model.provider, "ollama")
         self.assertEqual(
+            cfg.model_map["opencode"]["qwen2.5-coder:14b"],
+            "ollama/qwen2.5-coder:14b",
+        )
+        self.assertEqual(cfg.prompt_protocol, "swe")
+        self.assertEqual(cfg.retrieval_file_source, "bm25")
+        self.assertEqual(cfg.retrieval_k, 10)
+
+    def test_repo_opencode_ollama_cloud_config_routes_through_opencode_with_cloud_provider(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        cfg = load_run_config(
+            repo_root / "configs" / "swebench" / "opencode_ollama_cloud.toml",
+            mode="baseline",
+        )
+
+        self.assertEqual(cfg.agent.id, "opencode")
+        self.assertEqual(
+            cfg.agent.command,
+            [sys.executable, "-m", "benchkit.swebench.agents.opencode.wrapper"],
+        )
+        self.assertEqual(cfg.model.provider, "ollama")
+        self.assertEqual(
             cfg.model_map["opencode"]["deepseek-v4-pro:cloud"],
             "ollama/deepseek-v4-pro:cloud",
         )
+        self.assertEqual(cfg.prompt_protocol, "swe")
+        self.assertEqual(cfg.retrieval_file_source, "bm25")
+        self.assertEqual(cfg.retrieval_k, 10)
 
     def test_load_run_config_applies_opencode_preset_with_bitloops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
