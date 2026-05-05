@@ -4,18 +4,13 @@ preset = "opencode"
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
 include_repos = []
-include_instance_ids = ["tokio-rs__axum-1119"]
-#  "tokio-rs__tokio-6551"
+include_instance_ids = ["nushell__nushell-13831"]
+#  "tokio-rs__axum-1119"
 max_instances = 1
 attempts = 1
 max_workers = 1
-timeout_seconds = 1200
+timeout_seconds = 2000
 workspace_timeout_seconds = 1800
-prompt_protocol = "swe"
-
-[run.retrieval]
-file_source = "bm25"
-k = 10
 
 [model]
 # OpenCode runs with Ollama as a custom provider overlay.

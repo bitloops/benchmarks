@@ -230,8 +230,12 @@ def apply_per_task_metrics(
 
     filtered = dict(row)
     filtered["runtime_total_sec"] = format_number(sum_numeric(selected_rows, "runtime_sec"))
-    filtered["input_tokens_total"] = format_number(sum_numeric(selected_rows, "token_input"))
-    filtered["output_tokens_total"] = format_number(sum_numeric(selected_rows, "token_output"))
+    filtered["input_tokens_total"] = format_number(
+        sum_numeric_aliases(selected_rows, "token_input", "input_tokens")
+    )
+    filtered["output_tokens_total"] = format_number(
+        sum_numeric_aliases(selected_rows, "token_output", "output_tokens")
+    )
     filtered["cache_read_input_tokens_total"] = format_number(
         sum_numeric(selected_rows, "cache_read_input_tokens")
     )
@@ -312,6 +316,17 @@ def sum_numeric(rows: list[dict[str, Any]], key: str) -> int | float:
         value = numeric_value(row.get(key))
         if value is not None:
             total += value
+    return total
+
+
+def sum_numeric_aliases(rows: list[dict[str, Any]], *keys: str) -> int | float:
+    total: int | float = 0
+    for row in rows:
+        for key in keys:
+            value = numeric_value(row.get(key))
+            if value is not None:
+                total += value
+                break
     return total
 
 

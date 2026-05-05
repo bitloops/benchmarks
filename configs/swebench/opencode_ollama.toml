@@ -11,11 +11,6 @@ attempts = 1
 max_workers = 1
 timeout_seconds = 1200
 workspace_timeout_seconds = 1800
-prompt_protocol = "swe"
-
-[run.retrieval]
-file_source = "bm25"
-k = 10
 
 [model]
 # OpenCode runs with Ollama as a custom provider overlay.

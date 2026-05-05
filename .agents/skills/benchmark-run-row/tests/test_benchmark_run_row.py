@@ -317,6 +317,94 @@ class GenerateBenchmarkRunRowTests(unittest.TestCase):
         self.assertEqual(cells[14], "solved")
         self.assertEqual(cells[15], "14")
 
+    def test_uses_input_tokens_field_names_from_appendix_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir)
+            write_summary_csv(
+                report_dir,
+                {
+                    "runtime_total_sec": "999",
+                    "input_tokens_total": "999",
+                    "output_tokens_total": "999",
+                    "cache_read_input_tokens_total": "999",
+                    "cache_creation_input_tokens_total": "999",
+                    "derived_total_input_processed_tokens": "999",
+                    "derived_total_processed_tokens": "999",
+                    "result": "unsolved",
+                    "internal_tool_calls": "999",
+                },
+            )
+            write_per_task_csv(
+                report_dir,
+                [
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "1",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "unsolved",
+                        "runtime_sec": "10",
+                        "input_tokens": "100",
+                        "output_tokens": "20",
+                        "cache_read_input_tokens": "7",
+                        "cache_creation_input_tokens": "3",
+                        "total_input_processed_tokens": "110",
+                        "total_processed_tokens": "130",
+                        "tool_calls": "5",
+                    },
+                    {
+                        "task_id": "repo__one-1",
+                        "attempt": "2",
+                        "agent": "opencode",
+                        "model_version": "model/full",
+                        "status": "solved",
+                        "runtime_sec": "30",
+                        "input_tokens": "200",
+                        "output_tokens": "40",
+                        "cache_read_input_tokens": "11",
+                        "cache_creation_input_tokens": "13",
+                        "total_input_processed_tokens": "224",
+                        "total_processed_tokens": "264",
+                        "tool_calls": "9",
+                    },
+                ],
+                fieldnames=[
+                    "task_id",
+                    "attempt",
+                    "agent",
+                    "model_version",
+                    "condition",
+                    "status",
+                    "runtime_sec",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                    "total_input_processed_tokens",
+                    "total_processed_tokens",
+                    "tool_calls",
+                ],
+            )
+
+            completed = subprocess.run(
+                ["python3", str(SCRIPT), str(report_dir)],
+                cwd=REPO_ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        cells = completed.stdout.rstrip("\n").split("\t")
+        self.assertEqual(cells[7], "40")
+        self.assertEqual(cells[8], "300")
+        self.assertEqual(cells[9], "60")
+        self.assertEqual(cells[10], "18")
+        self.assertEqual(cells[11], "16")
+        self.assertEqual(cells[12], "334")
+        self.assertEqual(cells[13], "394")
+        self.assertEqual(cells[14], "solved")
+        self.assertEqual(cells[15], "14")
+
     def test_instance_id_filters_row_metrics_from_per_task_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             report_dir = Path(tmpdir)
@@ -653,13 +741,19 @@ def write_summary_csv(report_dir: Path, overrides: dict[str, str] | None = None)
         writer.writerow(row)
 
 
-def write_per_task_csv(report_dir: Path, rows: list[dict[str, str]]) -> None:
+def write_per_task_csv(
+    report_dir: Path,
+    rows: list[dict[str, str]],
+    *,
+    fieldnames: list[str] | None = None,
+) -> None:
     with (report_dir / "appendix_minimal_per_task_log.csv").open(
         "w", encoding="utf-8", newline=""
     ) as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=[
+            fieldnames=fieldnames
+            or [
                 "task_id",
                 "attempt",
                 "agent",
