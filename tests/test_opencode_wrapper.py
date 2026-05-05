@@ -22,6 +22,28 @@ class OpencodeWrapperTests(unittest.TestCase):
             args = wrapper.parse_args()
         self.assertTrue(args.bitloops_no_summaries)
 
+    def test_resolve_opencode_bin_prefers_env_override(self) -> None:
+        with patch.dict(wrapper.os.environ, {"OPENCODE_BIN": "/tmp/custom-opencode"}, clear=False):
+            self.assertEqual(wrapper.resolve_opencode_bin(), "/tmp/custom-opencode")
+
+    def test_resolve_opencode_bin_uses_path_lookup(self) -> None:
+        with patch.dict(wrapper.os.environ, {}, clear=False):
+            with patch.object(wrapper.shutil, "which", return_value="/usr/local/bin/opencode") as mock_which:
+                self.assertEqual(wrapper.resolve_opencode_bin(), "/usr/local/bin/opencode")
+        mock_which.assert_called_once_with("opencode")
+
+    def test_resolve_opencode_bin_falls_back_to_home_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_path = Path(temp_dir) / ".opencode" / "bin" / "opencode"
+            install_path.parent.mkdir(parents=True, exist_ok=True)
+            install_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            install_path.chmod(0o755)
+
+            with patch.dict(wrapper.os.environ, {}, clear=False):
+                with patch.object(wrapper.shutil, "which", return_value=None):
+                    with patch.object(wrapper.Path, "home", return_value=Path(temp_dir)):
+                        self.assertEqual(wrapper.resolve_opencode_bin(), str(install_path))
+
     def test_resolve_raw_output_paths_uses_attempt_dir_and_instance_id(self) -> None:
         payload = {
             "instance_id": "tokio-rs__axum-1119",
@@ -235,6 +257,52 @@ class OpencodeWrapperTests(unittest.TestCase):
                 "seed": 42,
                 "max_tokens": 32768,
             },
+        )
+
+    def test_build_ollama_provider_overlay_uses_openai_compatible_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_config_path = Path(temp_dir) / "ollama.json"
+            repo_config_path.write_text(
+                json.dumps(
+                    {
+                        "base_url": "http://localhost:11434",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            overlay = wrapper._build_ollama_opencode_provider_overlay(
+                model_name="ollama/deepseek-v4-pro:cloud",
+                repo_ollama_config_path=repo_config_path,
+            )
+
+        self.assertEqual(
+            overlay,
+            {
+                "model": "ollama/deepseek-v4-pro:cloud",
+                "small_model": "ollama/deepseek-v4-pro:cloud",
+                "provider": {
+                    "ollama": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "Ollama",
+                        "options": {
+                            "baseURL": "http://localhost:11434/v1",
+                        },
+                        "models": {
+                            "deepseek-v4-pro:cloud": {
+                                "name": "deepseek-v4-pro:cloud",
+                            }
+                        },
+                    }
+                },
+            },
+        )
+
+    def test_build_ollama_provider_overlay_ignores_non_ollama_models(self) -> None:
+        self.assertIsNone(
+            wrapper._build_ollama_opencode_provider_overlay(
+                model_name="fireworks-ai/accounts/example/deployments/model",
+            )
         )
 
     def test_resolve_timeout_uses_larger_env_override(self) -> None:

@@ -17,12 +17,10 @@ from benchkit.swebench.db import import_appendix_csv_to_sqlite
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
 from benchkit.swebench.model_mapper import resolve_model_name
-from benchkit.swebench.agents.ollama.config import (
-    build_ollama_run_metadata,
-    format_ollama_plan_lines,
-)
 from benchkit.swebench.agents.opencode.config import (
+    build_ollama_provider_run_metadata,
     build_opencode_run_metadata,
+    format_ollama_provider_plan_lines,
     format_opencode_plan_lines,
 )
 from benchkit.swebench.runner import execute_run
@@ -348,19 +346,18 @@ def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
     print(f"Resolved model: {model_resolution.resolved_name}")
     print(f"Model resolution source: {model_resolution.source}")
     print(f"Model map key: {model_resolution.map_key}")
-    if config.agent.id == "ollama":
-        for line in format_ollama_plan_lines(
-            build_ollama_run_metadata(
+    print("Benchmark TOML model manifest (run.json payload; runtime JSON may override):")
+    print(f"  Temperature: {config.model.temperature}")
+    print(f"  Max tokens: {config.model.max_tokens}")
+    print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
+    if str(config.model.provider).strip().lower() == "ollama":
+        for line in format_ollama_provider_plan_lines(
+            build_ollama_provider_run_metadata(
                 config=config,
                 resolved_model_name=model_resolution.resolved_name,
             )
         ):
             print(line)
-    else:
-        print("Benchmark TOML model manifest (run.json payload; runtime JSON may override):")
-        print(f"  Temperature: {config.model.temperature}")
-        print(f"  Max tokens: {config.model.max_tokens}")
-        print(f"  Seed: {config.model.seed if config.model.seed is not None else 'none'}")
     if config.agent.id == "codex":
         for line in format_codex_plan_lines(build_codex_run_metadata()):
             print(line)

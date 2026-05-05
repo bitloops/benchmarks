@@ -6,7 +6,6 @@ from .base import AgentAdapter, NoopAgentAdapter
 from .claude_code import ClaudeCodeAdapter
 from .cursor import CursorAdapter
 from .codex import CodexAdapter
-from .ollama import OllamaAdapter
 from .opencode import OpencodeAdapter
 
 
@@ -23,10 +22,8 @@ def build_agent_adapter(config: AgentConfig) -> AgentAdapter:
         return CodexAdapter(config)
     if adapter_id == "opencode":
         return OpencodeAdapter(config)
-    if adapter_id == "ollama":
-        return OllamaAdapter(config)
 
     raise ValueError(
         f"Unsupported agent id '{config.id}'. "
-        "Supported: noop, claude_code, cursor, codex, opencode, ollama"
+        "Supported: noop, claude_code, cursor, codex, opencode"
     )

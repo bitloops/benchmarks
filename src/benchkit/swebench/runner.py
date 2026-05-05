@@ -15,8 +15,10 @@ from benchkit.common.io import read_jsonl, write_json, write_jsonl
 from benchkit.swebench.agents.base import AgentAdapter, RunContext
 from benchkit.swebench.agents.registry import build_agent_adapter
 from benchkit.swebench.agents.codex.config import build_codex_run_metadata
-from benchkit.swebench.agents.ollama.config import build_ollama_run_metadata
-from benchkit.swebench.agents.opencode.config import build_opencode_run_metadata
+from benchkit.swebench.agents.opencode.config import (
+    build_ollama_provider_run_metadata,
+    build_opencode_run_metadata,
+)
 from benchkit.swebench.dataset import filter_instances, load_instances
 from benchkit.swebench.evaluation import AttemptEvaluationResult, evaluate_predictions_with_harness
 from benchkit.swebench.model_mapper import resolve_model_name
@@ -455,8 +457,8 @@ def _build_manifest(
             "extra_args": config.evaluation.extra_args,
         },
     }
-    if config.agent.id == "ollama":
-        manifest["ollama"] = build_ollama_run_metadata(
+    if str(config.model.provider).strip().lower() == "ollama":
+        manifest["ollama"] = build_ollama_provider_run_metadata(
             config=config,
             resolved_model_name=str(model_resolution["resolved_name"]),
         )

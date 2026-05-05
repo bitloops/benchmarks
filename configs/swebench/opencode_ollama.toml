@@ -1,5 +1,5 @@
 # Field reference: docs/run-benchmarks.md#swe-bench-config-reference
-preset = "ollama"
+preset = "opencode"
 
 [run]
 dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
@@ -11,19 +11,16 @@ attempts = 1
 max_workers = 1
 timeout_seconds = 900
 workspace_timeout_seconds = 1800
-prompt_protocol = "swe"
-
-[run.retrieval]
-file_source = "bm25"
-k = 10
 
 [model]
-# Runtime Ollama settings come from configs/ollama/ollama.json.
+# OpenCode runs with Ollama as a custom provider overlay.
+# Local daemon settings come from configs/opencode/ollama.json.
+provider = "ollama"
 name = "deepseek-v4-pro:cloud"
 # qwen2.5-coder:14b
 
-[model_map.ollama]
-"deepseek-v4-pro:cloud" = "deepseek-v4-pro:cloud"
+[model_map.opencode]
+"deepseek-v4-pro:cloud" = "ollama/deepseek-v4-pro:cloud"
 
 [evaluation]
 max_workers = 2

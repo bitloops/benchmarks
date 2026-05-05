@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import sys
 import tomllib
 
 DEFAULT_ATTEMPTS = 1
@@ -16,6 +17,13 @@ DEFAULT_SWEBENCH_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_PROMPT_PROTOCOL = "minimal"
 DEFAULT_RETRIEVAL_FILE_SOURCE = "bm25"
 DEFAULT_RETRIEVAL_K = 10
+
+
+def _default_agent_python_bin() -> str:
+    executable = str(getattr(sys, "executable", "") or "").strip()
+    if executable:
+        return executable
+    return "python3"
 
 
 @dataclass(slots=True)
@@ -287,7 +295,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             },
             "agent": {
                 "id": "codex",
-                "command": ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"],
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.codex.wrapper"],
                 "extra_args": [],
             },
             "model": {
@@ -320,58 +328,11 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             },
             "agent": {
                 "id": "opencode",
-                "command": ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.opencode.wrapper"],
                 "extra_args": [],
             },
             "model": {
                 "provider": "fireworks-ai",
-                "temperature": DEFAULT_TEMPERATURE,
-                "max_tokens": DEFAULT_MAX_TOKENS,
-            },
-            "evaluation": {
-                **common_evaluation,
-                "max_workers": 2,
-            },
-            "modes": {
-                "baseline": {
-                    "run": {
-                        "condition": "baseline",
-                        "bitloops_sandbox_mode": "disabled",
-                    },
-                    "agent": {"extra_args": []},
-                },
-                "with_bitloops": {
-                    "run": {
-                        "condition": "with_bitloops",
-                        "timeout_seconds": 1500,
-                        "bitloops_sandbox_mode": "per_task_daemon",
-                    },
-                    "agent": {
-                        "extra_args": [
-                            "--bitloops-init",
-                            "--bitloops-embeddings-runtime",
-                            "platform",
-                            "--bitloops-summary-mode",
-                            "off",
-                        ],
-                    },
-                },
-            },
-        },
-        "ollama": {
-            "run": {
-                **common_run,
-                "timeout_seconds": 900,
-                "workspace_timeout_seconds": 1800,
-                "prompt_protocol": "swe",
-            },
-            "agent": {
-                "id": "ollama",
-                "command": ["python3", "-m", "benchkit.swebench.agents.ollama.wrapper"],
-                "extra_args": [],
-            },
-            "model": {
-                "provider": "ollama",
                 "temperature": DEFAULT_TEMPERATURE,
                 "max_tokens": DEFAULT_MAX_TOKENS,
             },

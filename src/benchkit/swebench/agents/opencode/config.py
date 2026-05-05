@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-from .runtime import resolve_repo_opencode_config_path
+from benchkit.common.config import RunConfig
+
+from .runtime import (
+    build_ollama_runtime_config,
+    default_ollama_json_path,
+    normalize_opencode_model_reference,
+    normalize_opencode_ollama_base_url,
+    resolve_ollama_base_url,
+    resolve_repo_opencode_config_path,
+)
 
 _SAMPLING_KEYS = ("temperature", "seed", "max_tokens")
 
@@ -134,4 +144,72 @@ def format_opencode_plan_lines(meta: dict[str, Any]) -> list[str]:
         lines.append(f"  agent.plan sampling: {meta['agent_plan_sampling']}")
     if "provider_model_sampling" in meta:
         lines.append(f"  Provider model sampling: {meta['provider_model_sampling']}")
+    return lines
+
+
+def build_ollama_provider_run_metadata(
+    *,
+    config: RunConfig,
+    resolved_model_name: str,
+    ollama_json_path: Path | None = None,
+) -> dict[str, Any]:
+    path = (ollama_json_path or default_ollama_json_path()).resolve()
+    repo_root = path.parents[2]
+    try:
+        rel = str(path.relative_to(repo_root))
+    except ValueError:
+        rel = None
+
+    base: dict[str, Any] = {
+        "config_source": "repo_json",
+        "config_path": str(path),
+        "config_path_repo_relative": rel,
+    }
+
+    if not path.exists():
+        base["error"] = "file_not_found"
+        return base
+
+    raw = path.read_bytes()
+    base["config_sha256"] = hashlib.sha256(raw).hexdigest()
+
+    runtime_config = build_ollama_runtime_config(
+        existing_content=os.environ.get("OLLAMA_CONFIG_CONTENT", ""),
+        repo_config_path=path,
+    )
+    normalized_model_name = normalize_opencode_model_reference(resolved_model_name)
+    provider_model_id = normalized_model_name
+    if normalized_model_name.startswith("ollama/"):
+        provider_model_id = normalized_model_name.split("/", 1)[1]
+
+    base_url = resolve_ollama_base_url(runtime_config)
+    base["base_url"] = base_url
+    base["openai_compatible_base_url"] = normalize_opencode_ollama_base_url(base_url)
+    base["model"] = normalized_model_name
+    base["provider_model_id"] = provider_model_id
+    base["provider"] = str(config.model.provider)
+    return base
+
+
+def format_ollama_provider_plan_lines(meta: dict[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "Effective Ollama provider config (same provider overlay the run command will use):",
+        f"  Config: {meta.get('config_path')}",
+    ]
+    rel = meta.get("config_path_repo_relative")
+    if rel:
+        lines.append(f"  Repo-relative: {rel}")
+    if "error" in meta:
+        lines.append(f"  Status: error ({meta['error']})")
+        return lines
+
+    lines.append(f"  SHA256: {meta.get('config_sha256')}")
+    lines.append(f"  Base URL: {meta.get('base_url')}")
+    lines.append(
+        "  OpenAI-compatible base URL: "
+        f"{meta.get('openai_compatible_base_url')}"
+    )
+    lines.append(f"  Model: {meta.get('model')}")
+    lines.append(f"  Provider model id: {meta.get('provider_model_id')}")
     return lines

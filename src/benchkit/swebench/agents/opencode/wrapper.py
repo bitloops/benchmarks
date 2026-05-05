@@ -6,8 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
-from copy import deepcopy
 
 from ..common import (
     AgentCommandResult,
@@ -29,13 +29,14 @@ from ..common import (
     read_payload_from_stdin,
     render_task_prompt,
     resolve_bitloops_setup_timeout_seconds as common_resolve_bitloops_setup_timeout_seconds,
-    resolve_timeout_seconds,
     run_agent_wrapper,
     summarize_command_failure,
     summarize_tool_invocation_counts,
 )
 from .runtime import (
+    build_ollama_opencode_provider_overlay as _runtime_build_ollama_opencode_provider_overlay,
     build_opencode_invocation_config as _runtime_build_opencode_invocation_config,
+    deep_merge_opencode_dicts as _runtime_deep_merge_opencode_dicts,
     load_opencode_config_file as _runtime_load_opencode_config_file,
     merge_opencode_config_content as _runtime_merge_opencode_config_content,
     normalize_opencode_model_reference as _runtime_normalize_opencode_model_reference,
@@ -52,103 +53,8 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def _resolve_opencode_timeout_seconds(payload: dict[str, object]) -> int:
-    return resolve_timeout_seconds(
-        payload,
-        env_var="OPENCODE_TIMEOUT_SECONDS",
-        default_seconds=900,
-    )
-
-
 def _resolve_bitloops_setup_timeout_seconds(payload: dict[str, object]) -> int:
     return common_resolve_bitloops_setup_timeout_seconds(payload)
-
-
-def _normalize_opencode_provider_id(provider_id: str | None) -> str | None:
-    normalized = str(provider_id or "").strip()
-    if not normalized:
-        return None
-    if normalized == "fireworks":
-        return "fireworks-ai"
-    return normalized
-
-
-def _normalize_opencode_model_reference(model_reference: str) -> str:
-    normalized = model_reference.strip()
-    if not normalized or "/" not in normalized:
-        return normalized
-
-    provider_id, model_id = normalized.split("/", 1)
-    canonical_provider_id = _normalize_opencode_provider_id(provider_id)
-    if not canonical_provider_id:
-        return normalized
-    return f"{canonical_provider_id}/{model_id.strip()}"
-
-
-def _resolve_repo_opencode_config_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "configs" / "opencode" / "opencode.json"
-
-
-def _decode_opencode_config_content(
-    raw_content: str,
-    *,
-    source_name: str,
-) -> dict[str, object]:
-    loaded = json.loads(raw_content)
-    if not isinstance(loaded, dict):
-        raise ValueError(f"{source_name} must decode to a JSON object")
-    return loaded
-
-
-def _load_opencode_config_file(config_path: Path) -> dict[str, object]:
-    return _decode_opencode_config_content(
-        config_path.read_text(encoding="utf-8"),
-        source_name=str(config_path),
-    )
-
-
-def _deep_merge_dicts(base: dict[str, object], overlay: dict[str, object]) -> dict[str, object]:
-    merged: dict[str, object] = deepcopy(base)
-    for key, value in overlay.items():
-        current = merged.get(key)
-        if isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = _deep_merge_dicts(current, value)
-            continue
-        merged[key] = deepcopy(value)
-    return merged
-
-
-def _merge_opencode_config_content(
-    existing_content: str,
-    runtime_config: dict[str, object],
-) -> dict[str, object]:
-    if not existing_content.strip():
-        return deepcopy(runtime_config)
-
-    loaded = _decode_opencode_config_content(
-        existing_content,
-        source_name="OPENCODE_CONFIG_CONTENT",
-    )
-    return _deep_merge_dicts(loaded, runtime_config)
-
-
-def _build_opencode_invocation_config(
-    *,
-    existing_content: str,
-    repo_config_path: Path,
-) -> dict[str, object] | None:
-    merged: dict[str, object] | None = None
-    if existing_content.strip():
-        merged = _decode_opencode_config_content(
-            existing_content,
-            source_name="OPENCODE_CONFIG_CONTENT",
-        )
-
-    if repo_config_path.exists():
-        repo_config = _load_opencode_config_file(repo_config_path)
-        merged = _deep_merge_dicts(merged or {}, repo_config)
-
-    return merged
 
 
 _resolve_opencode_timeout_seconds = _runtime_resolve_opencode_timeout_seconds
@@ -156,8 +62,10 @@ _normalize_opencode_provider_id = _runtime_normalize_opencode_provider_id
 _normalize_opencode_model_reference = _runtime_normalize_opencode_model_reference
 _resolve_repo_opencode_config_path = _runtime_resolve_repo_opencode_config_path
 _load_opencode_config_file = _runtime_load_opencode_config_file
+_deep_merge_dicts = _runtime_deep_merge_opencode_dicts
 _merge_opencode_config_content = _runtime_merge_opencode_config_content
 _build_opencode_invocation_config = _runtime_build_opencode_invocation_config
+_build_ollama_opencode_provider_overlay = _runtime_build_ollama_opencode_provider_overlay
 
 
 def _resolve_attempt_dir(payload: dict[str, object]) -> Path | None:
@@ -355,6 +263,39 @@ def _ensure_nonempty_patch_or_exit(
     )
 
 
+def resolve_opencode_bin() -> str:
+    configured = os.environ.get("OPENCODE_BIN", "").strip()
+    if configured:
+        return configured
+
+    resolved = shutil.which("opencode")
+    if resolved:
+        return resolved
+
+    candidates = (
+        str(Path.home() / ".opencode" / "bin" / "opencode"),
+        "/opt/homebrew/bin/opencode",
+        "/usr/local/bin/opencode",
+        str(Path.home() / ".local" / "bin" / "opencode"),
+    )
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+
+    fatal_error(
+        "opencode binary not found",
+        details={
+            "searched": ["$OPENCODE_BIN", "$PATH"] + list(candidates),
+            "hint": (
+                "Set OPENCODE_BIN to the absolute opencode binary path, "
+                "for example ~/.opencode/bin/opencode."
+            ),
+        },
+    )
+    return "opencode"
+
+
 def main() -> None:
     args = parse_args()
     payload = read_payload_from_stdin()
@@ -372,6 +313,7 @@ def main() -> None:
     prompt_meta = prompt_template_metadata(payload)
     bitloops_setup_timeout_seconds = _resolve_bitloops_setup_timeout_seconds(payload)
     timeout_seconds = _resolve_opencode_timeout_seconds(payload)
+    opencode_bin = resolve_opencode_bin()
     command_env = None
     repo_config_path = _resolve_repo_opencode_config_path()
     existing_config_content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
@@ -386,6 +328,13 @@ def main() -> None:
             details={"error": str(exc)},
         )
 
+    ollama_overlay = _build_ollama_opencode_provider_overlay(
+        model_name=model_name,
+        existing_ollama_content=os.environ.get("OLLAMA_CONFIG_CONTENT", ""),
+    )
+    if ollama_overlay is not None:
+        invocation_config = _deep_merge_dicts(invocation_config or {}, ollama_overlay)
+
     if invocation_config is not None:
         try:
             encoded_invocation_config = json.dumps(invocation_config)
@@ -398,7 +347,7 @@ def main() -> None:
 
     def run_opencode_command(*, timeout_seconds: int, env: dict[str, str] | None, cwd: str) -> AgentCommandResult:
         command = [
-            os.environ.get("OPENCODE_BIN", "opencode"),
+            opencode_bin,
             "run",
             "--format",
             "json",

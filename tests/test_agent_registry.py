@@ -23,6 +23,7 @@ class AgentRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             build_agent_adapter(AgentConfig(id="unknown", command=[], extra_args=[]))
         self.assertIn("codex", str(context.exception))
+        self.assertNotIn("ollama", str(context.exception))
 
     def test_build_agent_adapter_supports_opencode(self) -> None:
         adapter = build_agent_adapter(
@@ -39,6 +40,7 @@ class AgentRegistryTests(unittest.TestCase):
             build_agent_adapter(AgentConfig(id="unknown", command=[]))
 
         self.assertIn("opencode", str(raised.exception))
+        self.assertNotIn("ollama", str(raised.exception))
 
 
 if __name__ == "__main__":

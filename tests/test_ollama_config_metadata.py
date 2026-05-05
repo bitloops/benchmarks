@@ -6,17 +6,19 @@ import tempfile
 import unittest
 
 from benchkit.common.config import AgentConfig, EvaluationConfig, ModelConfig, RunConfig
-from benchkit.swebench.agents.ollama.config import (
-    build_ollama_run_metadata,
-    format_ollama_plan_lines,
+from benchkit.swebench.agents.opencode.config import (
+    build_ollama_provider_run_metadata,
+    format_ollama_provider_plan_lines,
 )
-from benchkit.swebench.agents.ollama.runtime import default_ollama_json_path
+from benchkit.swebench.agents.opencode.runtime import default_ollama_json_path
 from benchkit.swebench.runner import _build_manifest
 
 
 class OllamaConfigMetadataTests(unittest.TestCase):
     def test_repo_ollama_json_contains_expected_defaults(self) -> None:
         path = default_ollama_json_path()
+        self.assertEqual(path.name, "ollama.json")
+        self.assertEqual(path.parent.name, "opencode")
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["base_url"], "http://localhost:11434")
         self.assertEqual(data["timeout_seconds"], 900)
@@ -42,25 +44,23 @@ class OllamaConfigMetadataTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            meta = build_ollama_run_metadata(
+            meta = build_ollama_provider_run_metadata(
                 config=_build_ollama_config(Path(tmp)),
-                resolved_model_name="deepseek-v4-flash:cloud",
+                resolved_model_name="ollama/deepseek-v4-flash:cloud",
                 ollama_json_path=p,
             )
         self.assertEqual(meta.get("config_source"), "repo_json")
         self.assertIn("config_sha256", meta)
         self.assertEqual(meta.get("base_url"), "http://localhost:9999")
-        self.assertEqual(meta.get("timeout_seconds"), 1200)
-        self.assertEqual(meta.get("model"), "deepseek-v4-flash:cloud")
-        self.assertEqual(meta.get("temperature"), 0)
-        self.assertEqual(meta.get("num_predict"), 2048)
-        self.assertEqual(meta.get("seed"), 42)
+        self.assertEqual(meta.get("model"), "ollama/deepseek-v4-flash:cloud")
+        self.assertEqual(meta.get("provider_model_id"), "deepseek-v4-flash:cloud")
+        self.assertEqual(meta.get("openai_compatible_base_url"), "http://localhost:9999/v1")
 
     def test_format_plan_lines_includes_error(self) -> None:
-        lines = format_ollama_plan_lines({"config_path": "/x", "error": "file_not_found"})
+        lines = format_ollama_provider_plan_lines({"config_path": "/x", "error": "file_not_found"})
         self.assertTrue(any("error" in line for line in lines))
 
-    def test_build_manifest_includes_ollama_when_config_agent_ollama(self) -> None:
+    def test_build_manifest_includes_ollama_provider_when_model_provider_is_ollama(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = _build_ollama_config(root)
@@ -69,10 +69,10 @@ class OllamaConfigMetadataTests(unittest.TestCase):
                 agent_id="noop",
                 model_resolution={
                     "canonical_name": "deepseek-v4-flash:cloud",
-                    "resolved_name": "deepseek-v4-flash:cloud",
-                    "map_key": "ollama",
+                    "resolved_name": "ollama/deepseek-v4-flash:cloud",
+                    "map_key": "opencode",
                     "source": "test",
-                    "agent_id": "ollama",
+                    "agent_id": "opencode",
                 },
                 run_id="rid",
                 total_instances=1,
@@ -86,8 +86,9 @@ class OllamaConfigMetadataTests(unittest.TestCase):
         self.assertIn("ollama", manifest)
         self.assertEqual(manifest["ollama"].get("config_source"), "repo_json")
         self.assertIn("config_sha256", manifest["ollama"])
-        self.assertEqual(manifest["ollama"].get("model"), "deepseek-v4-flash:cloud")
-        self.assertEqual(manifest["ollama"].get("seed"), 42)
+        self.assertEqual(manifest["ollama"].get("model"), "ollama/deepseek-v4-flash:cloud")
+        self.assertEqual(manifest["ollama"].get("provider_model_id"), "deepseek-v4-flash:cloud")
+        self.assertEqual(manifest["ollama"].get("openai_compatible_base_url"), "http://localhost:11434/v1")
 
 
 def _build_ollama_config(root: Path) -> RunConfig:
@@ -113,7 +114,7 @@ def _build_ollama_config(root: Path) -> RunConfig:
         git_bin="git",
         workspace_root=None,
         workspace_timeout_seconds=60,
-        agent=AgentConfig(id="ollama", command=["python3", "w.py"], extra_args=[]),
+        agent=AgentConfig(id="opencode", command=["python3", "w.py"], extra_args=[]),
         model=ModelConfig(provider="ollama", name="deepseek-v4-flash:cloud"),
         prompt_context=None,
         model_map={},

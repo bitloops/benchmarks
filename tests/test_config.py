@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -244,7 +245,7 @@ name = "gpt-5.4"
             self.assertEqual(cfg.agent.id, "codex")
             self.assertEqual(
                 cfg.agent.command,
-                ["python3", "-m", "benchkit.swebench.agents.codex.wrapper"],
+                [sys.executable, "-m", "benchkit.swebench.agents.codex.wrapper"],
             )
             self.assertEqual(cfg.agent.extra_args, [])
             self.assertEqual(cfg.model.provider, "openai")
@@ -285,7 +286,7 @@ name = "gpt-5.4"
             self.assertEqual(cfg.workspace_isolation_mode, "task_scoped")
             self.assertEqual(cfg.bitloops_sandbox_mode, "per_task_daemon")
 
-    def test_load_run_config_applies_ollama_preset_with_swe_prompt(self) -> None:
+    def test_load_run_config_rejects_removed_ollama_preset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             path = temp_root / "config.toml"
@@ -303,18 +304,29 @@ name = "deepseek-v4-pro:cloud"
                 encoding="utf-8",
             )
 
-            cfg = load_run_config(path, mode="baseline")
+            with self.assertRaisesRegex(
+                ValueError,
+                "Unknown config preset 'ollama'.*codex.*opencode",
+            ):
+                load_run_config(path, mode="baseline")
 
-            self.assertEqual(cfg.config_mode, "baseline")
-            self.assertEqual(cfg.agent.id, "ollama")
-            self.assertEqual(
-                cfg.agent.command,
-                ["python3", "-m", "benchkit.swebench.agents.ollama.wrapper"],
-            )
-            self.assertEqual(cfg.model.provider, "ollama")
-            self.assertEqual(cfg.prompt_protocol, "swe")
-            self.assertEqual(cfg.retrieval_file_source, "bm25")
-            self.assertEqual(cfg.retrieval_k, 10)
+    def test_repo_opencode_ollama_config_routes_through_opencode_with_ollama_provider(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        cfg = load_run_config(
+            repo_root / "configs" / "swebench" / "opencode_ollama.toml",
+            mode="baseline",
+        )
+
+        self.assertEqual(cfg.agent.id, "opencode")
+        self.assertEqual(
+            cfg.agent.command,
+            [sys.executable, "-m", "benchkit.swebench.agents.opencode.wrapper"],
+        )
+        self.assertEqual(cfg.model.provider, "ollama")
+        self.assertEqual(
+            cfg.model_map["opencode"]["deepseek-v4-pro:cloud"],
+            "ollama/deepseek-v4-pro:cloud",
+        )
 
     def test_load_run_config_applies_opencode_preset_with_bitloops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -343,7 +355,7 @@ name = "deepseek-v4-pro"
             self.assertEqual(cfg.agent.id, "opencode")
             self.assertEqual(
                 cfg.agent.command,
-                ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"],
+                [sys.executable, "-m", "benchkit.swebench.agents.opencode.wrapper"],
             )
             self.assertEqual(cfg.model.provider, "fireworks-ai")
             self.assertEqual(cfg.timeout_seconds, 1500)

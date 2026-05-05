@@ -1,13 +1,16 @@
 # Run Benchmarks (Ollama)
 
-This page is the Ollama-specific companion to [Run Benchmarks](run-benchmarks.md). SWE-bench scope, `plan` / `run` / `appendix` flow, results layout, and the shared **[SWE-bench config reference](run-benchmarks.md#swe-bench-config-reference)** are the same as in the main doc; here we only spell out what differs when the agent preset is **Ollama**.
+This page is the Ollama-specific companion to [Run Benchmarks](run-benchmarks.md). SWE-bench scope, `plan` / `run` / `appendix` flow, results layout, and the shared **[SWE-bench config reference](run-benchmarks.md#swe-bench-config-reference)** are the same as in the main doc; here we only spell out what differs when the benchmark uses **OpenCode with Ollama as the provider**.
 
 ## Config and preset
 
-- Benchmark TOML: **`configs/swebench/ollama.toml`**
-- Runtime JSON: **`configs/ollama/ollama.json`**
-- Preset: **`ollama`** (defaults in [`src/benchkit/common/config.py`](../src/benchkit/common/config.py) under `_config_presets()["ollama"]`)
-- Agent process: `python3 -m benchkit.swebench.agents.ollama.wrapper` (JSON on stdin, JSON patch result on stdout), same adapter pattern as Codex/OpenCode wrappers.
+- Benchmark TOML: **`configs/swebench/opencode_ollama.toml`**
+- OpenCode runtime JSON: **`configs/opencode/opencode.json`**
+- Ollama daemon JSON: **`configs/opencode/ollama.json`**
+- Preset: **`opencode`** with `[model] provider = "ollama"`
+- Agent process: `python3 -m benchkit.swebench.agents.opencode.wrapper` (JSON on stdin, JSON patch result on stdout)
+
+This matches the official integration direction documented by Ollama and OpenCode: `ollama launch opencode` configures OpenCode through `OPENCODE_CONFIG_CONTENT`, and OpenCode deep-merges that provider config with its normal config sources ([Ollama integration docs](https://docs.ollama.com/integrations/opencode), [OpenCode provider docs](https://opencode.ai/docs/providers/)).
 
 Modes match the other agents:
 
@@ -30,34 +33,35 @@ Additional prerequisites:
 
 ```bash
 command -v ollama    # Ollama CLI; daemon must be reachable for chat API
-command -v python3   # launches -m benchkit.swebench.agents.ollama.wrapper
+command -v opencode  # launches the OpenCode agent runtime
+command -v python3   # launches -m benchkit.swebench.agents.opencode.wrapper
 command -v docker
 docker info
 ```
 
 For **`with_bitloops`**, also `command -v bitloops` as in the main doc.
 
-Start Ollama. For **cloud** models used through the local daemon (names ending in `:cloud`, for example `deepseek-v4-flash:cloud`), run **`ollama signin`** once so the daemon can authenticate cloud requests. For local models, sign-in is not required.
+Start Ollama. For **cloud** models used through the local daemon (names ending in `:cloud`, for example `deepseek-v4-flash:cloud`), run **`ollama signin`** once so the daemon can authenticate cloud requests, and make sure the model metadata has been pulled locally (for example `ollama pull deepseek-v4-pro:cloud`) so OpenCode can see it through the local Ollama-compatible endpoint. For local models, sign-in is not required.
 
 ## 2. Pick mode
 
 Baseline:
 
 ```bash
-CONFIG=configs/swebench/ollama.toml
+CONFIG=configs/swebench/opencode_ollama.toml
 MODE=baseline
 ```
 
 With Bitloops:
 
 ```bash
-CONFIG=configs/swebench/ollama.toml
+CONFIG=configs/swebench/opencode_ollama.toml
 MODE=with_bitloops
 ```
 
 ## 3. Dataset and tasks
 
-Identical to [Run Benchmarks §3–4](run-benchmarks.md#3-create-dataset-if-missing): default dataset path in `ollama.toml`, `export-hf` if missing, edit `[run]` / `include_instance_ids` / `include_repos` / `max_instances` in **`configs/swebench/ollama.toml`**.
+Identical to [Run Benchmarks §3–4](run-benchmarks.md#3-create-dataset-if-missing): default dataset path in `opencode_ollama.toml`, `export-hf` if missing, edit `[run]` / `include_instance_ids` / `include_repos` / `max_instances` in **`configs/swebench/opencode_ollama.toml`**.
 
 ## Ollama-specific TOML fields
 
@@ -70,46 +74,46 @@ Everything in the shared [config reference](run-benchmarks.md#swe-bench-config-r
 - Use a **local model** name like `qwen3-coder` to run inference on your own hardware.
 - Use a **cloud model** name ending in `:cloud` like `deepseek-v4-flash:cloud` to keep the local Ollama API but offload model inference to Ollama Cloud after `ollama signin`.
 
-The wrapper resolves the actual model id in this order: payload from benchkit → **`OLLAMA_MODEL`** env → runtime JSON `model` (if present) → default string in code.
+`configs/swebench/opencode_ollama.toml` uses `provider = "ollama"` so the OpenCode wrapper knows to inject an Ollama provider overlay. The resolved model id passed to OpenCode is `ollama/<model>`, for example `ollama/deepseek-v4-pro:cloud`.
 
 ### Prompt protocol and retrieval
 
-Ollama runs use the retrieval-backed **`swe`** prompt protocol by default. The wrapper now runs a bounded local agent loop over Ollama `/api/chat`: it can inspect files, search the repo, edit files, and run repo-local commands through wrapper-provided tools before the benchmark captures the final workspace diff.
+Ollama benchmark runs now use the same OpenCode agent loop as the other OpenCode-backed runs. The main behavioral difference is only the provider/model choice.
 
 - Default protocol: `run.prompt_protocol = "swe"`
 - Default retrieval: `run.retrieval.file_source = "bm25"` and `run.retrieval.k = 10`
 - You can still override these in the benchmark TOML if you want to compare prompt shapes intentionally.
 
-### `[model_map.ollama]`
+### `[model_map.opencode]`
 
-Same idea as OpenCode’s `[model_map.opencode]`: keys are canonical names (matching `model.name`); values are the model names sent to the Ollama API after resolution ([`src/benchkit/swebench/model_mapper.py`](../src/benchkit/swebench/model_mapper.py)).
+Keys are canonical names (matching `model.name`); values are the exact model ids sent to OpenCode after resolution, usually in `ollama/<model>` form ([`src/benchkit/swebench/model_mapper.py`](../src/benchkit/swebench/model_mapper.py)).
 
 ### Runtime JSON and overrides
 
-- **File:** `configs/ollama/ollama.json`
-- Standard route: local Ollama daemon at `http://localhost:11434`
-- Purpose: transport/runtime settings such as `base_url`, `timeout_seconds`, `max_num_predict`, and `options` (for example `temperature`, `num_predict`, `seed`)
+- **OpenCode file:** `configs/opencode/opencode.json`
+- **Ollama file:** `configs/opencode/ollama.json`
+- Standard route: local Ollama daemon at `http://localhost:11434`, exposed to OpenCode as an OpenAI-compatible endpoint at `http://localhost:11434/v1`
+- Purpose:
+  - `configs/opencode/opencode.json` keeps the normal OpenCode agent defaults
+  - `configs/opencode/ollama.json` provides the base URL that the wrapper converts into the OpenCode Ollama provider overlay
 
 Useful **environment overrides** (all optional; these are advanced overrides, not the normal setup):
 
 | Variable | Role |
 | --- | --- |
 | `OLLAMA_BASE_URL` | Overrides `base_url` (default from JSON or `http://localhost:11434`). |
-| `OLLAMA_MODEL` | Advanced override; normal benchmark runs should set the model in `ollama.toml` instead. |
-| `OLLAMA_TIMEOUT_SECONDS` | Participates in timeout resolution with config and run payload. |
-| `OLLAMA_MAX_PREDICT` | Caps / sets max tokens for generation where applicable. |
-| `OLLAMA_AUTH_TOKEN` | Optional bearer token for custom authenticated endpoints. |
-| `OLLAMA_CONFIG_CONTENT` | Raw JSON object merged over the runtime JSON (handy for CI tweaks). |
-
-Strict / smoke-related knobs used by the wrapper include `BENCHKIT_OLLAMA_STRICT_APPLY` and `BENCHKIT_ALLOW_EMPTY_OLLAMA_PATCH` (see `src/benchkit/swebench/agents/ollama/wrapper.py`).
+| `OLLAMA_CONFIG_CONTENT` | Raw JSON object merged over the Ollama runtime JSON before the wrapper builds the OpenCode provider overlay. |
+| `OPENCODE_CONFIG_CONTENT` | Extra OpenCode JSON merged before the repo’s `configs/opencode/opencode.json`, then merged again with the Ollama provider overlay. |
+| `OPENCODE_MODEL` | Advanced override; normal benchmark runs should set the model in `opencode_ollama.toml` instead. |
+| `OPENCODE_TIMEOUT_SECONDS` | Participates in timeout resolution with config and run payload. |
 
 ### Local vs cloud models
 
-There is one supported repo flow: the benchmark talks to your **local Ollama daemon**.
+There is one supported repo flow: the benchmark launches **OpenCode**, and OpenCode talks to your **local Ollama daemon**.
 
 - If `model.name` is a normal local model, inference happens on your machine.
-- If `model.name` ends with `:cloud`, inference is offloaded to Ollama Cloud, but the benchmark still talks to `http://localhost:11434`.
-- In the `:cloud` case you usually want `ollama signin`, not an API key.
+- If `model.name` ends with `:cloud`, inference is offloaded to Ollama Cloud, but the benchmark still talks to the local Ollama-compatible endpoint.
+- In the `:cloud` case you usually want `ollama signin` and local model metadata pulled once, not a direct provider API key in benchkit.
 
 ### Using a `.env` file
 
@@ -123,8 +127,8 @@ That means a repo-root `.env` works for commands like `plan`, `run`, and `export
 Example repo-root `.env` for optional overrides:
 
 ```bash
-OLLAMA_TIMEOUT_SECONDS=1200
-OLLAMA_MAX_PREDICT=2048
+OLLAMA_BASE_URL=http://localhost:11434
+OPENCODE_TIMEOUT_SECONDS=1200
 ```
 
 There is also a starter file at `./.env.example`.
@@ -159,5 +163,5 @@ Same layout as [Run Benchmarks §7](run-benchmarks.md#7-find-results): `runs/swe
 ## Notes
 
 - For Codex/OpenCode, use [Run Benchmarks](run-benchmarks.md).
-- `ollama.toml` controls **what** runs; `configs/ollama/ollama.json` controls **how** the wrapper talks to Ollama (unless env vars override).
-- Cloud-tagged models (name ending with `:cloud`) get conservative generation defaults in the wrapper when `max_num_predict` is not set; adjust JSON or env if you need different limits.
+- `opencode_ollama.toml` controls **what** runs; `configs/opencode/opencode.json` controls the OpenCode runtime defaults; `configs/opencode/ollama.json` controls the Ollama daemon endpoint that is injected into OpenCode.
+- `configs/swebench/opencode_ollama.toml` uses the OpenCode agent path so Ollama runs are comparable to the other agent runs.

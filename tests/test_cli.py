@@ -27,25 +27,25 @@ class CliRunTests(unittest.TestCase):
     def test_load_cli_dotenv_reads_repo_root_env_without_overriding_existing_env(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "configs" / "swebench" / "ollama.toml"
+            config_path = root / "configs" / "swebench" / "opencode_ollama.toml"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text("", encoding="utf-8")
             env_path = root / ".env"
             env_path.write_text(
-                "OLLAMA_TIMEOUT_SECONDS=1200\n"
-                "export OLLAMA_MAX_PREDICT=2048\n"
-                "OLLAMA_MODEL=deepseek-v4-flash:cloud\n",
+                "OLLAMA_BASE_URL=http://localhost:22444\n"
+                "export OPENCODE_TIMEOUT_SECONDS=1200\n"
+                "OPENCODE_MODEL=ollama/deepseek-v4-flash:cloud\n",
                 encoding="utf-8",
             )
             cwd = root / "scripts"
             cwd.mkdir()
 
-            with patch.dict(os.environ, {"OLLAMA_MODEL": "existing-model"}, clear=True):
+            with patch.dict(os.environ, {"OPENCODE_MODEL": "existing-model"}, clear=True):
                 loaded = _load_cli_dotenv(config_path=config_path, cwd=cwd)
                 self.assertEqual([path.resolve() for path in loaded], [env_path.resolve()])
-                self.assertEqual(os.environ["OLLAMA_TIMEOUT_SECONDS"], "1200")
-                self.assertEqual(os.environ["OLLAMA_MAX_PREDICT"], "2048")
-                self.assertEqual(os.environ["OLLAMA_MODEL"], "existing-model")
+                self.assertEqual(os.environ["OLLAMA_BASE_URL"], "http://localhost:22444")
+                self.assertEqual(os.environ["OPENCODE_TIMEOUT_SECONDS"], "1200")
+                self.assertEqual(os.environ["OPENCODE_MODEL"], "existing-model")
 
     def test_load_cli_dotenv_reads_cwd_env_when_no_config_is_available(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -349,7 +349,7 @@ extra_args = ["--bitloops-init"]
             self.assertIn("Condition: with_bitloops", rendered)
             self.assertIn("Selected instances: 1", rendered)
 
-    def test_run_plan_for_ollama_prints_effective_runtime_config(self) -> None:
+    def test_run_plan_for_opencode_ollama_prints_effective_runtime_config(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             dataset_path = root / "dataset.jsonl"
@@ -375,16 +375,18 @@ dataset_path = "{dataset_path}"
 language = "rust"
 include_repos = []
 include_instance_ids = []
+timeout_seconds = 1200
 
 [agent]
-id = "ollama"
+id = "opencode"
+command = ["python3", "-m", "benchkit.swebench.agents.opencode.wrapper"]
 
 [model]
-provider = "test"
+provider = "ollama"
 name = "deepseek-v4-flash:cloud"
 
-[model_map.ollama]
-"deepseek-v4-flash:cloud" = "deepseek-v4-flash:cloud"
+[model_map.opencode]
+"deepseek-v4-flash:cloud" = "ollama/deepseek-v4-flash:cloud"
                 """.strip(),
                 encoding="utf-8",
             )
@@ -394,9 +396,10 @@ name = "deepseek-v4-flash:cloud"
                 run_plan(config_path, show=1, mode=None)
 
             rendered = output.getvalue()
-            self.assertIn("Effective Ollama run config", rendered)
-            self.assertIn("Seed: 42", rendered)
-            self.assertIn("num_predict: 4096", rendered)
+            self.assertIn("Effective Ollama provider config", rendered)
+            self.assertIn("Agent: opencode", rendered)
+            self.assertIn("Resolved model: ollama/deepseek-v4-flash:cloud", rendered)
+            self.assertIn("Base URL: http://localhost:11434", rendered)
 
     def test_run_execute_dry_run_writes_mode_manifest_and_summary(self) -> None:
         with TemporaryDirectory() as temp_dir:
