@@ -77,13 +77,13 @@ Everything in the shared [config reference](run-benchmarks.md#swe-bench-config-r
 
 Both Ollama benchmark configs use `provider = "ollama"` so the OpenCode wrapper knows to inject an Ollama provider overlay. The resolved model id passed to OpenCode is `ollama/<model>`, for example `ollama/qwen2.5-coder:14b` or `ollama/deepseek-v4-pro:cloud`.
 
-### Prompt protocol and retrieval
+### Prompt protocol
 
 Ollama benchmark runs now use the same OpenCode agent loop as the other OpenCode-backed runs. The main behavioral difference is only the provider/model choice.
 
-- Default protocol: `run.prompt_protocol = "swe"`
-- Default retrieval: `run.retrieval.file_source = "bm25"` and `run.retrieval.k = 10`
-- You can still override these in the benchmark TOML if you want to compare prompt shapes intentionally.
+- The supported prompt protocol is `run.prompt_protocol = "minimal"`.
+- If you omit it, benchkit defaults to `minimal`.
+- Older `swe` / retrieval-specific prompt settings are no longer used in this flow.
 
 ### `[model_map.opencode]`
 

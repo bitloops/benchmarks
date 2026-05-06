@@ -3,13 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
-from collections import Counter
 from copy import deepcopy
 import contextlib
 import fcntl
 import hashlib
 import json
-import math
 import os
 import re
 import shlex
@@ -3252,348 +3250,20 @@ def _ensure_trailing_newline(text: str) -> str:
     return f"{text}\n" if text and not text.endswith("\n") else text
 
 
-PATCH_EXAMPLE = """--- a/file.py
-+++ b/file.py
-@@ -1,3 +1,5 @@
--def add(a, b):
--    return a - b
-+def add(a, b):
-+    if b == 0:
-+        return a
-+    return a + b
-"""
-
 _MINIMAL_PROMPT_INTRO = "Investigate and fix the following issue by editing files directly in the workspace."
 
 
 def _resolve_prompt_protocol(payload: dict[str, Any]) -> str:
-    run = payload.get("run", {})
-    if not isinstance(run, dict):
-        return "minimal"
-    protocol_raw = str(run.get("prompt_protocol", "minimal")).strip().lower()
-    if protocol_raw == "style3":
-        return "swe"
-    return protocol_raw if protocol_raw in {"minimal", "swe"} else "minimal"
-
-
-def _resolve_retrieval_settings(payload: dict[str, Any]) -> tuple[str, int]:
-    run = payload.get("run", {})
-    if not isinstance(run, dict):
-        return "bm25", 10
-    file_source = str(run.get("retrieval_file_source", "bm25")).strip().lower() or "bm25"
-    try:
-        k = int(run.get("retrieval_k", 10))
-    except (TypeError, ValueError):
-        k = 10
-    return file_source, max(k, 1)
-
-
-def _add_line_numbers(content: str) -> str:
-    lines = content.splitlines()
-    return "\n".join(f"{idx} {line}" for idx, line in enumerate(lines, start=1))
-
-
-def _tokenize(text: str) -> list[str]:
-    tokens: list[str] = []
-    for raw_token in re.findall(r"[A-Za-z_][A-Za-z0-9_]+", text):
-        lowered = raw_token.lower()
-        tokens.append(lowered)
-        part_tokens: list[str] = []
-        for underscore_part in raw_token.split("_"):
-            for part in re.findall(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+", underscore_part):
-                lowered_part = part.lower()
-                if lowered_part and lowered_part != lowered:
-                    part_tokens.append(lowered_part)
-                    tokens.append(lowered_part)
-        if len(part_tokens) >= 2:
-            for start_idx in range(len(part_tokens) - 1):
-                joined = "".join(part_tokens[start_idx:])
-                if joined and joined != lowered:
-                    tokens.append(joined)
-    return tokens
-
-
-def _retrieval_path_weight(rel_path: str) -> float:
-    path = Path(rel_path.lower())
-    suffix = path.suffix
-    name = path.name
-    parts = set(path.parts)
-
-    weight = 1.0
-    if suffix in {
-        ".rs",
-        ".py",
-        ".js",
-        ".jsx",
-        ".ts",
-        ".tsx",
-        ".java",
-        ".go",
-        ".c",
-        ".cc",
-        ".cpp",
-        ".h",
-        ".hpp",
-        ".cs",
-        ".rb",
-        ".php",
-        ".swift",
-        ".kt",
-        ".kts",
-        ".scala",
-        ".sh",
-        ".zsh",
-    }:
-        weight *= 2.5
-    elif suffix in {".toml", ".json", ".yaml", ".yml", ".ini", ".cfg"}:
-        weight *= 1.5
-    elif suffix in {".md", ".rst", ".adoc", ".txt"}:
-        weight *= 0.2
-
-    if parts.intersection({"src", "lib", "app", "crates"}):
-        weight *= 1.4
-    if parts.intersection({"routing", "router"}):
-        weight *= 1.4
-    if parts.intersection({"test", "tests", "spec", "specs", "benches"}):
-        weight *= 1.6
-    if "examples" in parts:
-        weight *= 0.65
-    if parts.intersection({"docs", "doc"}):
-        weight *= 0.4
-    if name in {"readme.md", "changelog.md", "contributing.md"}:
-        weight *= 0.25
-    if name in {"lib.rs", "main.rs"}:
-        weight *= 0.8
-
-    return max(weight, 0.05)
-
-
-def _candidate_files(workspace: Path) -> list[Path]:
-    try:
-        completed = subprocess.run(
-            ["git", "ls-files"],
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if completed.returncode == 0:
-            files = [
-                workspace / line.strip()
-                for line in completed.stdout.splitlines()
-                if line.strip()
-            ]
-            return sorted(path for path in files if path.is_file())
-    except Exception:
-        pass
-    return sorted(path for path in workspace.rglob("*") if path.is_file() and ".git" not in path.parts)
-
-
-def _read_text_file(path: Path, max_bytes: int = 120_000) -> str:
-    try:
-        with path.open("rb") as handle:
-            chunk = handle.read(max_bytes)
-        if b"\x00" in chunk:
-            return ""
-        return chunk.decode("utf-8", errors="ignore")
-    except OSError:
-        return ""
-
-
-def _extract_relevant_preview(text: str, query_terms: list[str], max_lines: int = 220) -> str:
-    lines = text.splitlines()
-    if len(lines) <= max_lines:
-        return "\n".join(lines)
-    if not query_terms:
-        return "\n".join(lines[:max_lines])
-
-    query_term_set = set(query_terms)
-    line_token_counts: list[Counter[str]] = []
-    line_term_frequency: Counter[str] = Counter()
-    for line in lines:
-        tokens = Counter(_tokenize(line))
-        line_token_counts.append(tokens)
-        for term in query_term_set:
-            if tokens.get(term, 0) > 0:
-                line_term_frequency[term] += 1
-
-    special_terms = [term for term in query_term_set if "_" in term or len(term) >= 16]
-    special_line_scores: list[tuple[float, int]] = []
-    for idx, tokens in enumerate(line_token_counts):
-        score = sum(float(len(term)) * tokens.get(term, 0) for term in special_terms)
-        if score > 0:
-            special_line_scores.append((score, idx))
-
-    window = min(max_lines, len(lines))
-    if special_line_scores:
-        best_line_index = max(special_line_scores)[1]
-        best_start = max(0, best_line_index - (window // 2))
-        if best_start + window > len(lines):
-            best_start = len(lines) - window
-        return "\n".join(lines[best_start : best_start + window])
-
-    term_weights = {
-        term: math.log(1.0 + (len(lines) / (1 + line_term_frequency.get(term, 0))))
-        for term in query_term_set
-    }
-
-    line_scores: list[float] = []
-    for tokens in line_token_counts:
-        line_scores.append(
-            sum(tokens.get(term, 0) * term_weights.get(term, 0.0) for term in query_term_set)
-        )
-
-    best_score = max(line_scores, default=0.0)
-    if best_score <= 0:
-        return "\n".join(lines[:max_lines])
-
-    best_line_index = max(range(len(line_scores)), key=line_scores.__getitem__)
-    best_start = max(0, best_line_index - (window // 2))
-    if best_start + window > len(lines):
-        best_start = len(lines) - window
-
-    return "\n".join(lines[best_start : best_start + window])
-
-
-def _retrieve_bm25_code_context(*, workspace: Path, problem: str, k: int) -> list[tuple[str, str]]:
-    query_terms = _tokenize(problem)
-    if not query_terms:
-        return []
-
-    files = _candidate_files(workspace)
-    if not files:
-        return []
-
-    docs: list[dict[str, Any]] = []
-    df: Counter[str] = Counter()
-    term_set = set(query_terms)
-    for file_path in files:
-        rel_path = file_path.relative_to(workspace).as_posix()
-        text = _read_text_file(file_path)
-        if not text:
-            continue
-        # Keep prompt size bounded while still feeding the most relevant local context.
-        preview = _extract_relevant_preview(text, query_terms)
-        tokens = _tokenize(f"{rel_path}\n{preview}")
-        if not tokens:
-            continue
-        counts = Counter(tokens)
-        matched_terms = term_set.intersection(counts.keys())
-        if not matched_terms:
-            continue
-        for term in matched_terms:
-            df[term] += 1
-        docs.append(
-            {
-                "path": rel_path,
-                "content": preview,
-                "length": len(tokens),
-                "counts": counts,
-            }
-        )
-
-    if not docs:
-        return []
-
-    avgdl = sum(int(doc["length"]) for doc in docs) / float(len(docs))
-    k1 = 1.5
-    b = 0.75
-    total_docs = len(docs)
-    scored: list[tuple[float, str, str]] = []
-    for doc in docs:
-        length = max(int(doc["length"]), 1)
-        counts: Counter[str] = doc["counts"]
-        score = 0.0
-        for term in query_terms:
-            tf = counts.get(term, 0)
-            if tf <= 0:
-                continue
-            term_df = df.get(term, 0)
-            idf = math.log(1.0 + ((total_docs - term_df + 0.5) / (term_df + 0.5)))
-            denom = tf + k1 * (1.0 - b + b * (length / max(avgdl, 1.0)))
-            score += idf * (tf * (k1 + 1.0)) / denom
-        if score > 0:
-            score *= _retrieval_path_weight(str(doc["path"]))
-            scored.append((score, str(doc["path"]), str(doc["content"])))
-
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    selected = scored[:k]
-    return [(path, content) for _, path, content in selected]
-
-
-def _build_retrieval_query(payload: dict[str, Any]) -> str:
-    parts: list[str] = [str(payload.get("problem_statement", "")).strip()]
-    metadata = payload.get("metadata", {})
-    if isinstance(metadata, dict):
-        fail_to_pass = metadata.get("FAIL_TO_PASS")
-        if isinstance(fail_to_pass, list):
-            for item in fail_to_pass:
-                text = str(item).strip()
-                if not text:
-                    continue
-                # Repeating failing test identifiers makes retrieval much more likely
-                # to surface the exact source and test windows behind the benchmark.
-                parts.extend([text, text, text])
-        hints_text = metadata.get("hints_text")
-        if isinstance(hints_text, str) and hints_text.strip():
-            parts.append(hints_text.strip())
-    return "\n".join(part for part in parts if part)
-
-
-def _build_swe_prompt(payload: dict[str, Any]) -> str:
-    problem = str(payload.get("problem_statement", "")).strip()
-    workspace = resolve_workspace(payload)
-    file_source, retrieval_k = _resolve_retrieval_settings(payload)
-    retrieval_query = _build_retrieval_query(payload)
-    snippets: list[tuple[str, str]] = []
-    if file_source == "bm25":
-        snippets = _retrieve_bm25_code_context(
-            workspace=workspace,
-            problem=retrieval_query or problem,
-            k=retrieval_k,
-        )
-
-    code_blocks: list[str] = []
-    for path, content in snippets:
-        code_blocks.append(f"[start of {path}]")
-        code_blocks.append(_add_line_numbers(content))
-        code_blocks.append(f"[end of {path}]")
-    code_text = "\n".join(code_blocks).strip()
-    if not code_text:
-        code_text = "[start of context]\nNo retrieval context available.\n[end of context]"
-
-    final_text = [
-        "You will be provided with a partial code base and an issue statement explaining a problem to resolve.",
-        "<issue>",
-        problem,
-        "</issue>",
-        "",
-        "<code>",
-        code_text,
-        "</code>",
-        "",
-        "Here is an example of a patch file. It consists of changes to the code base.",
-        "<patch>",
-        PATCH_EXAMPLE.strip(),
-        "</patch>",
-        "",
-        "Solve the issue by generating a single patch file applicable with git apply.",
-        "Do not commit your changes; just leave the edited files in place.",
-        "Respond with only the patch.",
-    ]
-    return "\n".join(final_text).strip()
+    _ = payload
+    return "minimal"
 
 
 def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     protocol = _resolve_prompt_protocol(payload)
-    file_source, retrieval_k = _resolve_retrieval_settings(payload)
-    version = "swe_v1" if protocol == "swe" else "minimal_v3"
-    hash_input = f"{version}|protocol={protocol}|source={file_source}|k={retrieval_k}"
+    version = "minimal_v3"
+    hash_input = f"{version}|protocol={protocol}"
     return {
         "prompt_protocol": protocol,
-        "retrieval_file_source": file_source,
-        "retrieval_k": retrieval_k,
         "prompt_template_version": version,
         "prompt_template_hash": hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:16],
     }
@@ -3602,9 +3272,6 @@ def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
 def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     problem = str(payload.get("problem_statement", "")).strip()
     _ = wrapper_name  # Signature kept for wrapper compatibility.
-    protocol = _resolve_prompt_protocol(payload)
-    if protocol == "swe":
-        return _build_swe_prompt(payload)
     return (
         f"{_MINIMAL_PROMPT_INTRO}\n\n"
         "Do not commit your changes; just leave the edited files in place.\n\n"

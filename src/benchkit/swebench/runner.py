@@ -27,23 +27,13 @@ from benchkit.swebench.workspace import WorkspacePrepResult, prepare_instance_wo
 
 
 def _prompt_template_version(prompt_protocol: str) -> str:
-    normalized = str(prompt_protocol or "").strip().lower()
-    if normalized in {"swe", "style3"}:
-        return "swe_v1"
+    _ = prompt_protocol
     return "minimal_v3"
 
 
-def _prompt_template_hash(
-    *,
-    prompt_protocol: str,
-    retrieval_file_source: str,
-    retrieval_k: int,
-) -> str:
+def _prompt_template_hash(*, prompt_protocol: str) -> str:
     version = _prompt_template_version(prompt_protocol)
-    token = (
-        f"{version}|protocol={prompt_protocol}|"
-        f"source={retrieval_file_source}|k={retrieval_k}"
-    )
+    token = f"{version}|protocol={prompt_protocol}"
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
@@ -395,15 +385,9 @@ def _build_manifest(
         "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
         "prompt_context": config.prompt_context,
         "prompt_protocol": config.prompt_protocol,
-        "retrieval": {
-            "file_source": config.retrieval_file_source,
-            "k": config.retrieval_k,
-        },
         "prompt_template_version": _prompt_template_version(config.prompt_protocol),
         "prompt_template_hash": _prompt_template_hash(
             prompt_protocol=config.prompt_protocol,
-            retrieval_file_source=config.retrieval_file_source,
-            retrieval_k=config.retrieval_k,
         ),
         "include_repos": config.include_repos,
         "include_instance_ids": config.include_instance_ids,
@@ -530,8 +514,6 @@ def _run_instance(
         condition=config.condition,
         prompt_context=config.prompt_context,
         prompt_protocol=config.prompt_protocol,
-        retrieval_file_source=config.retrieval_file_source,
-        retrieval_k=config.retrieval_k,
         bitloops_sandbox=bitloops_sandbox,
     )
 

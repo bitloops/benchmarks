@@ -366,26 +366,20 @@ class OpencodeWrapperTests(unittest.TestCase):
         line = json.dumps({"type": "result", "ok": True})
         self.assertIsNone(wrapper._summarize_opencode_stdout_errors(line))
 
-    def test_ensure_nonempty_patch_fatal_on_empty_without_escape_env(self) -> None:
-        with patch.object(wrapper, "fatal_error", side_effect=RuntimeError("fatal")) as mock_fatal:
-            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": ""}):
-                with self.assertRaises(RuntimeError):
-                    wrapper._ensure_nonempty_patch_or_exit(
-                        patch="   ",
-                        return_code=0,
-                        patch_source="no_patch_found",
-                        stdout='{"type":"result"}\n',
-                        stderr="",
-                        command=["opencode", "run"],
-                        workspace=Path("/tmp/ws"),
-                        raw_stdout_path="/tmp/out.jsonl",
-                        raw_stderr_path="/tmp/err.log",
-                    )
-        mock_fatal.assert_called_once()
-        args, kwargs = mock_fatal.call_args
-        self.assertEqual(args[0], "opencode produced no patch")
-        self.assertEqual(kwargs["details"]["return_code"], 0)
-        self.assertEqual(kwargs["details"]["patch_source"], "no_patch_found")
+    def test_ensure_nonempty_patch_allows_empty_without_stream_error(self) -> None:
+        with patch.object(wrapper, "fatal_error") as mock_fatal:
+            wrapper._ensure_nonempty_patch_or_exit(
+                patch="   ",
+                return_code=0,
+                patch_source="no_patch_found",
+                stdout='{"type":"result"}\n',
+                stderr="",
+                command=["opencode", "run"],
+                workspace=Path("/tmp/ws"),
+                raw_stdout_path="/tmp/out.jsonl",
+                raw_stderr_path="/tmp/err.log",
+            )
+        mock_fatal.assert_not_called()
 
     def test_ensure_nonempty_patch_fatal_prefers_api_error_summary(self) -> None:
         err_line = json.dumps(
@@ -398,40 +392,23 @@ class OpencodeWrapperTests(unittest.TestCase):
             }
         )
         with patch.object(wrapper, "fatal_error", side_effect=RuntimeError("fatal")) as mock_fatal:
-            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": ""}):
-                with self.assertRaises(RuntimeError):
-                    wrapper._ensure_nonempty_patch_or_exit(
-                        patch="",
-                        return_code=0,
-                        patch_source="no_patch_found",
-                        stdout=err_line + "\n",
-                        stderr="",
-                        command=["opencode", "run"],
-                        workspace=Path("/tmp/ws"),
-                        raw_stdout_path="/tmp/out.jsonl",
-                        raw_stderr_path="/tmp/err.log",
-                    )
+            with self.assertRaises(RuntimeError):
+                wrapper._ensure_nonempty_patch_or_exit(
+                    patch="",
+                    return_code=0,
+                    patch_source="no_patch_found",
+                    stdout=err_line + "\n",
+                    stderr="",
+                    command=["opencode", "run"],
+                    workspace=Path("/tmp/ws"),
+                    raw_stdout_path="/tmp/out.jsonl",
+                    raw_stderr_path="/tmp/err.log",
+                )
         mock_fatal.assert_called_once()
         args, kwargs = mock_fatal.call_args
         self.assertIn("API error", args[0])
         self.assertIn("401", kwargs["details"]["error_summary"])
         self.assertIn("Unauthorized", kwargs["details"]["error_summary"])
-
-    def test_ensure_nonempty_patch_allows_empty_when_escape_env_set(self) -> None:
-        with patch.object(wrapper, "fatal_error") as mock_fatal:
-            with patch.dict(wrapper.os.environ, {"BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH": "1"}):
-                wrapper._ensure_nonempty_patch_or_exit(
-                    patch="",
-                    return_code=0,
-                    patch_source="no_patch_found",
-                    stdout="",
-                    stderr="",
-                    command=["opencode"],
-                    workspace=Path("/tmp/ws"),
-                    raw_stdout_path=None,
-                    raw_stderr_path=None,
-                )
-        mock_fatal.assert_not_called()
 
     def test_ensure_nonempty_patch_noop_when_patch_nonempty(self) -> None:
         with patch.object(wrapper, "fatal_error") as mock_fatal:

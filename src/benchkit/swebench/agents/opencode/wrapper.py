@@ -218,8 +218,6 @@ def _ensure_nonempty_patch_or_exit(
 ) -> None:
     if patch.strip():
         return
-    if env_flag("BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH", default=False):
-        return
     stream_error = _summarize_opencode_stdout_errors(stdout)
     if stream_error:
         fatal_error(
@@ -230,8 +228,7 @@ def _ensure_nonempty_patch_or_exit(
                     "OpenCode returned JSONL error event(s) instead of completing the task. "
                     "For Fireworks, configure an API key in OpenCode auth "
                     "(see https://docs.fireworks.ai/api-reference/introduction#authentication) "
-                    "or your team's opencode provider setup. "
-                    "Set BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH=1 only for targeted tests."
+                    "or your team's opencode provider setup."
                 ),
                 "return_code": return_code,
                 "patch_source": patch_source,
@@ -243,24 +240,9 @@ def _ensure_nonempty_patch_or_exit(
                 "raw_stderr_path": raw_stderr_path,
             },
         )
-    fatal_error(
-        "opencode produced no patch",
-        details={
-            "hint": (
-                "OpenCode exited successfully but produced no unified diff and no "
-                "git-tracked workspace changes. Set BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH=1 "
-                "only for targeted tests."
-            ),
-            "return_code": return_code,
-            "patch_source": patch_source,
-            "stdout_preview": _clip_text(stdout),
-            "stderr_preview": _clip_text(stderr),
-            "command": command,
-            "workspace": str(workspace),
-            "raw_stdout_path": raw_stdout_path,
-            "raw_stderr_path": raw_stderr_path,
-        },
-    )
+    # Minimal prompt runs are allowed to finish with an empty patch. The caller
+    # will emit a normal empty prediction record for evaluation.
+    return
 
 
 def resolve_opencode_bin() -> str:

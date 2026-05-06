@@ -67,8 +67,6 @@ timeout_seconds = 3600
             self.assertFalse(cfg.bitloops_enabled)
             self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
             self.assertEqual(cfg.prompt_protocol, "minimal")
-            self.assertEqual(cfg.retrieval_file_source, "bm25")
-            self.assertEqual(cfg.retrieval_k, 10)
             self.assertEqual(
                 cfg.model_map["claude_code"]["opus-4-6"],
                 "claude-opus-4-6",
@@ -141,7 +139,7 @@ seed = 4242
             self.assertEqual(cfg.model.seed, 4242)
             self.assertEqual(cfg.model_map["opencode"]["gpt-5"], "openai/gpt-5")
 
-    def test_load_run_config_supports_swe_prompt_protocol_and_retrieval(self) -> None:
+    def test_load_run_config_rejects_non_minimal_prompt_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             raw = """
@@ -149,10 +147,6 @@ seed = 4242
 benchmark = "swebench_multilingual"
 dataset_path = "datasets/sample.jsonl"
 prompt_protocol = "swe"
-
-[run.retrieval]
-file_source = "bm25"
-k = 7
 
 [agent]
 id = "codex"
@@ -164,11 +158,11 @@ name = "gpt-5.4"
             path = temp_root / "config.toml"
             path.write_text(raw, encoding="utf-8")
 
-            cfg = load_run_config(path)
-
-            self.assertEqual(cfg.prompt_protocol, "swe")
-            self.assertEqual(cfg.retrieval_file_source, "bm25")
-            self.assertEqual(cfg.retrieval_k, 7)
+            with self.assertRaisesRegex(
+                ValueError,
+                "run.prompt_protocol must be 'minimal'",
+            ):
+                load_run_config(path)
 
     def test_load_run_config_applies_baseline_mode_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -327,9 +321,7 @@ name = "deepseek-v4-pro:cloud"
             cfg.model_map["opencode"]["qwen2.5-coder:14b"],
             "ollama/qwen2.5-coder:14b",
         )
-        self.assertEqual(cfg.prompt_protocol, "swe")
-        self.assertEqual(cfg.retrieval_file_source, "bm25")
-        self.assertEqual(cfg.retrieval_k, 10)
+        self.assertEqual(cfg.prompt_protocol, "minimal")
 
     def test_repo_opencode_ollama_cloud_config_routes_through_opencode_with_cloud_provider(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -348,9 +340,7 @@ name = "deepseek-v4-pro:cloud"
             cfg.model_map["opencode"]["deepseek-v4-pro:cloud"],
             "ollama/deepseek-v4-pro:cloud",
         )
-        self.assertEqual(cfg.prompt_protocol, "swe")
-        self.assertEqual(cfg.retrieval_file_source, "bm25")
-        self.assertEqual(cfg.retrieval_k, 10)
+        self.assertEqual(cfg.prompt_protocol, "minimal")
 
     def test_load_run_config_applies_opencode_preset_with_bitloops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

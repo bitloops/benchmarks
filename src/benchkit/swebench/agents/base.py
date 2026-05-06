@@ -27,8 +27,6 @@ class RunContext:
     condition: str | None = None
     prompt_context: str | None = None
     prompt_protocol: str = "minimal"
-    retrieval_file_source: str = "bm25"
-    retrieval_k: int = 10
     bitloops_sandbox: dict[str, Any] | None = None
     attempt_dir: Path | None = None
 
@@ -125,8 +123,6 @@ class JsonCommandAgentAdapter(AgentAdapter):
                 "benchmark": context.benchmark,
                 "condition": context.condition,
                 "prompt_protocol": context.prompt_protocol,
-                "retrieval_file_source": context.retrieval_file_source,
-                "retrieval_k": context.retrieval_k,
                 "timeout_seconds": context.timeout_seconds,
                 "workspace_root": str(context.workspace_root),
                 "attempt_dir": (

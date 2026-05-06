@@ -49,7 +49,7 @@ Use `mock_agent.py` as a minimal reference implementation.
 All wrappers:
 
 1. Read the benchmark payload from stdin.
-2. Build a strict patch-only prompt.
+2. Build the benchmark task prompt.
 3. Call the respective CLI in non-interactive print mode.
 4. Parse output and extract a unified diff patch.
 5. Print JSON response with `patch` and `metadata`.
@@ -215,9 +215,9 @@ Env vars:
 - `OPENCODE_AGENT` (default: `build`)
 - `OPENCODE_EXTRA_ARGS` (extra CLI args, shell-split)
 - `OPENCODE_TIMEOUT_SECONDS` (default: `900`)
-- `BENCHKIT_ALLOW_EMPTY_OPENCODE_PATCH` (default: unset/false): if set to `1`/`true`, the wrapper allows an empty patch. Otherwise OpenCode exit 0 with no `git diff` and no parseable unified diff is treated as a **fatal error** so benchkit does not record a misleading success.
 
 OpenCode-specific notes:
+- Minimal prompt runs can legitimately finish with an empty patch. Benchkit records those as empty predictions unless the OpenCode JSONL stream contains a top-level error event, in which case the wrapper still fails the run as invalid.
 
 - Provider credentials are expected in OpenCode auth storage, typically `~/.local/share/opencode/auth.json`.
 - The wrapper loads committed defaults from `configs/opencode/opencode.json` and passes them via `OPENCODE_CONFIG_CONTENT` (merged with any existing `OPENCODE_CONFIG_CONTENT` from the environment). Benchmark TOML **does not** override OpenCode sampling; edit the JSON file instead.

@@ -144,8 +144,6 @@ class AgentBaseTests(unittest.TestCase):
 
         self.assertEqual(captured_payload["run"]["timeout_seconds"], 3600)
         self.assertEqual(captured_payload["run"]["prompt_protocol"], "minimal")
-        self.assertEqual(captured_payload["run"]["retrieval_file_source"], "bm25")
-        self.assertEqual(captured_payload["run"]["retrieval_k"], 10)
 
     def test_json_command_adapter_includes_optional_seed_in_payload(self) -> None:
         adapter = JsonCommandAgentAdapter(
