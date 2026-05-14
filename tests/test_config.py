@@ -402,6 +402,34 @@ name = "deepseek-v4-pro"
             ):
                 load_run_config(path)
 
+    def test_load_run_config_applies_codex_pro_preset_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "config.toml"
+            path.write_text(
+                """
+preset = "codex_pro"
+
+[run]
+dataset_path = "datasets/swebench_pro.test.js_ts.jsonl"
+max_instances = 1
+
+[model]
+name = "gpt-5.4"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(path, mode="baseline")
+
+            self.assertEqual(cfg.benchmark, "swebench_pro")
+            self.assertEqual(cfg.split, "test")
+            self.assertEqual(cfg.language, "javascript")
+            self.assertTrue(cfg.evaluation.enabled)
+            self.assertEqual(cfg.evaluation.dataset_name, "ScaleAI/SWE-bench_Pro")
+            self.assertEqual(cfg.evaluation.pro_dockerhub_username, "jefzda")
+            self.assertTrue(cfg.evaluation.pro_use_local_docker)
+
 def _mode_config_text() -> str:
     return """
 [run]

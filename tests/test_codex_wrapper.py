@@ -85,6 +85,56 @@ class CodexWrapperTests(unittest.TestCase):
             timeout = wrapper._resolve_codex_timeout_seconds(payload, runtime_config)
         self.assertEqual(timeout, 1800)
 
+    def test_should_require_devql_invocation_defaults_on_for_bitloops_condition(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        with patch.dict(wrapper.os.environ, {}, clear=False):
+            self.assertTrue(wrapper._should_require_devql_invocation(payload))
+
+    def test_should_require_devql_invocation_respects_explicit_env_override(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        with patch.dict(wrapper.os.environ, {"BENCHKIT_REQUIRE_CODEX_DEVQL": "false"}, clear=False):
+            self.assertFalse(wrapper._should_require_devql_invocation(payload))
+
+    def test_has_devql_invocation_detects_bitloops_devql_shell_command(self) -> None:
+        raw = [
+            {
+                "tool": "Bash",
+                "input": {
+                    "command": "/bin/zsh -lc \"bitloops devql query '{ selectArtefacts { summary } }'\"",
+                    "status": "failed",
+                    "exit_code": 1,
+                },
+            }
+        ]
+        self.assertTrue(wrapper._has_devql_invocation(raw))
+
+    def test_resolve_missing_devql_invocation_error_requires_devql_for_bitloops_runs(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        message = wrapper._resolve_missing_devql_invocation_error(
+            payload=payload,
+            tool_invocations_raw=[{"tool": "Bash", "input": {"command": "rg -n foo src"}}],
+        )
+        self.assertIsInstance(message, str)
+        assert isinstance(message, str)
+        self.assertIn("devql", message.lower())
+
+    def test_resolve_missing_devql_invocation_error_allows_runs_with_devql(self) -> None:
+        payload = {"run": {"condition": "with_bitloops"}}
+        message = wrapper._resolve_missing_devql_invocation_error(
+            payload=payload,
+            tool_invocations_raw=[
+                {
+                    "tool": "Bash",
+                    "input": {
+                        "command": "bitloops devql query '{ selectArtefacts(by: { fuzzyName: \"foo\" }) { summary } }'",
+                        "status": "completed",
+                        "exit_code": 0,
+                    },
+                }
+            ],
+        )
+        self.assertIsNone(message)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,9 +9,21 @@ import json
 import os
 import re
 
-from .dataset import resolve_language_from_row
+from .dataset import (
+    BENCHMARK_MULTILINGUAL,
+    BENCHMARK_PRO,
+    resolve_language_from_row,
+)
 
-DEFAULT_DATASET = "SWE-bench/SWE-bench_Multilingual"
+DEFAULT_MULTILINGUAL_DATASET = "SWE-bench/SWE-bench_Multilingual"
+DEFAULT_PRO_DATASET = "ScaleAI/SWE-bench_Pro"
+DEFAULT_DATASET = DEFAULT_MULTILINGUAL_DATASET
+
+
+def default_dataset_for_benchmark(benchmark: str) -> str:
+    if benchmark == BENCHMARK_PRO:
+        return DEFAULT_PRO_DATASET
+    return DEFAULT_MULTILINGUAL_DATASET
 
 INSTANCE_ID_KEYS = ("instance_id", "id", "task_id", "sample_id")
 REPO_KEYS = ("repo", "repository", "repo_name")
@@ -59,6 +71,40 @@ def export_hf_swebench_multilingual(
     overwrite: bool = False,
     token_env: str = "HF_TOKEN",
 ) -> ExportStats:
+    return export_hf_dataset(
+        output_path=output_path,
+        split=split,
+        dataset=dataset,
+        dataset_config=dataset_config,
+        revision=revision,
+        cache_dir=cache_dir,
+        streaming=streaming,
+        language=language,
+        include_repos=include_repos,
+        include_instance_ids=include_instance_ids,
+        max_instances=max_instances,
+        overwrite=overwrite,
+        token_env=token_env,
+        benchmark=BENCHMARK_MULTILINGUAL,
+    )
+
+
+def export_hf_dataset(
+    output_path: Path,
+    split: str,
+    dataset: str,
+    dataset_config: str | None = None,
+    revision: str | None = None,
+    cache_dir: Path | None = None,
+    streaming: bool = False,
+    language: str | None = None,
+    include_repos: list[str] | None = None,
+    include_instance_ids: list[str] | None = None,
+    max_instances: int | None = None,
+    overwrite: bool = False,
+    token_env: str = "HF_TOKEN",
+    benchmark: str = BENCHMARK_MULTILINGUAL,
+) -> ExportStats:
     if max_instances is not None and max_instances < 1:
         raise ValueError("max_instances must be >= 1 when provided")
 
@@ -97,7 +143,7 @@ def export_hf_swebench_multilingual(
     with output_path.open("w", encoding="utf-8") as handle:
         for raw_row in hf_dataset:
             total_rows_seen += 1
-            normalized_row = normalize_hf_row(raw_row)
+            normalized_row = normalize_hf_row(raw_row, benchmark=benchmark)
             row_language = _normalize_language(str(normalized_row.get("language", "unknown")))
             if language_target and row_language != language_target:
                 continue
@@ -126,7 +172,10 @@ def export_hf_swebench_multilingual(
     )
 
 
-def normalize_hf_row(raw_row: dict[str, Any]) -> dict[str, Any]:
+def normalize_hf_row(
+    raw_row: dict[str, Any],
+    benchmark: str = BENCHMARK_MULTILINGUAL,
+) -> dict[str, Any]:
     if not isinstance(raw_row, dict):
         raise ValueError("HF dataset row is not a JSON object")
 
@@ -138,7 +187,7 @@ def normalize_hf_row(raw_row: dict[str, Any]) -> dict[str, Any]:
     base_commit = _first_required_string(raw_row, BASE_COMMIT_KEYS, "base_commit")
     problem_statement = _first_string(raw_row, PROBLEM_KEYS) or ""
 
-    language = resolve_language_from_row(raw_row)
+    language = resolve_language_from_row(raw_row, benchmark=benchmark)
     if language == "unknown":
         language = _infer_language_from_instance_id(instance_id)
 

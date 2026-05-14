@@ -3700,7 +3700,7 @@ def _is_tool_use_invocation(payload: dict[str, Any]) -> bool:
 
     if event_type == "command_execution":
         status = str(payload.get("status") or "").strip().lower()
-        if status and status != "completed":
+        if status in {"pending", "in_progress", "running"}:
             return False
         return True
 
@@ -3778,6 +3778,12 @@ def _populate_bash_curated(record: dict[str, Any], input_payload: dict[str, Any]
     timeout = _coerce_int(input_payload.get("timeout"))
     if timeout is not None:
         record["timeout"] = timeout
+    status = input_payload.get("status")
+    if isinstance(status, str) and status.strip():
+        record["status"] = status.strip()
+    exit_code = _coerce_int(input_payload.get("exit_code"))
+    if exit_code is not None:
+        record["exit_code"] = exit_code
 
 
 def _populate_edit_curated(record: dict[str, Any], input_payload: dict[str, Any]) -> None:

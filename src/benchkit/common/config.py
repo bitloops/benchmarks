@@ -13,7 +13,8 @@ DEFAULT_WORKSPACE_TIMEOUT_SECONDS = 600
 DEFAULT_PREPARE_WORKSPACE = False
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 32000
-DEFAULT_SWEBENCH_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
+DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
+DEFAULT_SWEBENCH_PRO_DATASET_NAME = "ScaleAI/SWE-bench_Pro"
 DEFAULT_PROMPT_PROTOCOL = "minimal"
 
 
@@ -84,6 +85,11 @@ class EvaluationConfig:
     command_template: list[str] = field(default_factory=list)
     result_json_path_template: str | None = None
     extra_args: list[str] = field(default_factory=list)
+    pro_dockerhub_username: str = "jefzda"
+    pro_scripts_dir: Path | None = None
+    pro_use_local_docker: bool = True
+    pro_block_network: bool = False
+    pro_docker_platform: str | None = None
 
 
 def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
@@ -243,7 +249,7 @@ def _apply_config_preset(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _config_presets() -> dict[str, dict[str, Any]]:
-    common_run = {
+    common_run_multilingual = {
         "benchmark": "swebench_multilingual",
         "split": "test",
         "language": "rust",
@@ -259,20 +265,48 @@ def _config_presets() -> dict[str, dict[str, Any]]:
         "git_bin": "git",
         "workspace_timeout_seconds": DEFAULT_WORKSPACE_TIMEOUT_SECONDS,
     }
-    common_evaluation = {
+    common_evaluation_multilingual = {
         "enabled": True,
         "python_bin": "./.venv/bin/python",
-        "dataset_name": DEFAULT_SWEBENCH_DATASET_NAME,
+        "dataset_name": DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME,
         "split": "test",
         "max_workers": 4,
         "timeout_seconds": 7200,
         "command_template": [],
         "extra_args": [],
     }
+    common_run_pro = {
+        "benchmark": "swebench_pro",
+        "split": "test",
+        "language": "javascript",
+        "condition": "baseline",
+        "include_repos": [],
+        "include_instance_ids": [],
+        "attempts": DEFAULT_ATTEMPTS,
+        "max_workers": DEFAULT_MAX_WORKERS,
+        "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+        "output_root": "runs",
+        "prepare_workspace": True,
+        "repo_url_template": "https://github.com/{repo}.git",
+        "git_bin": "git",
+        "workspace_timeout_seconds": DEFAULT_WORKSPACE_TIMEOUT_SECONDS,
+    }
+    common_evaluation_pro = {
+        "enabled": True,
+        "python_bin": "./.venv/bin/python",
+        "dataset_name": DEFAULT_SWEBENCH_PRO_DATASET_NAME,
+        "split": "test",
+        "max_workers": 4,
+        "timeout_seconds": 7200,
+        "command_template": [],
+        "extra_args": [],
+        "pro_dockerhub_username": "jefzda",
+        "pro_use_local_docker": True,
+    }
     return {
         "codex": {
             "run": {
-                **common_run,
+                **common_run_multilingual,
                 "timeout_seconds": 1200,
             },
             "agent": {
@@ -285,7 +319,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                 "temperature": DEFAULT_TEMPERATURE,
                 "max_tokens": DEFAULT_MAX_TOKENS,
             },
-            "evaluation": common_evaluation,
+            "evaluation": common_evaluation_multilingual,
             "modes": {
                 "baseline": {
                     "run": {
@@ -304,7 +338,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
         },
         "opencode": {
             "run": {
-                **common_run,
+                **common_run_multilingual,
                 "timeout_seconds": 900,
                 "workspace_timeout_seconds": 1800,
             },
@@ -319,7 +353,85 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                 "max_tokens": DEFAULT_MAX_TOKENS,
             },
             "evaluation": {
-                **common_evaluation,
+                **common_evaluation_multilingual,
+                "max_workers": 2,
+            },
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                        "timeout_seconds": 1500,
+                        "bitloops_sandbox_mode": "per_task_daemon",
+                    },
+                    "agent": {
+                        "extra_args": [
+                            "--bitloops-init",
+                            "--bitloops-embeddings-runtime",
+                            "platform",
+                            "--bitloops-summary-mode",
+                            "off",
+                        ],
+                    },
+                },
+            },
+        },
+        "codex_pro": {
+            "run": {
+                **common_run_pro,
+                "timeout_seconds": 1200,
+            },
+            "agent": {
+                "id": "codex",
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.codex.wrapper"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "openai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": common_evaluation_pro,
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                    },
+                    "agent": {"extra_args": ["--bitloops-init"]},
+                },
+            },
+        },
+        "opencode_pro": {
+            "run": {
+                **common_run_pro,
+                "timeout_seconds": 900,
+                "workspace_timeout_seconds": 1800,
+            },
+            "agent": {
+                "id": "opencode",
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.opencode.wrapper"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "fireworks-ai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": {
+                **common_evaluation_pro,
                 "max_workers": 2,
             },
             "modes": {
@@ -523,7 +635,9 @@ def _parse_evaluation_config(
 
     default_dataset_name = None
     if benchmark == "swebench_multilingual":
-        default_dataset_name = DEFAULT_SWEBENCH_DATASET_NAME
+        default_dataset_name = DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME
+    if benchmark == "swebench_pro":
+        default_dataset_name = DEFAULT_SWEBENCH_PRO_DATASET_NAME
 
     swebench_repo_raw = raw.get("swebench_repo")
     swebench_repo = None
@@ -548,6 +662,19 @@ def _parse_evaluation_config(
             str(raw.get("result_json_path_template", "")).strip() or None
         ),
         extra_args=list(raw.get("extra_args", [])),
+        pro_dockerhub_username=(
+            str(raw.get("pro_dockerhub_username", "jefzda")).strip() or "jefzda"
+        ),
+        pro_scripts_dir=(
+            Path(str(raw.get("pro_scripts_dir", "")).strip())
+            if str(raw.get("pro_scripts_dir", "")).strip()
+            else None
+        ),
+        pro_use_local_docker=bool(raw.get("pro_use_local_docker", True)),
+        pro_block_network=bool(raw.get("pro_block_network", False)),
+        pro_docker_platform=(
+            str(raw.get("pro_docker_platform", "")).strip() or None
+        ),
     )
     if cfg.max_workers < 1:
         raise ValueError("evaluation.max_workers must be >= 1")

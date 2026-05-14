@@ -32,8 +32,10 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-0",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
+                pro_patch_path=None,
             )
             self.assertIn("--report_dir", command)
             idx = command.index("--report_dir")
@@ -98,6 +100,7 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-1",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
             )
@@ -126,6 +129,7 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-2",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
             )
@@ -156,6 +160,7 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-3",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
             )
@@ -192,6 +197,7 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-4",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
             )
@@ -236,6 +242,7 @@ class EvaluationTests(unittest.TestCase):
                 run_id="run-5",
                 attempt=1,
                 benchmark="swebench_multilingual",
+                dataset_path=predictions,
                 prediction_path=predictions,
                 attempt_dir=attempt_dir,
             )
@@ -244,6 +251,52 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(result.solved_count, 1)
             self.assertEqual(result.unsolved_count, 1)
             self.assertIsNotNone(result.tasks_path)
+
+    def test_normalizes_swebench_pro_eval_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            attempt_dir = Path(temp_dir) / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            predictions = attempt_dir / "predictions.jsonl"
+            predictions.write_text(
+                '{"instance_id":"instance_a","model_patch":"diff --git a/x b/x\\n"}\n'
+                '{"instance_id":"instance_b","model_patch":"diff --git a/y b/y\\n"}\n',
+                encoding="utf-8",
+            )
+
+            cfg = EvaluationConfig(
+                enabled=True,
+                command_template=[
+                    "python3",
+                    "-c",
+                    (
+                        "import json,sys; "
+                        "json.dump({{'instance_a': True, 'instance_b': False}}, open(sys.argv[1], 'w')); "
+                        "print('ok')"
+                    ),
+                    "{attempt_dir}/eval_results.json",
+                ],
+                timeout_seconds=30,
+            )
+
+            result = evaluate_predictions_with_harness(
+                config=cfg,
+                run_id="run-6",
+                attempt=1,
+                benchmark="swebench_pro",
+                dataset_path=predictions,
+                prediction_path=predictions,
+                attempt_dir=attempt_dir,
+            )
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(result.task_count, 2)
+            self.assertEqual(result.solved_count, 1)
+            self.assertEqual(result.unsolved_count, 1)
+            self.assertTrue(
+                any(attempt_dir.glob("*.swebench_pro.patches.json"))
+            )
+            self.assertTrue(
+                any(attempt_dir.glob("*.swebench_pro.results.json"))
+            )
 
 
 if __name__ == "__main__":

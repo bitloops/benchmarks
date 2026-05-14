@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from benchkit.swebench.hf_export import (
     _load_hf_dataset,
+    export_hf_dataset,
     export_hf_swebench_multilingual,
     normalize_hf_row,
 )
@@ -154,6 +155,42 @@ class HFExportTests(unittest.TestCase):
                     output_path=out,
                     split="dev",
                 )
+
+    def test_export_hf_pro_uses_pro_language_without_multilingual_rust_override(self) -> None:
+        fake_rows = [
+            {
+                "instance_id": "instance_a",
+                "repo": "astral-sh/ruff",
+                "base_commit": "111aaa",
+                "problem_statement": "Fix A",
+                "repo_language": "python",
+            },
+            {
+                "instance_id": "instance_b",
+                "repo": "org/js-task",
+                "base_commit": "222bbb",
+                "problem_statement": "Fix B",
+                "repo_language": "js",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "export.jsonl"
+            with patch(
+                "benchkit.swebench.hf_export._load_hf_dataset",
+                return_value=fake_rows,
+            ):
+                stats = export_hf_dataset(
+                    output_path=out,
+                    split="test",
+                    dataset="ScaleAI/SWE-bench_Pro",
+                    benchmark="swebench_pro",
+                    overwrite=True,
+                )
+
+            rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(stats.rows_written, 2)
+            self.assertEqual(rows[0]["language"], "python")
+            self.assertEqual(rows[1]["language"], "javascript")
 
     def test_load_hf_dataset_errors_when_shadowed_module_has_no_loader(self) -> None:
         with patch(

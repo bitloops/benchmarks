@@ -1,13 +1,23 @@
 # Run Benchmarks
 
-This repo runs SWE-bench Multilingual tasks with either Codex or OpenCode.
+This repo supports two SWE-bench paths:
 
-There are only two benchmark configs:
+- `swebench_multilingual` (legacy Rust-focused flow)
+- `swebench_pro` (new Pro flow, JS/TS-first)
 
-- `configs/swebench/codex.toml`
-- `configs/swebench/opencode.toml`
+Top-level configs:
 
-Each config has two modes:
+- Multilingual legacy:
+  - `configs/swebench/codex.toml`
+  - `configs/swebench/ollama.toml`
+- SWE-bench Pro:
+  - `configs/swebench/codex_pro.toml`
+  - `configs/swebench/ollama_pro.toml`
+- Optional OpenCode templates:
+  - `configs/swebench/opencode.toml.disabled`
+  - `configs/swebench/opencode_pro.toml.disabled`
+
+Each config supports the same two modes:
 
 - `baseline`: run the agent normally
 - `with_bitloops`: run the same agent with Bitloops enabled
@@ -26,12 +36,18 @@ Make sure the tools you need are available:
 
 ```bash
 command -v codex      # for Codex
-command -v opencode   # for OpenCode
+command -v ollama     # for Ollama
 command -v bitloops   # for with_bitloops
 docker info
 ```
 
 Authenticate the agent CLI you plan to use before running a real benchmark.
+For SWE-bench Pro evaluation, clone the evaluator repo:
+
+```bash
+mkdir -p third_party
+git clone https://github.com/scaleapi/SWE-bench_Pro-os third_party/SWE-bench_Pro-os
+```
 
 ## 2. Pick Agent And Mode
 
@@ -49,38 +65,60 @@ CONFIG=configs/swebench/codex.toml
 MODE=with_bitloops
 ```
 
-OpenCode baseline:
+Legacy multilingual with Ollama baseline:
 
 ```bash
-CONFIG=configs/swebench/opencode.toml
+CONFIG=configs/swebench/ollama.toml
 MODE=baseline
 ```
 
-OpenCode with Bitloops:
+SWE-bench Pro with Codex baseline:
 
 ```bash
-CONFIG=configs/swebench/opencode.toml
-MODE=with_bitloops
+CONFIG=configs/swebench/codex_pro.toml
+MODE=baseline
+```
+
+SWE-bench Pro with Ollama baseline:
+
+```bash
+CONFIG=configs/swebench/ollama_pro.toml
+MODE=baseline
 ```
 
 ## 3. Create Dataset If Missing
 
-The default configs use:
+Multilingual legacy default:
 
 ```text
 datasets/swebench_multilingual.test.rust_all.jsonl
 ```
 
-If that file is missing, create it:
-
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli export-hf \
+  --benchmark swebench_multilingual \
   --split test \
   --language rust \
   --output datasets/swebench_multilingual.test.rust_all.jsonl \
   --overwrite
 ```
 
+SWE-bench Pro default:
+
+```text
+datasets/swebench_pro.test.js_ts.jsonl
+```
+
+```bash
+./.venv/bin/python -m benchkit.swebench.cli export-hf \
+  --benchmark swebench_pro \
+  --split test \
+  --language javascript \
+  --output datasets/swebench_pro.test.js_ts.jsonl \
+  --overwrite
+```
+
+To export TypeScript instead, switch `--language typescript`.
 Set `HF_TOKEN` first if Hugging Face requires authentication.
 
 ## 4. Choose Tasks
@@ -89,7 +127,7 @@ Open your chosen config and edit these fields:
 
 ```toml
 [run]
-dataset_path = "datasets/swebench_multilingual.test.rust_all.jsonl"
+dataset_path = "datasets/<your-dataset>.jsonl"
 include_repos = []
 include_instance_ids = []
 max_instances = 1
@@ -102,24 +140,27 @@ For a first run, leave `max_instances = 1`.
 To target one task:
 
 ```toml
-include_instance_ids = ["astral-sh__ruff-15309"]
+include_instance_ids = ["instance_NodeBB__NodeBB-..."]
 max_instances = 1
 ```
 
 To target one repo:
 
 ```toml
-include_repos = ["tokio-rs/tokio"]
+include_repos = ["NodeBB/NodeBB"]
 max_instances = 3
 ```
 
 ## SWE-bench config reference
 
-This section documents the fields used in `configs/swebench/codex.toml` and `configs/swebench/opencode.toml`. Values merge with the **`preset`** (`codex` or `opencode`) from `benchkit.common.config` — see `load_run_config` and `_config_presets()` in [`src/benchkit/common/config.py`](../src/benchkit/common/config.py).
+This section documents the fields used in `configs/swebench/*.toml`. Values merge with the selected **`preset`** from `benchkit.common.config` — see `load_run_config` and `_config_presets()` in [`src/benchkit/common/config.py`](../src/benchkit/common/config.py).
 
 ### `preset`
 
-Selects built-in defaults: agent command and `extra_args`, default `model` provider (and other model fields unless overridden), typical `[run]` timeouts and flags, `[evaluation]` defaults, and a **`[modes]`** table. Your TOML only needs to set what you want to change.
+Preset families:
+
+- Multilingual legacy: `codex`, `ollama`, `opencode`
+- SWE-bench Pro: `codex_pro`, `ollama_pro`, `opencode_pro`
 
 ### CLI `--mode`
 
@@ -129,7 +170,9 @@ When you pass `--mode baseline` or `--mode with_bitloops` to `benchkit.swebench.
 
 | Field | Meaning |
 | --- | --- |
+| `benchmark` | Benchmark profile (`swebench_multilingual` or `swebench_pro`). |
 | `dataset_path` | Path to the task JSONL file (relative to the repo root unless absolute). |
+| `language` | Language filter for selected rows (e.g. `rust`, `javascript`, `typescript`, `python`, `go`). |
 | `include_repos` | If non-empty, only instances whose repository is in this list are selected. |
 | `include_instance_ids` | If non-empty, only these SWE-bench instance IDs are selected. |
 | `instance_ids_file` | Optional path to a text file (one instance ID per line, `#` comments allowed). Relative paths are resolved next to the config file. IDs are merged with `include_instance_ids`. |
@@ -139,30 +182,25 @@ When you pass `--mode baseline` or `--mode with_bitloops` to `benchkit.swebench.
 | `timeout_seconds` | Per-instance agent/solve timeout in seconds. |
 | `workspace_timeout_seconds` | Timeout for workspace preparation (clone, checkout, etc.) in seconds. |
 
-Other `[run]` keys exist in presets (for example `prepare_workspace`, `workspace_isolation_mode`, `bitloops_sandbox_mode`, `repo_url_template`, `prompt_context`). Edit them only when you need behavior beyond the stock `codex` / `opencode` overlays.
+Other `[run]` keys exist in presets (for example `prepare_workspace`, `workspace_isolation_mode`, `bitloops_sandbox_mode`, `repo_url_template`, `prompt_context`). Edit them only when you need behavior beyond the stock overlays.
 
-When `prepare_workspace = true`, benchkit now prepares strict benchmark workspaces by cloning only the requested `base_commit` history and removing all configured Git remotes from the prepared repo. This is intentional anti-cheating isolation so agents cannot inspect or fetch later commits from the benchmark repository during a run.
-
-### `[model]`
-
-| Field | Meaning |
-| --- | --- |
-| `name` | Canonical model label for the run (and for mapping). Codex/OpenCode runtime settings are sourced from their JSON files in `configs/codex/` and `configs/opencode/`. |
+When `prepare_workspace = true`, benchkit prepares strict benchmark workspaces by cloning only the requested `base_commit` history and removing all configured Git remotes from the prepared repo.
 
 ### `[evaluation]`
 
-Post-run SWE-bench evaluation (when enabled in the preset). These settings control the **evaluation** subprocess, not the same thing as `run.max_workers` for the agent phase.
+Post-run evaluation settings.
 
 | Field | Meaning |
 | --- | --- |
+| `swebench_repo` | Path to evaluator repo. For multilingual, this is the SWE-bench harness checkout. For Pro, this is `scaleapi/SWE-bench_Pro-os`. |
 | `max_workers` | Parallel workers for evaluation. |
 | `timeout_seconds` | Wall-clock cap for evaluation work (seconds). |
+| `pro_use_local_docker` | Pro only: run Pro evaluator with `--use_local_docker`. |
+| `pro_dockerhub_username` | Pro only: Docker Hub namespace for Pro images (default `jefzda`). |
 
-### `[model_map]` (OpenCode)
+### `[model_map]`
 
-OpenCode configs use a nested table, for example `[model_map.opencode]`. Keys are **canonical** names (matching `model.name`); values are the **model id** passed through to the agent CLI after resolution. The subtable name should match the agent id (`opencode`). Resolution logic lives in [`src/benchkit/swebench/model_mapper.py`](../src/benchkit/swebench/model_mapper.py).
-
-Runtime options for the OpenCode process are configured separately in **`configs/opencode/opencode.json`** (see [Notes](#notes)).
+Same mapping behavior as before: keys are canonical names (`model.name`), values are runtime model IDs per agent.
 
 ## 5. Preview The Run
 
@@ -176,6 +214,7 @@ Always run `plan` first:
 
 Check:
 
+- `Benchmark`
 - `Agent`
 - `Condition`
 - `Selected instances`
@@ -185,7 +224,7 @@ Check:
 
 A normal run always writes harness artifacts under `runs/…` (see [Find results](#7-find-results)). The **appendix** outputs (aggregated CSV/Markdown tables, tool breakdowns, and related files) are generated only if you pass **`--appendix`** or **`--appendix-output-dir`**.
 
-To produce both the run **and** the appendix in one step with a stable, timestamped folder name under `reports/appendix/`, use **`--appendix`**. The directory name is `<agent_id>_bitloops_<YYYYMMDD_HHMMSS>` or `<agent_id>_baseline_<YYYYMMDD_HHMMSS>` (date and time come from the harness `run_id`, for example `opencode_bitloops_20260429_153823`):
+To produce both the run **and** the appendix in one step with a stable, timestamped folder name under `reports/appendix/`, use **`--appendix`**. The directory name is `<agent_id>_bitloops_<YYYYMMDD_HHMMSS>` or `<agent_id>_baseline_<YYYYMMDD_HHMMSS>` (date and time come from the harness `run_id`):
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
@@ -211,7 +250,7 @@ If you already completed a run without appendix flags, generate the appendix fro
   --output-dir "reports/appendix/<your-label>"
 ```
 
-To override parallelism without editing the config (add `--appendix` or `--appendix-output-dir …` if you still want appendix files):
+To override parallelism without editing the config:
 
 ```bash
 ./.venv/bin/python -m benchkit.swebench.cli run \
@@ -225,7 +264,7 @@ To override parallelism without editing the config (add `--appendix` or `--appen
 The command prints a `Run root`. Results are under:
 
 ```text
-runs/swebench_multilingual/<date>/<run_id>/
+runs/<benchmark>/<date>/<run_id>/
 ```
 
 Most useful files:
@@ -237,13 +276,14 @@ Most useful files:
 - `attempts/attempt-01/evaluation.json`
 
 Appendix CSV/Markdown files exist only when you passed `--appendix` or `--appendix-output-dir`
-during `run`, or when you ran the `appendix` command afterward (see [Run](#6-run)).
+during `run`, or when you ran the `appendix` command afterward.
 
 ## Notes
 
-- Full TOML field reference: [SWE-bench config reference](#swe-bench-config-reference).
+- Multilingual Rust flow is still supported as legacy (`swebench_multilingual`).
+- SWE-bench Pro flow uses `scaleapi/SWE-bench_Pro-os` for evaluation.
 - Codex runtime config lives in `configs/codex/codex.json`.
+- Ollama runtime config lives in `configs/ollama/ollama.json`.
 - OpenCode runtime config lives in `configs/opencode/opencode.json`.
 - `configs/swebench/*.toml` controls benchmark scope and selection; agent JSON files control runtime behavior.
-- OpenCode credentials usually live in OpenCode's own auth storage.
 - For Bitloops init debugging, see `docs/bitloops-init-status-guide.md`.

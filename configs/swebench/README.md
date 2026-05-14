@@ -1,11 +1,17 @@
 # SWE-bench Configs
 
-Use these configs for normal benchmark work:
+Top-level configs are split by benchmark profile:
 
-- `codex.toml`
-- `opencode.toml`
-- `opencode_ollama.toml`
-- `opencode_ollama_cloud.toml`
+- Multilingual legacy (Rust-focused path):
+  - `codex.toml`
+  - `opencode.toml`
+  - `opencode_ollama.toml`
+  - `opencode_ollama_cloud.toml`
+- SWE-bench Pro (JS/TS-first path):
+  - `codex_pro.toml`
+  - `opencode_pro.toml.disabled`
+- Optional OpenCode templates:
+  - `opencode.toml`
 
 Ollama benchmark configs:
 
@@ -22,16 +28,18 @@ Both support the same modes:
 ```
 
 Keep the top-level configs small. Tune task selection, parallelism, timeouts,
-model name, and evaluation settings here. Shared boilerplate comes from the
-`codex` and `opencode` config presets in `benchkit.common.config`.
+model name, and evaluation settings here. Shared boilerplate comes from preset
+entries in `benchkit.common.config` (`codex`, `ollama`, `codex_pro`, `ollama_pro`,
+plus disabled OpenCode variants).
 
 Runtime behavior comes from per-agent JSON:
 
 - `configs/codex/codex.json` for Codex
+- `configs/ollama/ollama.json` for Ollama
 - `configs/opencode/opencode.json` for OpenCode
 - `configs/opencode/ollama.json` for the Ollama daemon base URL used by the OpenCode overlay
 
-Full field-by-field documentation: [docs/run-benchmarks.md](../docs/run-benchmarks.md#swe-bench-config-reference).
+Full field-by-field documentation: [docs/run-benchmarks.md](../../docs/run-benchmarks.md#swe-bench-config-reference).
 
 ## OpenCode models
 

@@ -1,0 +1,31 @@
+# Field reference: docs/run-benchmarks.md#swe-bench-config-reference
+preset = "codex_pro"
+
+[run]
+dataset_path = "datasets/swebench_pro.test.all.jsonl"
+language = "javascript"
+include_repos = []
+include_instance_ids = []
+max_instances = 1
+attempts = 1
+max_workers = 1
+timeout_seconds = 1200
+workspace_timeout_seconds = 900
+
+[model]
+# Runtime Codex settings come from configs/codex/codex.json.
+name = "gpt-5.4"
+
+[evaluation]
+# Clone scaleapi/SWE-bench_Pro-os here (or override this path per machine).
+swebench_repo = "third_party/SWE-bench_Pro-os"
+max_workers = 2
+timeout_seconds = 7200
+pro_use_local_docker = true
+pro_dockerhub_username = "jefzda"
+
+[modes.baseline.agent]
+extra_args = []
+
+[modes.with_bitloops.agent]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "off"]

@@ -81,6 +81,53 @@ def _resolve_codex_timeout_seconds(
     )
 
 
+def _run_condition(payload: dict[str, object]) -> str:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return ""
+    return str(run.get("condition", "")).strip().lower()
+
+
+def _should_require_devql_invocation(payload: dict[str, object]) -> bool:
+    if "BENCHKIT_REQUIRE_CODEX_DEVQL" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_CODEX_DEVQL", default=False)
+    if "BENCHKIT_REQUIRE_DEVQL" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_DEVQL", default=False)
+    return _run_condition(payload) == "with_bitloops"
+
+
+def _has_devql_invocation(tool_invocations_raw: list[dict[str, object]]) -> bool:
+    for invocation in tool_invocations_raw:
+        tool_name = str(invocation.get("tool") or "").strip().lower()
+        if tool_name not in {"bash", "shell", "terminal"}:
+            continue
+        input_payload = invocation.get("input")
+        if not isinstance(input_payload, dict):
+            continue
+        command = input_payload.get("command")
+        if not isinstance(command, str):
+            continue
+        normalized_command = " ".join(command.strip().lower().split())
+        if "bitloops devql query" in normalized_command:
+            return True
+    return False
+
+
+def _resolve_missing_devql_invocation_error(
+    *,
+    payload: dict[str, object],
+    tool_invocations_raw: list[dict[str, object]],
+) -> str | None:
+    if not _should_require_devql_invocation(payload):
+        return None
+    if _has_devql_invocation(tool_invocations_raw):
+        return None
+    return (
+        "Codex finished a Bitloops run without any captured `bitloops devql query` invocation. "
+        "Bitloops runs must issue DevQL exploration commands before broad shell searches."
+    )
+
+
 def _as_bool(value: object, *, default: bool) -> bool:
     if value is None:
         return default
@@ -324,6 +371,21 @@ def main() -> None:
     tool_invocations_curated = extract_tool_invocations_curated(tool_invocations_raw)
     tool_invocation_sequence = extract_tool_invocation_sequence(parsed_payload)
     tool_invocation_counts = summarize_tool_invocation_counts(tool_invocation_sequence)
+    missing_devql_error = _resolve_missing_devql_invocation_error(
+        payload=payload,
+        tool_invocations_raw=tool_invocations_raw,
+    )
+    if missing_devql_error:
+        fatal_error(
+            "codex devql invocation missing",
+            details={
+                "error": missing_devql_error,
+                "command": execution.command,
+                "workspace": str(run_result.workspace),
+                "tool_invocations_captured": len(tool_invocations_raw),
+                "tool_invocation_sequence": tool_invocation_sequence,
+            },
+        )
     hook_metrics = load_hook_metrics(
         (
             "CODEX_HOOK_METRICS_PATH",

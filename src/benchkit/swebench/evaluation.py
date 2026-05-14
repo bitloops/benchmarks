@@ -12,6 +12,11 @@ from collections.abc import Iterable
 
 from benchkit.common.config import EvaluationConfig
 from benchkit.common.io import write_json, write_jsonl
+from benchkit.swebench.dataset import BENCHMARK_PRO
+from benchkit.swebench.pro_evaluation import (
+    convert_predictions_jsonl_to_pro_patches,
+    normalize_swebench_pro_eval_results,
+)
 
 
 @dataclass(slots=True)
@@ -59,6 +64,7 @@ def evaluate_predictions_with_harness(
     run_id: str,
     attempt: int,
     benchmark: str,
+    dataset_path: Path | None,
     prediction_path: Path,
     attempt_dir: Path,
     run_label: str | None = None,
@@ -88,13 +94,29 @@ def evaluate_predictions_with_harness(
         write_json(report_path, result.to_row())
         return result
 
+    pro_patch_path: Path | None = None
+    pro_raw_results_path: Path | None = None
+    if benchmark == BENCHMARK_PRO:
+        pro_patch_path = (
+            effective_artifact_dir
+            / f"{effective_run_label}.swebench_pro.patches.json"
+        )
+        convert_predictions_jsonl_to_pro_patches(
+            prediction_path=prediction_path,
+            output_path=pro_patch_path,
+            prefix=effective_run_label,
+        )
+        pro_raw_results_path = effective_artifact_dir / "eval_results.json"
+
     command = _build_evaluation_command(
         config=config,
         run_id=run_id,
         attempt=attempt,
         benchmark=benchmark,
+        dataset_path=dataset_path,
         prediction_path=prediction_path,
         attempt_dir=attempt_dir,
+        pro_patch_path=pro_patch_path,
         run_label=effective_run_label,
         artifact_dir=effective_artifact_dir,
     )
@@ -139,6 +161,20 @@ def evaluate_predictions_with_harness(
 
     stdout_path.write_text(completed.stdout, encoding="utf-8")
     stderr_path.write_text(completed.stderr, encoding="utf-8")
+    if (
+        benchmark == BENCHMARK_PRO
+        and completed.returncode == 0
+        and pro_raw_results_path is not None
+        and pro_raw_results_path.exists()
+    ):
+        normalized_path = (
+            effective_artifact_dir
+            / f"{effective_run_label}.swebench_pro.results.json"
+        )
+        normalize_swebench_pro_eval_results(
+            raw_results_path=pro_raw_results_path,
+            output_path=normalized_path,
+        )
 
     parsed = _parse_evaluation_outputs(
         config=config,
@@ -233,8 +269,10 @@ def _build_evaluation_command(
     run_id: str,
     attempt: int,
     benchmark: str,
+    dataset_path: Path | None,
     prediction_path: Path,
     attempt_dir: Path,
+    pro_patch_path: Path | None,
     *,
     run_label: str | None = None,
     artifact_dir: Path | None = None,
@@ -253,6 +291,10 @@ def _build_evaluation_command(
         "max_workers": config.max_workers,
         "python_bin": config.python_bin,
         "swebench_repo": str(config.swebench_repo.resolve()) if config.swebench_repo else "",
+        "dataset_path": str(dataset_path.resolve()) if dataset_path else "",
+        "swebench_pro_patch_path": (
+            str(pro_patch_path.resolve()) if pro_patch_path else ""
+        ),
     }
 
     if config.command_template:
@@ -262,6 +304,14 @@ def _build_evaluation_command(
             raise ValueError(
                 f"evaluation.command_template uses unknown placeholder: {exc}"
             ) from exc
+
+    if benchmark == BENCHMARK_PRO:
+        return _build_swebench_pro_evaluation_command(
+            config=config,
+            dataset_path=dataset_path,
+            pro_patch_path=pro_patch_path,
+            artifact_dir=effective_artifact_dir,
+        )
 
     if not config.dataset_name:
         raise ValueError(
@@ -285,6 +335,63 @@ def _build_evaluation_command(
     ]
     if config.split:
         command.extend(["--split", config.split])
+    command.extend(config.extra_args)
+    return command
+
+
+def _build_swebench_pro_evaluation_command(
+    *,
+    config: EvaluationConfig,
+    dataset_path: Path | None,
+    pro_patch_path: Path | None,
+    artifact_dir: Path,
+) -> list[str]:
+    if dataset_path is None:
+        raise ValueError(
+            "run.dataset_path is required for default SWE-bench Pro evaluation"
+        )
+    if pro_patch_path is None:
+        raise ValueError(
+            "predictions conversion path is required for default SWE-bench Pro evaluation"
+        )
+    if config.swebench_repo is None:
+        raise ValueError(
+            "evaluation.swebench_repo must point to scaleapi/SWE-bench_Pro-os for swebench_pro"
+        )
+
+    swebench_pro_repo = config.swebench_repo.resolve()
+    eval_script = swebench_pro_repo / "swe_bench_pro_eval.py"
+    if not eval_script.exists():
+        raise ValueError(f"SWE-bench Pro evaluator script not found: {eval_script}")
+
+    scripts_dir = (
+        config.pro_scripts_dir.resolve()
+        if config.pro_scripts_dir is not None
+        else swebench_pro_repo / "run_scripts"
+    )
+
+    command: list[str] = [
+        config.python_bin,
+        str(eval_script),
+        "--raw_sample_path",
+        str(dataset_path.resolve()),
+        "--patch_path",
+        str(pro_patch_path.resolve()),
+        "--output_dir",
+        str(artifact_dir.resolve()),
+        "--scripts_dir",
+        str(scripts_dir),
+        "--dockerhub_username",
+        config.pro_dockerhub_username,
+        "--num_workers",
+        str(config.max_workers),
+    ]
+    if config.pro_use_local_docker:
+        command.append("--use_local_docker")
+    if config.pro_block_network:
+        command.append("--block_network")
+    if config.pro_docker_platform:
+        command.extend(["--docker_platform", config.pro_docker_platform])
     command.extend(config.extra_args)
     return command
 

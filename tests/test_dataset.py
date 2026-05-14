@@ -64,6 +64,28 @@ class DatasetTests(unittest.TestCase):
             rust_only = filter_instances(instances, language="rust")
             self.assertEqual(len(rust_only), 1)
 
+    def test_swebench_pro_does_not_apply_multilingual_rust_track_override(self) -> None:
+        payload = '{"instance_id":"ruff-1","repo":"astral-sh/ruff","base_commit":"c1","problem_statement":"x","repo_language":"python"}'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dataset.jsonl"
+            path.write_text(payload, encoding="utf-8")
+            instances = load_instances(path, benchmark="swebench_pro")
+            self.assertEqual(instances[0].language, "python")
+
+    def test_swebench_pro_normalizes_js_ts_aliases(self) -> None:
+        payload = "\n".join(
+            [
+                '{"instance_id":"a","repo":"org/a","base_commit":"c1","problem_statement":"x","repo_language":"js"}',
+                '{"instance_id":"b","repo":"org/b","base_commit":"c2","problem_statement":"y","repo_language":"ts"}',
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dataset.jsonl"
+            path.write_text(payload, encoding="utf-8")
+            instances = load_instances(path, benchmark="swebench_pro")
+            self.assertEqual(instances[0].language, "javascript")
+            self.assertEqual(instances[1].language, "typescript")
+
 
 if __name__ == "__main__":
     unittest.main()

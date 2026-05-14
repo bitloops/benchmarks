@@ -76,7 +76,10 @@ def execute_run(
     attempts: int | None = None,
     max_workers: int | None = None,
 ) -> RunResult:
-    all_instances = load_instances(config.dataset_path)
+    all_instances = load_instances(
+        config.dataset_path,
+        benchmark=config.benchmark,
+    )
     selected_instances = filter_instances(
         all_instances,
         language=config.language,
@@ -201,17 +204,18 @@ def execute_run(
                     for instance_index, instance in enumerate(selected_instances, start=1)
                 ]
                 for future in as_completed(futures):
-                    _record_attempt_completion(
-                        future.result(),
-                        attempt_states=attempt_states,
-                        total_instances=len(selected_instances),
-                        selected_instances=selected_instances,
-                        attempts_count=attempts_count,
-                        benchmark=config.benchmark,
-                        run_id=layout.run_id,
-                        evaluation_config=config.evaluation,
-                        finalizer_executor=finalizer_executor,
-                    )
+                        _record_attempt_completion(
+                            future.result(),
+                            attempt_states=attempt_states,
+                            total_instances=len(selected_instances),
+                            selected_instances=selected_instances,
+                            attempts_count=attempts_count,
+                            benchmark=config.benchmark,
+                            run_id=layout.run_id,
+                            dataset_path=config.dataset_path,
+                            evaluation_config=config.evaluation,
+                            finalizer_executor=finalizer_executor,
+                        )
         else:
             for attempt_state in attempt_states:
                 attempt_max_workers = min(max_workers_count, len(selected_instances))
@@ -248,6 +252,7 @@ def execute_run(
                             attempts_count=attempts_count,
                             benchmark=config.benchmark,
                             run_id=layout.run_id,
+                            dataset_path=config.dataset_path,
                             evaluation_config=config.evaluation,
                             finalizer_executor=finalizer_executor,
                         )
@@ -285,6 +290,7 @@ def execute_run(
                                 attempts_count=attempts_count,
                                 benchmark=config.benchmark,
                                 run_id=layout.run_id,
+                                dataset_path=config.dataset_path,
                                 evaluation_config=config.evaluation,
                                 finalizer_executor=finalizer_executor,
                             )
@@ -571,6 +577,7 @@ def _record_attempt_completion(
     attempts_count: int,
     benchmark: str,
     run_id: str,
+    dataset_path: Path,
     evaluation_config: Any,
     finalizer_executor: ThreadPoolExecutor,
 ) -> None:
@@ -596,6 +603,7 @@ def _record_attempt_completion(
             run_id=run_id,
             attempt=attempt,
             benchmark=benchmark,
+            dataset_path=dataset_path,
             prediction_path=instance_dir / "predictions.jsonl",
             attempt_dir=instance_dir,
             run_label=_instance_run_label(

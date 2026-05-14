@@ -14,8 +14,13 @@ from benchkit.swebench.agents.codex.config import (
     format_codex_plan_lines,
 )
 from benchkit.swebench.db import import_appendix_csv_to_sqlite
-from benchkit.swebench.dataset import filter_instances, load_instances
-from benchkit.swebench.hf_export import DEFAULT_DATASET, export_hf_swebench_multilingual
+from benchkit.swebench.dataset import (
+    BENCHMARK_MULTILINGUAL,
+    BENCHMARK_PRO,
+    filter_instances,
+    load_instances,
+)
+from benchkit.swebench.hf_export import default_dataset_for_benchmark, export_hf_dataset
 from benchkit.swebench.model_mapper import resolve_model_name
 from benchkit.swebench.agents.opencode.config import (
     build_ollama_provider_run_metadata,
@@ -146,7 +151,7 @@ def main() -> None:
     )
     export_parser = subparsers.add_parser(
         "export-hf",
-        help="Export SWE-bench Multilingual split from HF to local JSONL",
+        help="Export SWE-bench split from HF to local JSONL",
     )
     export_parser.add_argument(
         "--output",
@@ -160,9 +165,15 @@ def main() -> None:
         help="HF dataset split to export (e.g. dev, test)",
     )
     export_parser.add_argument(
+        "--benchmark",
+        default=BENCHMARK_MULTILINGUAL,
+        choices=(BENCHMARK_MULTILINGUAL, BENCHMARK_PRO),
+        help="Benchmark profile for row normalization/default dataset",
+    )
+    export_parser.add_argument(
         "--dataset",
-        default=DEFAULT_DATASET,
-        help=f"HF dataset path (default: {DEFAULT_DATASET})",
+        default=None,
+        help="HF dataset path (default depends on --benchmark)",
     )
     export_parser.add_argument(
         "--dataset-config",
@@ -286,6 +297,7 @@ def main() -> None:
 
     if args.command == "export-hf":
         run_export_hf(
+            benchmark=args.benchmark,
             output=args.output,
             split=args.split,
             dataset=args.dataset,
@@ -320,7 +332,10 @@ def run_plan(config_path: Path, show: int, mode: str | None = None) -> None:
         config = load_run_config(config_path, mode=mode)
     except ValueError as exc:
         raise SystemExit(f"Config error: {exc}") from exc
-    all_instances = load_instances(config.dataset_path)
+    all_instances = load_instances(
+        config.dataset_path,
+        benchmark=config.benchmark,
+    )
     selected = filter_instances(
         all_instances,
         language=config.language,
@@ -524,9 +539,10 @@ def run_execute(
 
 
 def run_export_hf(
+    benchmark: str,
     output: Path,
     split: str,
-    dataset: str,
+    dataset: str | None,
     dataset_config: str | None,
     revision: str | None,
     cache_dir: Path | None,
@@ -540,13 +556,18 @@ def run_export_hf(
     token_env: str,
 ) -> None:
     _load_cli_dotenv()
+    resolved_dataset = (
+        dataset.strip()
+        if isinstance(dataset, str) and dataset.strip()
+        else default_dataset_for_benchmark(benchmark)
+    )
     if instance_ids_file:
         include_instance_ids = include_instance_ids + _load_line_items(instance_ids_file)
     try:
-        stats = export_hf_swebench_multilingual(
+        stats = export_hf_dataset(
             output_path=output,
             split=split,
-            dataset=dataset,
+            dataset=resolved_dataset,
             dataset_config=dataset_config,
             revision=revision,
             cache_dir=cache_dir,
@@ -557,6 +578,7 @@ def run_export_hf(
             max_instances=max_instances,
             overwrite=overwrite,
             token_env=token_env,
+            benchmark=benchmark,
         )
     except RuntimeError as exc:
         raise SystemExit(f"export-hf error: {exc}") from exc

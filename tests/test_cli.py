@@ -18,6 +18,7 @@ from benchkit.swebench.cli import (
     default_appendix_output_dir,
     default_transcripts_output_dir,
     run_execute,
+    run_export_hf,
     run_plan,
 )
 from benchkit.swebench.runner import RunResult
@@ -432,6 +433,42 @@ name = "deepseek-v4-flash:cloud"
                 self.assertEqual(summary["config_mode"], mode)
                 self.assertEqual(summary["condition"], expected_condition)
                 self.assertEqual(summary["bitloops_enabled"], expected_bitloops)
+
+    def test_run_export_hf_uses_benchmark_default_dataset(self) -> None:
+        with (
+            patch("benchkit.swebench.cli.export_hf_dataset") as export_mock,
+            patch("benchkit.swebench.cli.default_dataset_for_benchmark", return_value="ScaleAI/SWE-bench_Pro"),
+        ):
+            export_mock.return_value = SimpleNamespace(
+                dataset="ScaleAI/SWE-bench_Pro",
+                dataset_config=None,
+                split="test",
+                revision=None,
+                language_filter=None,
+                total_rows_seen=10,
+                rows_written=5,
+                output_path=Path("/tmp/out.jsonl"),
+            )
+            run_export_hf(
+                benchmark="swebench_pro",
+                output=Path("datasets/out.jsonl"),
+                split="test",
+                dataset=None,
+                dataset_config=None,
+                revision=None,
+                cache_dir=None,
+                streaming=False,
+                language=None,
+                include_repos=[],
+                include_instance_ids=[],
+                instance_ids_file=None,
+                max_instances=None,
+                overwrite=True,
+                token_env="HF_TOKEN",
+            )
+
+        export_mock.assert_called_once()
+        self.assertEqual(export_mock.call_args.kwargs["dataset"], "ScaleAI/SWE-bench_Pro")
 
 def _write_mode_cli_fixture(root: Path) -> Path:
     dataset_path = root / "dataset.jsonl"

@@ -877,6 +877,28 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(raw[0]["call_index"], 1)
         self.assertEqual(raw[1]["call_index"], 2)
 
+    def test_extract_tool_invocations_includes_failed_command_execution(self) -> None:
+        payload = [
+            {"type": "command_execution", "id": "cmd_start", "command": "bitloops devql query '{}'", "status": "running"},
+            {
+                "type": "command_execution",
+                "id": "cmd_done",
+                "command": "bitloops devql query '{}'",
+                "status": "failed",
+                "exit_code": 1,
+            },
+        ]
+
+        raw = common.extract_tool_invocations_raw(payload)
+        curated = common.extract_tool_invocations_curated(raw)
+
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(raw[0]["tool"], "Bash")
+        self.assertEqual(raw[0]["input"]["status"], "failed")
+        self.assertEqual(curated[0]["command"], "bitloops devql query '{}'")
+        self.assertEqual(curated[0]["status"], "failed")
+        self.assertEqual(curated[0]["exit_code"], 1)
+
     def test_validate_exact_tool_capture(self) -> None:
         error = common.validate_exact_tool_capture(
             require_exact_tools=True,

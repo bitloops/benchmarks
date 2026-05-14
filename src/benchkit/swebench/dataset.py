@@ -6,6 +6,9 @@ import json
 
 from .types import BenchmarkInstance
 
+BENCHMARK_MULTILINGUAL = "swebench_multilingual"
+BENCHMARK_PRO = "swebench_pro"
+
 LANGUAGE_KEYS = (
     "language",
     "lang",
@@ -17,6 +20,9 @@ LANGUAGE_ALIASES = {
     "rs": "rust",
     "rustlang": "rust",
     "tokio-rs": "rust",
+    "js": "javascript",
+    "ts": "typescript",
+    "golang": "go",
 }
 
 # SWE-bench Multilingual rows for these repos are run as the Rust workspace slice
@@ -35,7 +41,10 @@ SWEBENCH_MULTILINGUAL_RUST_TRACK_REPOS: frozenset[str] = frozenset(
 )
 
 
-def load_instances(dataset_path: Path) -> list[BenchmarkInstance]:
+def load_instances(
+    dataset_path: Path,
+    benchmark: str = BENCHMARK_MULTILINGUAL,
+) -> list[BenchmarkInstance]:
     dataset_path = dataset_path.resolve()
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
@@ -55,7 +64,7 @@ def load_instances(dataset_path: Path) -> list[BenchmarkInstance]:
 
     instances: list[BenchmarkInstance] = []
     for row in rows:
-        instance = _row_to_instance(row)
+        instance = _row_to_instance(row, benchmark=benchmark)
         instances.append(instance)
     return instances
 
@@ -104,7 +113,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _row_to_instance(row: dict[str, Any]) -> BenchmarkInstance:
+def _row_to_instance(
+    row: dict[str, Any],
+    *,
+    benchmark: str,
+) -> BenchmarkInstance:
     if "instance_id" not in row:
         raise ValueError("Dataset row missing 'instance_id'")
     if "repo" not in row:
@@ -112,7 +125,7 @@ def _row_to_instance(row: dict[str, Any]) -> BenchmarkInstance:
     if "base_commit" not in row:
         raise ValueError(f"Dataset row {row.get('instance_id')} missing 'base_commit'")
 
-    language = resolve_language_from_row(row)
+    language = resolve_language_from_row(row, benchmark=benchmark)
     statement = str(
         row.get("problem_statement")
         or row.get("problem")
@@ -150,9 +163,13 @@ def _row_to_instance(row: dict[str, Any]) -> BenchmarkInstance:
     )
 
 
-def resolve_language_from_row(row: dict[str, Any]) -> str:
+def resolve_language_from_row(
+    row: dict[str, Any],
+    *,
+    benchmark: str = BENCHMARK_MULTILINGUAL,
+) -> str:
     repo = str(row.get("repo", "")).strip().lower()
-    if repo in SWEBENCH_MULTILINGUAL_RUST_TRACK_REPOS:
+    if benchmark == BENCHMARK_MULTILINGUAL and repo in SWEBENCH_MULTILINGUAL_RUST_TRACK_REPOS:
         return "rust"
     for key in LANGUAGE_KEYS:
         value = row.get(key)
