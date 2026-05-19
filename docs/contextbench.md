@@ -1,262 +1,95 @@
-# ContextBench in Benchkit
+# ContextBench metrics
 
-This document explains what [ContextBench](https://github.com/EuniAI/ContextBench) measures, how those metrics are computed, and how this repository wires ContextBench into the agent benchmark pipeline.
+[ContextBench](https://github.com/EuniAI/ContextBench) measures whether an agent **read the right code** while fixing a task. Benchkit also records whether the patch **passed tests** (SWE-Bench harness). Those are separate scores.
 
-For step-by-step commands (install, export dataset, run agents), see [run-contextbench.md](./run-contextbench.md).
+How to run: [run-contextbench.md](./run-contextbench.md).
 
-## What ContextBench evaluates
+## Gold vs what the agent read
 
-ContextBench scores **context retrieval** for coding agents: how well an agent explores a repository before (and while) editing it, compared to a human-curated **gold context** for each task.
+Each task has **gold context**: the files and line ranges a human needed (in the dataset as `gold_ctx`).
 
-Benchkit runs two independent evaluations per attempt:
+**Predicted context** is rebuilt from the agent’s tool log (`Read`, `grep`, `bash` + `sed`, etc.) in `trace.jsonl`.
 
-| Axis | Question | Source |
-|------|----------|--------|
-| **Task success** | Did the patch pass the project test harness? | SWE-Bench-style Docker evaluation (same as other benchkit profiles) |
-| **Context retrieval** | Did the agent read the right files/lines/symbols? | Upstream `contextbench.evaluate` on the agent trajectory |
+For each granularity (file, line, byte-span, symbol):
 
-A run can **solve** the task with poor retrieval (editing without reading gold files), or achieve high retrieval coverage without solving. Both numbers are useful.
-
-## Gold context vs predicted context
-
-For each instance, ContextBench compares:
-
-- **Gold context** (`gold_ctx` in the dataset): files, line ranges, and symbols a human (or oracle) needed to fix the issue. Merged from `init_ctx` + `add_ctx` where applicable.
-- **Predicted context**: everything the agent **retrieved** during the run, derived from tool invocations in `trace.jsonl`.
-
-Coverage and precision are standard set overlaps:
+| Term in appendix | Same as | Formula |
+|------------------|---------|---------|
+| `*_coverage` | Recall | how much of gold the agent touched |
+| `*_precision` | Precision | how much of what they read was actually gold |
 
 ```
-coverage  = |gold ∩ pred| / |gold|
-precision = |gold ∩ pred| / |pred|
+coverage  = overlap / gold_size
+precision = overlap / pred_size
 ```
 
-Higher coverage means the agent found more of what mattered. Higher precision means less irrelevant reading.
+**Final** columns (`contextbench_final_*`) use the **union of everything read by the end of the run**. That is what papers often report for file / block (span) / line retrieval.
 
-## Metric families
+## Trajectory metrics (`contextbench_traj_*`)
 
-Appendix CSV/JSONL columns are prefixed with `contextbench_`. The raw evaluator JSON is also stored in `evaluator_result` on each per-task row.
+**Final** metrics only ask: “Did they eventually read the right stuff?”
 
-### Final context (`contextbench_final_*`)
+**Trajectory** metrics ask: “**When** did they read it, and how wastefully?”
 
-Snapshot at the **end of the trajectory**: cumulative union of all retrieved files/spans across every step.
+After each retrieval tool call, ContextBench computes **cumulative** coverage (all files/lines read so far vs gold). That produces a curve over steps, e.g. step 1 = 0%, step 2 = 25%, … step 9 = 70%.
 
-| Column suffix | Granularity | Meaning |
-|---------------|-------------|---------|
-| `file_coverage` / `file_precision` | File paths | Set of repo-relative files |
-| `line_coverage` / `line_precision` | Line intervals per file | Merged inclusive line ranges |
-| `span_coverage` / `span_precision` | Bytes per file | Byte intervals on disk (tree-sitter / file I/O) |
-| `symbol_coverage` / `symbol_precision` | Definitions | Functions/classes inside retrieved spans |
+| Metric | Plain meaning |
+|--------|----------------|
+| **AUC** (`traj_auc_*`) | Average of that cumulative coverage across steps. **Higher** = gold found **earlier**, not only in the last few reads. If final line coverage is 70% but AUC is 40%, they stumbled around before finding gold. |
+| **Redundancy** (`traj_redundancy_*`) | How much was re-read. High **file** redundancy = opened the same files many times. **Line** redundancy can stay low if each `sed` range is new. |
 
-Line metrics are usually the easiest to interpret. Span metrics can differ slightly due to encoding or partial lines. Symbol metrics count tree-sitter definitions in retrieved regions.
+Example: two agents both end at 70% line coverage. Agent A hits 70% on step 3; Agent B wanders until step 20. A gets a **higher AUC**; B may have **higher redundancy**.
 
-The evaluator JSON also includes `intersection`, `gold_size`, and `pred_size` for debugging (e.g. `gold_size: 9` files, `pred_size: 14` files, `intersection: 6`).
+Step-by-step values live in `evaluator_result` → `trajectory.steps` on each appendix row.
 
-### Trajectory efficiency (`contextbench_traj_*`)
+## EditLoc (`contextbench_editloc_*`)
 
-Measures **how** context was gathered over time, not only the final union.
+**Not** “did they read well.” **Not** solve rate.
 
-**Per-step coverage** (in `evaluator_result.trajectory.steps`): cumulative coverage after each retrieval step. Step 1 is often 0% if the first tool call does not touch gold yet.
+EditLoc checks: among **lines removed** in the agent’s patch, how many fall inside **`init_ctx`** (initial context regions from the dataset)?
 
-| Column | Meaning |
+| Metric | Meaning |
 |--------|---------|
-| `traj_auc_file`, `traj_auc_symbol`, `traj_auc_span`, `traj_auc_line` | **AUC-Coverage**: average of per-step cumulative coverage across all steps. Rewards finding gold **early**, not only by the last step. |
-| `traj_redundancy_file`, `traj_redundancy_symbol`, `traj_redundancy_span`, `traj_redundancy_line` | **Redundancy**: `1 - (unique union size) / (sum of per-step sizes)`. High file redundancy means re-reading the same files; line redundancy stays low if each `sed` window adds new ranges. |
+| `editloc_recall` / `editloc_precision` | In practice both track the same thing here: fraction of **deletion** lines in the patch that land in `init_ctx` ranges |
 
-### Edit localization (`contextbench_editloc_*`)
+**Add-only** patches often score **0** EditLoc (`pred_size: 0` deletions) even when the fix is correct and retrieval was good. Do not read EditLoc as Pass@1.
 
-Separate from retrieval. Asks whether **deleted lines in the agent patch** fall inside `init_ctx` line ranges from the dataset.
+Use EditLoc when you care whether edits happened **where the benchmark marks the bug context**, not whether the agent explored broadly.
 
-| Column | Meaning |
-|--------|---------|
-| `editloc_recall` | Fraction of predicted deletion lines that lie in gold `init_ctx` ranges |
-| `editloc_precision` | Same formula in upstream (deletion-line hit rate vs `pred_size`) |
+## What counts as “reading”
 
-Only **deletions** in `model_patch` are scored. Add-only patches can show `pred_size: 0` and 0% EditLoc even when the fix is correct. Do not treat EditLoc as a second solve metric.
+Benchkit infers reads from tool calls: `Read`, `grep`, and bash patterns like `sed -n '10,50p' file.py`, `cat`, `head`/`tail`, `rg … path`.
 
-## How benchkit implements ContextBench
+Not counted: `WebFetch`, `pytest`, bare `git diff`, etc.
 
-### High-level pipeline
+If the agent never uses those tools, context can be inferred from **edit diffs** only (weak signal; often 0% overlap with gold).
 
-```mermaid
-flowchart LR
-  subgraph run [Agent run]
-    A[Agent in workspace] --> B[trace.jsonl]
-    A --> C[predictions.jsonl]
-  end
-  subgraph convert [Benchkit conversion]
-    B --> D[build_contextbench_traj_data]
-    C --> E[build_contextbench_prediction_jsonl]
-    F[dataset JSONL] --> G[build_contextbench_gold_jsonl]
-  end
-  subgraph eval [ContextBench evaluator]
-    E --> H["python -m contextbench.evaluate"]
-    G --> H
-    H --> I[results.jsonl]
-  end
-  subgraph report [Reporting]
-    I --> J[parse_contextbench_results_jsonl]
-    J --> K[appendix CSV / SQLite]
-  end
-```
+## Appendix columns (quick map)
 
-### Code layout
-
-| Module | Role |
+| Prefix | What |
 |--------|------|
-| `src/benchkit/contextbench/cli.py` | CLI entry (`plan`, `run`, `export-hf`, `appendix`, `db-import`) — delegates to shared `benchkit.swebench` runners |
-| `src/benchkit/contextbench/trajectory.py` | Converts agent tool logs → `traj_data` for the evaluator |
-| `src/benchkit/contextbench/evaluation.py` | Builds prediction/gold JSONL; parses evaluator output into flat fields |
-| `src/benchkit/swebench/evaluation.py` | Invokes `contextbench.evaluate` after conversion (benchmark `contextbench_verified`) |
-| `src/benchkit/swebench/appendix.py` | Maps parsed metrics into `appendix_minimal_per_task_log.csv` |
+| `contextbench_final_*` | End-of-run retrieval (file / line / span≈block / symbol) |
+| `contextbench_traj_auc_*` | Speed of finding gold over steps |
+| `contextbench_traj_redundancy_*` | Repeated reading |
+| `contextbench_editloc_*` | Patch deletions vs `init_ctx` |
+| `status` / `solve_rate` | Harness pass (Pass@1-style) |
 
-Upstream evaluator lives in `third_party/ContextBench` (clone required). Config key: `evaluation.contextbench_repo`.
+Full JSON: `evaluator_result` on each row in `appendix_minimal_per_task_log.csv`.
 
-### Benchmark profile
+## Paper-style Table 3
 
-- **Profile name**: `contextbench_verified`
-- **Dataset**: exported from Hugging Face `Contextbench/ContextBench` (`contextbench_verified` config) to local JSONL, e.g. `datasets/contextbench_verified.train.jsonl`
-- **Instance IDs**: benchkit uses internal IDs (e.g. `SWE-Bench-Verified__python__maintenance__bugfix__2e76c8cd`); evaluation maps to upstream IDs via `original_inst_id` (e.g. `pallets__flask-5014`)
+You can build recall / precision / F1 tables from **final** coverage and precision:
 
-### Per-attempt evaluation flow
+- **Recall** = `*_coverage`
+- **Precision** = `*_precision`
+- **F1** = `2 × precision × coverage / (precision + coverage)`
+- **Block-level** ≈ `span_*`
+- **Pass@1** ≈ `solve_rate`
 
-After each agent attempt, `benchkit.swebench.evaluation`:
+Aggregate **macro means** over many instances per model; single-task runs are not enough for a published table.
 
-1. Writes `*.contextbench.gold.jsonl` (normalized gold from the dataset row).
-2. Reads `trace.jsonl` and `predictions.jsonl` from the attempt directory.
-3. Calls `build_contextbench_prediction_jsonl()` → `*.contextbench.predictions.jsonl` with `traj_data` + `model_patch`.
-4. Runs (from `third_party/ContextBench`):
+## Caveats
 
-   ```bash
-   python -m contextbench.evaluate \
-     --gold <dataset.jsonl> \
-     --pred <converted.predictions.jsonl> \
-     --cache <repo checkout cache> \
-     --out <results.jsonl>
-   ```
-
-5. Parses results with `parse_contextbench_results_jsonl()` into `evaluation.tasks.jsonl` and attempt metadata used by appendix generation.
-
-Preflight checks verify `contextbench_repo` exists and Python dependencies (`tree-sitter`, etc.) import cleanly.
-
-## Trajectory extraction (`build_contextbench_traj_data`)
-
-Benchkit does not require agents to emit a native ContextBench trajectory format. It **reconstructs** retrieval steps from tool invocations stored in trace metadata (`tool_invocations_curated` / `tool_invocations_raw`).
-
-### Primary retrieval tools
-
-Counted as real retrieval steps:
-
-| Tool | Extraction |
-|------|------------|
-| `read` | `path`, optional `offset` + `limit` → line span |
-| `grep` | `path` when present |
-| `bash` | Parses `sed -n 'START,ENDp'`, `head`, `tail`, `cat`, trailing path on `rg`/`grep` |
-
-Each invocation with files or spans becomes one step in `pred_steps`. Paths are normalized (strip `/testbed/`, absolute workspace prefixes, etc.) so they match the checked-out repo.
-
-### Edit fallback
-
-If there are **no** primary retrieval invocations (e.g. agent only `Edit` + `WebFetch`), benchkit falls back to **edit-derived** context:
-
-- File from `path` / `filePath`
-- Line spans from unified diff hunks in `raw_event.state.metadata.filediff.patch` or `diff`
-
-This is why OpenCode runs with only an `Edit` call can still produce a non-empty trajectory, but often with **zero overlap** against gold.
-
-When both primary retrieval and edits exist, **only primary retrieval** is used for the trajectory (edits are not merged in).
-
-### What is not counted
-
-- `WebFetch`, MCP tools, todo tools, etc.
-- Shell commands that do not match the bash patterns above (e.g. `pytest`, `git diff` without readable file spans)
-
-Codex often uses **Bash** with `sed`/`rg`; OpenCode may use `Read`/`Grep` — both can produce valid trajectories if they touch repo files.
-
-## Appendix and database outputs
-
-With `--appendix`, each run writes under `reports/appendix/<run_label>/`:
-
-| File | Contents |
-|------|----------|
-| `appendix_minimal_per_task_log.csv` | One row per task/attempt: solve status, cost, tokens, all `contextbench_*` columns, `evaluator_result` JSON |
-| `appendix_minimal_results_table.md` | Aggregated means for retrieval metrics (when benchmark is `contextbench_verified`) |
-| `appendix_tool_invocation_breakdown.md` | Per-call tool sequence |
-| `appendix_tool_invocation_log.jsonl` | Raw + curated invocations |
-
-ContextBench runs use a dedicated results table layout (retrieval columns instead of only solve rate). Import into SQLite via:
-
-```bash
-python -m benchkit.contextbench.cli db-import \
-  --appendix-csv reports/appendix/<run>/appendix_minimal_per_task_log.csv \
-  --run-root runs/contextbench_verified/...
-```
-
-## Configuration
-
-Example: `configs/contextbench/codex.toml`
-
-```toml
-preset = "codex_contextbench"
-
-[run]
-dataset_path = "datasets/contextbench_verified.train.jsonl"
-benchmark = "contextbench_verified"  # via preset
-
-[evaluation]
-contextbench_repo = "third_party/ContextBench"
-contextbench_cache_dir = "third_party/ContextBench/repos"
-
-[modes.baseline.agent]
-extra_args = []
-
-[modes.with_bitloops.agent]
-extra_args = ["--bitloops-init", ...]
-```
-
-Modes:
-
-- **`baseline`**: agent only
-- **`with_bitloops`**: Bitloops init + DevQL skill (agent may run `bitloops devql query` before `rg`/`sed`)
-
-See `configs/contextbench/README.md` for config file list.
-
-## Interpreting results
-
-### Healthy signals
-
-- **Final line coverage** in the 0.5–1.0 range on multi-file tasks: agent found most gold lines.
-- **AUC line** close to final line coverage: gold found early, not only at the end.
-- **Low redundancy** on lines: exploratory reads add new ranges instead of repeating the same window.
-- **`evaluator_result` without `"error"`**: evaluator completed (checkout + parse succeeded).
-
-### Common caveats
-
-| Observation | Likely cause |
-|-------------|----------------|
-| 100% coverage + ~3% line precision | Small gold set; agent read a lot of extra code (normal for broad `sed` windows). |
-| All retrieval metrics `0` | No primary retrieval and edit fallback missed gold paths, or wrong files edited. |
-| EditLoc `0` with `solved` | Patch had no scored deletions, or edits outside `init_ctx` ranges. |
-| `status: solved` but pytest failed in trace | Local workspace missing deps; harness runs in Docker. |
-| DevQL queries failed | Bitloops/SQLite issue; agent may still score retrieval via bash fallback. |
-| `bitloops_context_tokens` empty | Not populated in appendix today; not an eval failure. |
-
-### Comparing baseline vs Bitloops
-
-On the same instance, compare:
-
-- **Final coverage** (did both find gold?)
-- **Final precision** and **redundancy** (was Bitloops leaner?)
-- **AUC** (did Bitloops find gold sooner?)
-- **Solve status** and patch size (harness outcome)
-
-Use the same task ID across runs; gold size differs per instance.
-
-## Related files
-
-- [run-contextbench.md](./run-contextbench.md) — install, export, run commands
-- [../configs/contextbench/README.md](../configs/contextbench/README.md) — config paths
-- [../third_party/ContextBench/contextbench/evaluate.py](../third_party/ContextBench/contextbench/evaluate.py) — upstream evaluator entrypoint
-- [../third_party/ContextBench/contextbench/metrics/compute.py](../third_party/ContextBench/contextbench/metrics/compute.py) — metric definitions
-- [../src/benchkit/contextbench/trajectory.py](../src/benchkit/contextbench/trajectory.py) — trajectory reconstruction
-- [../tests/test_contextbench.py](../tests/test_contextbench.py) — unit tests for conversion and parsing
+- **100% coverage + low precision**: found all gold but read lots of extra code (common with wide `sed` windows).
+- **0% retrieval + solved**: edited without overlapping gold reads (or only non-counted tools).
+- **EditLoc 0 + solved**: add-only patch or edits outside `init_ctx`.
+- **Local pytest failed, still solved**: harness runs in Docker; trace pytest errors are normal.
