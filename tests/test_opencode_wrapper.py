@@ -114,18 +114,36 @@ class OpencodeWrapperTests(unittest.TestCase):
 
         self.assertIsInstance(message, str)
         assert isinstance(message, str)
-        self.assertIn("tool invocations", message.lower())
+        self.assertIn("bitloops devql query", message.lower())
 
     def test_resolve_missing_tool_capture_error_allows_captured_tools(self) -> None:
         payload = {"run": {"condition": "with_bitloops"}}
 
         message = wrapper._resolve_missing_tool_capture_error(
             payload=payload,
-            tool_invocations_raw=[{"tool": "Bash"}],
+            tool_invocations_raw=[
+                {
+                    "tool": "Bash",
+                    "input": {
+                        "command": "bitloops devql query '{ selectArtefacts { summary } }'",
+                    },
+                }
+            ],
             tool_usage_breakdown={},
         )
 
         self.assertIsNone(message)
+
+    def test_has_devql_invocation_detects_bitloops_query(self) -> None:
+        raw = [
+            {
+                "tool": "Bash",
+                "input": {
+                    "command": "/bin/zsh -lc \"bitloops devql query '{ selectArtefacts { summary } }'\"",
+                },
+            }
+        ]
+        self.assertTrue(wrapper._has_devql_invocation(raw))
 
     def test_normalize_model_reference_rewrites_legacy_fireworks_prefix(self) -> None:
         self.assertEqual(

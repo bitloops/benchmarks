@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from benchkit.common.config import EvaluationConfig
 from benchkit.swebench.evaluation import (
     _build_evaluation_env,
     _build_evaluation_command,
+    _resolve_python_bin,
     evaluate_predictions_with_harness,
 )
 
@@ -40,6 +42,157 @@ class EvaluationTests(unittest.TestCase):
             self.assertIn("--report_dir", command)
             idx = command.index("--report_dir")
             self.assertEqual(command[idx + 1], str(attempt_dir.resolve()))
+
+    def test_contextbench_command_resolves_relative_python_bin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contextbench_repo = root / "third_party" / "ContextBench"
+            contextbench_repo.mkdir(parents=True, exist_ok=True)
+            attempt_dir = root / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            predictions = attempt_dir / "predictions.jsonl"
+            predictions.write_text("{}", encoding="utf-8")
+            dataset = root / "dataset.jsonl"
+            dataset.write_text("{}", encoding="utf-8")
+            pred_converted = attempt_dir / "converted.predictions.jsonl"
+            pred_converted.write_text("{}", encoding="utf-8")
+            result_out = attempt_dir / "results.jsonl"
+
+            cfg = EvaluationConfig(
+                enabled=True,
+                python_bin="./.venv/bin/python",
+                contextbench_repo=contextbench_repo,
+            )
+            with patch("benchkit.swebench.evaluation.Path.cwd", return_value=root):
+                command = _build_evaluation_command(
+                    config=cfg,
+                    run_id="run-0",
+                    attempt=1,
+                    benchmark="contextbench_verified",
+                    dataset_path=dataset,
+                    prediction_path=predictions,
+                    attempt_dir=attempt_dir,
+                    contextbench_pred_path=pred_converted,
+                    contextbench_results_path=result_out,
+                    pro_patch_path=None,
+                )
+            self.assertEqual(command[0], str((root / ".venv" / "bin" / "python").absolute()))
+
+    def test_resolve_python_bin_preserves_relative_venv_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("benchkit.swebench.evaluation.Path.cwd", return_value=root):
+                resolved = _resolve_python_bin("./.venv/bin/python")
+            self.assertEqual(resolved, str(root / ".venv" / "bin" / "python"))
+
+    def test_contextbench_preflight_reports_missing_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contextbench_repo = root / "third_party" / "ContextBench"
+            contextbench_repo.mkdir(parents=True, exist_ok=True)
+            attempt_dir = root / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            predictions = attempt_dir / "predictions.jsonl"
+            predictions.write_text(
+                '{"instance_id":"repo__task-1","model_patch":""}\n',
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.jsonl"
+            dataset.write_text(
+                (
+                    '{"instance_id":"repo__task-1","repo":"owner/repo","base_commit":"abc",'
+                    '"problem_statement":"x","metadata":{"repo_url":"https://github.com/owner/repo.git"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            (attempt_dir / "trace.jsonl").write_text(
+                '{"instance_id":"repo__task-1","metadata":{}}\n',
+                encoding="utf-8",
+            )
+
+            cfg = EvaluationConfig(
+                enabled=True,
+                contextbench_repo=contextbench_repo,
+                python_bin="python3",
+            )
+
+            preflight = Mock(return_value=Mock(returncode=1, stdout="tree_sitter,tree_sitter_languages\n", stderr=""))
+            with patch("benchkit.swebench.evaluation.subprocess.run", preflight):
+                result = evaluate_predictions_with_harness(
+                    config=cfg,
+                    run_id="run-preflight",
+                    attempt=1,
+                    benchmark="contextbench_verified",
+                    dataset_path=dataset,
+                    prediction_path=predictions,
+                    attempt_dir=attempt_dir,
+                )
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("missing dependencies", str(result.error))
+            self.assertIn("tree_sitter", str(result.error))
+
+    def test_contextbench_preflight_allows_evaluation_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contextbench_repo = root / "third_party" / "ContextBench"
+            contextbench_repo.mkdir(parents=True, exist_ok=True)
+            attempt_dir = root / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            predictions = attempt_dir / "predictions.jsonl"
+            predictions.write_text(
+                '{"instance_id":"repo__task-1","model_patch":""}\n',
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.jsonl"
+            dataset.write_text(
+                (
+                    '{"instance_id":"repo__task-1","repo":"owner/repo","base_commit":"abc",'
+                    '"problem_statement":"x","metadata":{"repo_url":"https://github.com/owner/repo.git"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            (attempt_dir / "trace.jsonl").write_text(
+                '{"instance_id":"repo__task-1","metadata":{}}\n',
+                encoding="utf-8",
+            )
+            result_jsonl = attempt_dir / "result.jsonl"
+            result_jsonl.write_text('{"instance_id":"x"}\n', encoding="utf-8")
+
+            cfg = EvaluationConfig(
+                enabled=True,
+                contextbench_repo=contextbench_repo,
+                python_bin="python3",
+                command_template=[
+                    "python3",
+                    "-c",
+                    "import pathlib; pathlib.Path('{contextbench_results_path}').write_text('{{\"instance_id\":\"x\"}}\\n')",
+                ],
+                timeout_seconds=30,
+            )
+
+            calls: list[list[str]] = []
+
+            def _run(*args, **kwargs):  # type: ignore[no-untyped-def]
+                cmd = args[0]
+                calls.append(cmd)
+                if len(calls) == 1:
+                    return Mock(returncode=0, stdout="", stderr="")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("benchkit.swebench.evaluation.subprocess.run", side_effect=_run):
+                result = evaluate_predictions_with_harness(
+                    config=cfg,
+                    run_id="run-preflight-ok",
+                    attempt=1,
+                    benchmark="contextbench_verified",
+                    dataset_path=dataset,
+                    prediction_path=predictions,
+                    attempt_dir=attempt_dir,
+                )
+
+            self.assertEqual(result.status, "ok")
+            self.assertGreaterEqual(len(calls), 2)
 
     def test_build_evaluation_env_adds_swebench_repo_to_pythonpath(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -336,6 +336,131 @@ class AppendixTests(unittest.TestCase):
             self.assertNotIn("token_input", per_task[0])
             self.assertNotIn("cached_input_tokens", per_task[0])
 
+    def test_generate_appendix_files_contextbench_results_are_retrieval_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "run-1"
+            attempt_dir = run_root / "attempts" / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+
+            write_json(
+                run_root / "run_manifest.json",
+                {
+                    "run_id": "run-1",
+                    "benchmark": "contextbench_verified",
+                    "dataset_path": "datasets/contextbench_verified.train.jsonl",
+                    "split": "train",
+                    "language": "python",
+                    "condition": "baseline",
+                    "agent": {"id": "codex"},
+                    "model": {"resolved_name": "gpt-5.4"},
+                },
+            )
+            write_jsonl(
+                run_root / "instances.jsonl",
+                [
+                    {
+                        "instance_id": "owner__repo-1",
+                        "repo": "owner/repo",
+                        "language": "python",
+                        "base_commit": "abc",
+                        "problem_statement": "Fix",
+                        "metadata": {},
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "predictions.jsonl",
+                [
+                    {
+                        "instance_id": "owner__repo-1",
+                        "model_name_or_path": "agent:codex",
+                        "model_patch": "diff --git a/a.py b/a.py\n",
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "trace.jsonl",
+                [
+                    {
+                        "instance_id": "owner__repo-1",
+                        "status": "ok",
+                        "metadata": {
+                            "elapsed_ms": 1200,
+                            "estimated_cost": 0.02,
+                            "tool_calls": 5,
+                            "file_reads": 4,
+                            "search_actions": 2,
+                        },
+                    }
+                ],
+            )
+            write_jsonl(
+                attempt_dir / "evaluation.tasks.jsonl",
+                [
+                    {
+                        "instance_id": "owner__repo-1",
+                        "status": "solved",
+                        "final_file_coverage": 0.5,
+                        "final_file_precision": 0.4,
+                        "final_symbol_coverage": 0.6,
+                        "final_symbol_precision": 0.7,
+                        "final_span_coverage": 0.8,
+                        "final_span_precision": 0.9,
+                        "final_line_coverage": 0.3,
+                        "final_line_precision": 0.2,
+                        "traj_auc_file": 0.61,
+                        "traj_auc_symbol": 0.62,
+                        "traj_auc_span": 0.63,
+                        "traj_auc_line": 0.64,
+                        "traj_redundancy_file": 0.11,
+                        "traj_redundancy_symbol": 0.12,
+                        "traj_redundancy_span": 0.13,
+                        "traj_redundancy_line": 0.14,
+                        "editloc_recall": 0.77,
+                        "editloc_precision": 0.88,
+                        "raw": {"instance_id": "owner__repo-1"},
+                    }
+                ],
+            )
+
+            outputs = generate_appendix_files(
+                run_roots=[run_root],
+                output_dir=root / "reports",
+            )
+
+            with outputs.results_csv.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                header = reader.fieldnames or []
+                row = next(reader)
+
+            self.assertEqual(
+                header[:6],
+                [
+                    "agent",
+                    "condition",
+                    "benchmark",
+                    "language",
+                    "tasks",
+                    "final_file_coverage",
+                ],
+            )
+            self.assertEqual(float(row["final_file_coverage"]), 0.5)
+            self.assertEqual(float(row["traj_auc_span"]), 0.63)
+            self.assertEqual(float(row["editloc_precision"]), 0.88)
+            self.assertEqual(float(row["median_runtime_sec"]), 1.2)
+            self.assertEqual(float(row["median_tool_calls"]), 5.0)
+
+            results_markdown = outputs.results_markdown.read_text(encoding="utf-8")
+            self.assertIn("Final File Cov", results_markdown)
+            self.assertIn("Traj AUC Span", results_markdown)
+            self.assertIn("EditLoc Precision", results_markdown)
+
+            per_attempt_markdown = outputs.per_attempt_markdown.read_text(encoding="utf-8")
+            self.assertIn("Retrieval Metrics (Primary)", per_attempt_markdown)
+            self.assertIn("Secondary Diagnostics", per_attempt_markdown)
+            self.assertIn("Final Coverage/Precision (span)", per_attempt_markdown)
+
     def test_single_non_null_value_yields_mean_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

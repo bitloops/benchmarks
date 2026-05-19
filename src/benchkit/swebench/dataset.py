@@ -8,6 +8,7 @@ from .types import BenchmarkInstance
 
 BENCHMARK_MULTILINGUAL = "swebench_multilingual"
 BENCHMARK_PRO = "swebench_pro"
+BENCHMARK_CONTEXTBENCH_VERIFIED = "contextbench_verified"
 
 LANGUAGE_KEYS = (
     "language",

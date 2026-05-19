@@ -7,8 +7,10 @@ Supported benchmark profiles:
 
 - `swebench_multilingual` (legacy Rust-focused path)
 - `swebench_pro` (JS/TS-first path)
+- `contextbench_verified` (ContextBench Verified subset)
 
 Start here: [docs/run-benchmarks.md](/Users/petros/Desktop/work/benchmarks/docs/run-benchmarks.md).
+ContextBench: [docs/contextbench.md](docs/contextbench.md) (metrics and implementation), [docs/run-contextbench.md](docs/run-contextbench.md) (how to run).
 
 Main configs:
 
@@ -17,6 +19,8 @@ Main configs:
 - `configs/swebench/opencode.toml`
 - `configs/swebench/opencode_ollama.toml`
 - `configs/swebench/opencode_pro.toml.disabled`
+- `configs/contextbench/codex.toml`
+- `configs/contextbench/opencode.toml`
 
 Quick Pro run path:
 

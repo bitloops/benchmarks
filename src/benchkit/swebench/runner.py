@@ -438,6 +438,16 @@ def _build_manifest(
                 if config.evaluation.swebench_repo
                 else None
             ),
+            "contextbench_repo": (
+                str(config.evaluation.contextbench_repo)
+                if config.evaluation.contextbench_repo
+                else None
+            ),
+            "contextbench_cache_dir": (
+                str(config.evaluation.contextbench_cache_dir)
+                if config.evaluation.contextbench_cache_dir
+                else None
+            ),
             "dataset_name": config.evaluation.dataset_name,
             "split": config.evaluation.split,
             "max_workers": config.evaluation.max_workers,

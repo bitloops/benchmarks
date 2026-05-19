@@ -136,6 +136,31 @@ def _should_require_tool_invocations(payload: dict[str, object]) -> bool:
     return _run_condition(payload) == "with_bitloops"
 
 
+def _should_require_devql_invocation(payload: dict[str, object]) -> bool:
+    if "BENCHKIT_REQUIRE_OPENCODE_DEVQL" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_OPENCODE_DEVQL", default=False)
+    if "BENCHKIT_REQUIRE_DEVQL" in os.environ:
+        return env_flag("BENCHKIT_REQUIRE_DEVQL", default=False)
+    return _run_condition(payload) == "with_bitloops"
+
+
+def _has_devql_invocation(tool_invocations_raw: list[dict[str, object]]) -> bool:
+    for invocation in tool_invocations_raw:
+        tool_name = str(invocation.get("tool") or "").strip().lower()
+        if tool_name not in {"bash", "shell", "terminal"}:
+            continue
+        input_payload = invocation.get("input")
+        if not isinstance(input_payload, dict):
+            continue
+        command = input_payload.get("command")
+        if not isinstance(command, str):
+            continue
+        normalized_command = " ".join(command.strip().lower().split())
+        if "bitloops devql query" in normalized_command:
+            return True
+    return False
+
+
 def _resolve_missing_tool_capture_error(
     *,
     payload: dict[str, object],
@@ -144,6 +169,13 @@ def _resolve_missing_tool_capture_error(
 ) -> str | None:
     if not _should_require_tool_invocations(payload):
         return None
+    if _should_require_devql_invocation(payload) and not _has_devql_invocation(
+        tool_invocations_raw
+    ):
+        return (
+            "OpenCode finished a Bitloops run without any captured "
+            "`bitloops devql query` invocation."
+        )
     if tool_invocations_raw:
         return None
     if tool_usage_breakdown:

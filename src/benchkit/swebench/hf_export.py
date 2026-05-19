@@ -10,6 +10,7 @@ import os
 import re
 
 from .dataset import (
+    BENCHMARK_CONTEXTBENCH_VERIFIED,
     BENCHMARK_MULTILINGUAL,
     BENCHMARK_PRO,
     resolve_language_from_row,
@@ -17,12 +18,15 @@ from .dataset import (
 
 DEFAULT_MULTILINGUAL_DATASET = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_PRO_DATASET = "ScaleAI/SWE-bench_Pro"
+DEFAULT_CONTEXTBENCH_DATASET = "Contextbench/ContextBench"
 DEFAULT_DATASET = DEFAULT_MULTILINGUAL_DATASET
 
 
 def default_dataset_for_benchmark(benchmark: str) -> str:
     if benchmark == BENCHMARK_PRO:
         return DEFAULT_PRO_DATASET
+    if benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED:
+        return DEFAULT_CONTEXTBENCH_DATASET
     return DEFAULT_MULTILINGUAL_DATASET
 
 INSTANCE_ID_KEYS = ("instance_id", "id", "task_id", "sample_id")

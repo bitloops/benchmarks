@@ -12,7 +12,12 @@ from collections.abc import Iterable
 
 from benchkit.common.config import EvaluationConfig
 from benchkit.common.io import write_json, write_jsonl
-from benchkit.swebench.dataset import BENCHMARK_PRO
+from benchkit.contextbench.evaluation import (
+    build_contextbench_gold_jsonl,
+    build_contextbench_prediction_jsonl,
+    parse_contextbench_results_jsonl,
+)
+from benchkit.swebench.dataset import BENCHMARK_CONTEXTBENCH_VERIFIED, BENCHMARK_PRO
 from benchkit.swebench.pro_evaluation import (
     convert_predictions_jsonl_to_pro_patches,
     normalize_swebench_pro_eval_results,
@@ -96,6 +101,9 @@ def evaluate_predictions_with_harness(
 
     pro_patch_path: Path | None = None
     pro_raw_results_path: Path | None = None
+    contextbench_pred_path: Path | None = None
+    contextbench_results_path: Path | None = None
+    contextbench_gold_path: Path | None = None
     if benchmark == BENCHMARK_PRO:
         pro_patch_path = (
             effective_artifact_dir
@@ -107,23 +115,78 @@ def evaluate_predictions_with_harness(
             prefix=effective_run_label,
         )
         pro_raw_results_path = effective_artifact_dir / "eval_results.json"
+    elif benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED:
+        if dataset_path is None:
+            raise ValueError("run.dataset_path is required for ContextBench evaluation")
+        preflight_error = _contextbench_dependency_preflight(
+            python_bin=_resolve_python_bin(config.python_bin),
+            contextbench_repo=config.contextbench_repo,
+            env=os.environ.copy(),
+        )
+        if preflight_error is not None:
+            result = AttemptEvaluationResult(
+                attempt=attempt,
+                status="error",
+                command=[],
+                return_code=1,
+                elapsed_ms=None,
+                stdout_path=None,
+                stderr_path=None,
+                report_path=report_path,
+                parsed_path=None,
+                tasks_path=None,
+                parsed_source_file=None,
+                task_count=0,
+                solved_count=0,
+                unsolved_count=0,
+                error=preflight_error,
+            )
+            write_json(report_path, result.to_row())
+            return result
+        contextbench_pred_path = (
+            effective_artifact_dir / f"{effective_run_label}.contextbench.predictions.jsonl"
+        )
+        contextbench_gold_path = (
+            effective_artifact_dir / f"{effective_run_label}.contextbench.gold.jsonl"
+        )
+        build_contextbench_gold_jsonl(
+            dataset_path=dataset_path,
+            output_path=contextbench_gold_path,
+        )
+        trace_path = attempt_dir / "trace.jsonl"
+        build_contextbench_prediction_jsonl(
+            benchmark=benchmark,
+            dataset_path=dataset_path,
+            prediction_path=prediction_path,
+            trace_path=trace_path,
+            output_path=contextbench_pred_path,
+        )
+        contextbench_results_path = (
+            effective_artifact_dir / f"{effective_run_label}.contextbench.results.jsonl"
+        )
 
+    command_dataset_path = contextbench_gold_path or dataset_path
     command = _build_evaluation_command(
         config=config,
         run_id=run_id,
         attempt=attempt,
         benchmark=benchmark,
-        dataset_path=dataset_path,
+        dataset_path=command_dataset_path,
         prediction_path=prediction_path,
         attempt_dir=attempt_dir,
         pro_patch_path=pro_patch_path,
+        contextbench_pred_path=contextbench_pred_path,
+        contextbench_results_path=contextbench_results_path,
         run_label=effective_run_label,
         artifact_dir=effective_artifact_dir,
     )
 
     stdout_path = effective_artifact_dir / "evaluation.stdout.log"
     stderr_path = effective_artifact_dir / "evaluation.stderr.log"
-    cwd = config.swebench_repo.resolve() if config.swebench_repo else None
+    if benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED and config.contextbench_repo is not None:
+        cwd = config.contextbench_repo.resolve()
+    else:
+        cwd = config.swebench_repo.resolve() if config.swebench_repo else None
     env = _build_evaluation_env(cwd)
 
     try:
@@ -176,15 +239,23 @@ def evaluate_predictions_with_harness(
             output_path=normalized_path,
         )
 
-    parsed = _parse_evaluation_outputs(
-        config=config,
-        run_id=run_id,
-        attempt=attempt,
-        run_label=effective_run_label,
-        artifact_dir=effective_artifact_dir,
-        swebench_cwd=cwd if cwd else Path.cwd(),
-        started_epoch=start,
-    )
+    if benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED and contextbench_results_path is not None:
+        parsed = parse_contextbench_results_jsonl(
+            result_path=contextbench_results_path,
+            parsed_path=effective_artifact_dir / "evaluation.parsed.json",
+            tasks_path=effective_artifact_dir / "evaluation.tasks.jsonl",
+            prediction_path=contextbench_pred_path,
+        )
+    else:
+        parsed = _parse_evaluation_outputs(
+            config=config,
+            run_id=run_id,
+            attempt=attempt,
+            run_label=effective_run_label,
+            artifact_dir=effective_artifact_dir,
+            swebench_cwd=cwd if cwd else Path.cwd(),
+            started_epoch=start,
+        )
 
     status = "ok" if completed.returncode == 0 else "error"
     result = AttemptEvaluationResult(
@@ -272,11 +343,14 @@ def _build_evaluation_command(
     dataset_path: Path | None,
     prediction_path: Path,
     attempt_dir: Path,
-    pro_patch_path: Path | None,
+    pro_patch_path: Path | None = None,
+    contextbench_pred_path: Path | None = None,
+    contextbench_results_path: Path | None = None,
     *,
     run_label: str | None = None,
     artifact_dir: Path | None = None,
 ) -> list[str]:
+    python_bin = _resolve_python_bin(config.python_bin)
     effective_artifact_dir = (artifact_dir or attempt_dir).resolve()
     effective_run_label = run_label or f"{run_id}-attempt-{attempt:02d}"
     template_context = {
@@ -289,11 +363,20 @@ def _build_evaluation_command(
         "dataset_name": config.dataset_name or "",
         "split": config.split or "",
         "max_workers": config.max_workers,
-        "python_bin": config.python_bin,
+        "python_bin": python_bin,
         "swebench_repo": str(config.swebench_repo.resolve()) if config.swebench_repo else "",
         "dataset_path": str(dataset_path.resolve()) if dataset_path else "",
         "swebench_pro_patch_path": (
             str(pro_patch_path.resolve()) if pro_patch_path else ""
+        ),
+        "contextbench_repo": (
+            str(config.contextbench_repo.resolve()) if config.contextbench_repo else ""
+        ),
+        "contextbench_pred_path": (
+            str(contextbench_pred_path.resolve()) if contextbench_pred_path else ""
+        ),
+        "contextbench_results_path": (
+            str(contextbench_results_path.resolve()) if contextbench_results_path else ""
         ),
     }
 
@@ -312,6 +395,14 @@ def _build_evaluation_command(
             pro_patch_path=pro_patch_path,
             artifact_dir=effective_artifact_dir,
         )
+    if benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED:
+        return _build_contextbench_evaluation_command(
+            config=config,
+            dataset_path=dataset_path,
+            contextbench_pred_path=contextbench_pred_path,
+            contextbench_results_path=contextbench_results_path,
+            artifact_dir=effective_artifact_dir,
+        )
 
     if not config.dataset_name:
         raise ValueError(
@@ -319,7 +410,7 @@ def _build_evaluation_command(
         )
 
     command: list[str] = [
-        config.python_bin,
+        python_bin,
         "-m",
         "swebench.harness.run_evaluation",
         "--dataset_name",
@@ -371,7 +462,7 @@ def _build_swebench_pro_evaluation_command(
     )
 
     command: list[str] = [
-        config.python_bin,
+        _resolve_python_bin(config.python_bin),
         str(eval_script),
         "--raw_sample_path",
         str(dataset_path.resolve()),
@@ -394,6 +485,104 @@ def _build_swebench_pro_evaluation_command(
         command.extend(["--docker_platform", config.pro_docker_platform])
     command.extend(config.extra_args)
     return command
+
+
+def _build_contextbench_evaluation_command(
+    *,
+    config: EvaluationConfig,
+    dataset_path: Path | None,
+    contextbench_pred_path: Path | None,
+    contextbench_results_path: Path | None,
+    artifact_dir: Path,
+) -> list[str]:
+    if dataset_path is None:
+        raise ValueError("run.dataset_path is required for ContextBench evaluation")
+    if contextbench_pred_path is None:
+        raise ValueError("converted ContextBench prediction path is required")
+    if contextbench_results_path is None:
+        raise ValueError("ContextBench results output path is required")
+    if config.contextbench_repo is None:
+        raise ValueError(
+            "evaluation.contextbench_repo must point to a local ContextBench checkout"
+        )
+    contextbench_repo = config.contextbench_repo.resolve()
+    cache_dir = (
+        config.contextbench_cache_dir.resolve()
+        if config.contextbench_cache_dir is not None
+        else artifact_dir / "contextbench_repos"
+    )
+    command: list[str] = [
+        _resolve_python_bin(config.python_bin),
+        "-m",
+        "contextbench.evaluate",
+        "--gold",
+        str(dataset_path.resolve()),
+        "--pred",
+        str(contextbench_pred_path.resolve()),
+        "--cache",
+        str(cache_dir.resolve()),
+        "--out",
+        str(contextbench_results_path.resolve()),
+    ]
+    command.extend(config.extra_args)
+    return command
+
+
+def _resolve_python_bin(python_bin: str) -> str:
+    text = str(python_bin).strip()
+    if not text:
+        return python_bin
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+    # Resolve relative executable paths against the current run cwd so they
+    # remain valid even when evaluator subprocess cwd points elsewhere.
+    if "/" in text or text.startswith("."):
+        # Use absolute path normalization without dereferencing symlinks so a
+        # venv shim like ./.venv/bin/python is preserved as-is.
+        return str((Path.cwd() / candidate).absolute())
+    return text
+
+
+def _contextbench_dependency_preflight(
+    *,
+    python_bin: str,
+    contextbench_repo: Path | None,
+    env: dict[str, str],
+) -> str | None:
+    if contextbench_repo is None:
+        return "evaluation.contextbench_repo must point to a local ContextBench checkout"
+    repo = contextbench_repo.resolve()
+    if not repo.exists():
+        return f"ContextBench repo not found: {repo}"
+
+    check_cmd = [
+        python_bin,
+        "-c",
+        (
+            "import importlib.util,sys; "
+            "mods=['tree_sitter','tree_sitter_languages']; "
+            "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+            "print(','.join(missing)); "
+            "sys.exit(1 if missing else 0)"
+        ),
+    ]
+    completed = subprocess.run(
+        check_cmd,
+        text=True,
+        capture_output=True,
+        cwd=str(repo),
+        env=env,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return None
+    missing = (completed.stdout or "").strip() or "tree_sitter,tree_sitter_languages"
+    return (
+        "ContextBench evaluation preflight failed: missing dependencies "
+        f"({missing}). Install into benchmark venv with "
+        "`./.venv/bin/python -m pip install -r third_party/ContextBench/requirements.txt`."
+    )
 
 
 def _parse_evaluation_outputs(

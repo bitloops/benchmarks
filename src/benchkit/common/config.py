@@ -15,6 +15,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 32000
 DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_SWEBENCH_PRO_DATASET_NAME = "ScaleAI/SWE-bench_Pro"
+DEFAULT_CONTEXTBENCH_DATASET_NAME = "Contextbench/ContextBench"
 DEFAULT_PROMPT_PROTOCOL = "minimal"
 
 
@@ -90,6 +91,8 @@ class EvaluationConfig:
     pro_use_local_docker: bool = True
     pro_block_network: bool = False
     pro_docker_platform: str | None = None
+    contextbench_repo: Path | None = None
+    contextbench_cache_dir: Path | None = None
 
 
 def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
@@ -303,6 +306,34 @@ def _config_presets() -> dict[str, dict[str, Any]]:
         "pro_dockerhub_username": "jefzda",
         "pro_use_local_docker": True,
     }
+    common_run_contextbench = {
+        "benchmark": "contextbench_verified",
+        "split": "train",
+        "language": None,
+        "condition": "baseline",
+        "include_repos": [],
+        "include_instance_ids": [],
+        "attempts": DEFAULT_ATTEMPTS,
+        "max_workers": DEFAULT_MAX_WORKERS,
+        "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+        "output_root": "runs",
+        "prepare_workspace": True,
+        "repo_url_template": "https://github.com/{repo}.git",
+        "git_bin": "git",
+        "workspace_timeout_seconds": DEFAULT_WORKSPACE_TIMEOUT_SECONDS,
+    }
+    common_evaluation_contextbench = {
+        "enabled": True,
+        "python_bin": "./.venv/bin/python",
+        "dataset_name": DEFAULT_CONTEXTBENCH_DATASET_NAME,
+        "split": "train",
+        "max_workers": 1,
+        "timeout_seconds": 7200,
+        "command_template": [],
+        "extra_args": [],
+        "contextbench_repo": "third_party/ContextBench",
+        "contextbench_cache_dir": "third_party/ContextBench/repos",
+    }
     return {
         "codex": {
             "run": {
@@ -433,6 +464,84 @@ def _config_presets() -> dict[str, dict[str, Any]]:
             "evaluation": {
                 **common_evaluation_pro,
                 "max_workers": 2,
+            },
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                        "timeout_seconds": 1500,
+                        "bitloops_sandbox_mode": "per_task_daemon",
+                    },
+                    "agent": {
+                        "extra_args": [
+                            "--bitloops-init",
+                            "--bitloops-embeddings-runtime",
+                            "platform",
+                            "--bitloops-summary-mode",
+                            "off",
+                        ],
+                    },
+                },
+            },
+        },
+        "codex_contextbench": {
+            "run": {
+                **common_run_contextbench,
+                "timeout_seconds": 1200,
+            },
+            "agent": {
+                "id": "codex",
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.codex.wrapper"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "openai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": common_evaluation_contextbench,
+            "modes": {
+                "baseline": {
+                    "run": {
+                        "condition": "baseline",
+                        "bitloops_sandbox_mode": "disabled",
+                    },
+                    "agent": {"extra_args": []},
+                },
+                "with_bitloops": {
+                    "run": {
+                        "condition": "with_bitloops",
+                    },
+                    "agent": {"extra_args": ["--bitloops-init"]},
+                },
+            },
+        },
+        "opencode_contextbench": {
+            "run": {
+                **common_run_contextbench,
+                "timeout_seconds": 900,
+                "workspace_timeout_seconds": 1800,
+            },
+            "agent": {
+                "id": "opencode",
+                "command": [_default_agent_python_bin(), "-m", "benchkit.swebench.agents.opencode.wrapper"],
+                "extra_args": [],
+            },
+            "model": {
+                "provider": "fireworks-ai",
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "evaluation": {
+                **common_evaluation_contextbench,
+                "max_workers": 1,
             },
             "modes": {
                 "baseline": {
@@ -638,11 +747,21 @@ def _parse_evaluation_config(
         default_dataset_name = DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME
     if benchmark == "swebench_pro":
         default_dataset_name = DEFAULT_SWEBENCH_PRO_DATASET_NAME
+    if benchmark == "contextbench_verified":
+        default_dataset_name = DEFAULT_CONTEXTBENCH_DATASET_NAME
 
     swebench_repo_raw = raw.get("swebench_repo")
     swebench_repo = None
     if isinstance(swebench_repo_raw, str) and swebench_repo_raw.strip():
         swebench_repo = Path(swebench_repo_raw.strip())
+    contextbench_repo_raw = raw.get("contextbench_repo")
+    contextbench_repo = None
+    if isinstance(contextbench_repo_raw, str) and contextbench_repo_raw.strip():
+        contextbench_repo = Path(contextbench_repo_raw.strip())
+    contextbench_cache_dir_raw = raw.get("contextbench_cache_dir")
+    contextbench_cache_dir = None
+    if isinstance(contextbench_cache_dir_raw, str) and contextbench_cache_dir_raw.strip():
+        contextbench_cache_dir = Path(contextbench_cache_dir_raw.strip())
 
     cfg = EvaluationConfig(
         enabled=bool(raw.get("enabled", False)),
@@ -675,6 +794,8 @@ def _parse_evaluation_config(
         pro_docker_platform=(
             str(raw.get("pro_docker_platform", "")).strip() or None
         ),
+        contextbench_repo=contextbench_repo,
+        contextbench_cache_dir=contextbench_cache_dir,
     )
     if cfg.max_workers < 1:
         raise ValueError("evaluation.max_workers must be >= 1")

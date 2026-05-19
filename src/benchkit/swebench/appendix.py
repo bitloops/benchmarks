@@ -63,6 +63,24 @@ PER_TASK_FIELDS = [
     "first_file_edited",
     "first_test_command",
     "bitloops_context_tokens",
+    "contextbench_final_file_coverage",
+    "contextbench_final_file_precision",
+    "contextbench_final_symbol_coverage",
+    "contextbench_final_symbol_precision",
+    "contextbench_final_span_coverage",
+    "contextbench_final_span_precision",
+    "contextbench_final_line_coverage",
+    "contextbench_final_line_precision",
+    "contextbench_traj_auc_file",
+    "contextbench_traj_auc_symbol",
+    "contextbench_traj_auc_span",
+    "contextbench_traj_auc_line",
+    "contextbench_traj_redundancy_file",
+    "contextbench_traj_redundancy_symbol",
+    "contextbench_traj_redundancy_span",
+    "contextbench_traj_redundancy_line",
+    "contextbench_editloc_recall",
+    "contextbench_editloc_precision",
     "evaluator_result",
 ]
 
@@ -87,6 +105,66 @@ RESULTS_FIELDS = [
     "stddev_cost",
 ]
 
+CONTEXTBENCH_RESULTS_FIELDS = [
+    "agent",
+    "condition",
+    "benchmark",
+    "language",
+    "tasks",
+    "final_file_coverage",
+    "final_file_precision",
+    "final_symbol_coverage",
+    "final_symbol_precision",
+    "final_span_coverage",
+    "final_span_precision",
+    "final_line_coverage",
+    "final_line_precision",
+    "traj_auc_file",
+    "traj_auc_symbol",
+    "traj_auc_span",
+    "traj_auc_line",
+    "traj_redundancy_file",
+    "traj_redundancy_symbol",
+    "traj_redundancy_span",
+    "traj_redundancy_line",
+    "editloc_recall",
+    "editloc_precision",
+    "solved",
+    "solve_rate",
+    "median_runtime_sec",
+    "median_tool_calls",
+    "median_file_reads",
+    "median_search_actions",
+    "median_cost",
+    "mean_runtime_sec",
+    "variance_runtime_sec",
+    "stddev_runtime_sec",
+    "mean_cost",
+    "variance_cost",
+    "stddev_cost",
+]
+
+CONTEXTBENCH_RETRIEVAL_FIELD_MAP: list[tuple[str, str]] = [
+    ("final_file_coverage", "contextbench_final_file_coverage"),
+    ("final_file_precision", "contextbench_final_file_precision"),
+    ("final_symbol_coverage", "contextbench_final_symbol_coverage"),
+    ("final_symbol_precision", "contextbench_final_symbol_precision"),
+    ("final_span_coverage", "contextbench_final_span_coverage"),
+    ("final_span_precision", "contextbench_final_span_precision"),
+    ("final_line_coverage", "contextbench_final_line_coverage"),
+    ("final_line_precision", "contextbench_final_line_precision"),
+    ("traj_auc_file", "contextbench_traj_auc_file"),
+    ("traj_auc_symbol", "contextbench_traj_auc_symbol"),
+    ("traj_auc_span", "contextbench_traj_auc_span"),
+    ("traj_auc_line", "contextbench_traj_auc_line"),
+    ("traj_redundancy_file", "contextbench_traj_redundancy_file"),
+    ("traj_redundancy_symbol", "contextbench_traj_redundancy_symbol"),
+    ("traj_redundancy_span", "contextbench_traj_redundancy_span"),
+    ("traj_redundancy_line", "contextbench_traj_redundancy_line"),
+    ("editloc_recall", "contextbench_editloc_recall"),
+    ("editloc_precision", "contextbench_editloc_precision"),
+]
+
 
 @dataclass(slots=True)
 class AppendixOutputs:
@@ -105,8 +183,15 @@ def generate_appendix_files(run_roots: list[Path], output_dir: Path) -> Appendix
     output_dir.mkdir(parents=True, exist_ok=True)
 
     per_task_rows = _build_per_task_rows(run_roots)
+    contextbench_layout = _use_contextbench_results_layout(per_task_rows)
     tool_invocation_rows = _build_tool_invocation_rows(per_task_rows)
-    results_rows = _build_results_rows(per_task_rows)
+    results_rows = _build_results_rows(
+        per_task_rows,
+        contextbench_layout=contextbench_layout,
+    )
+    results_fields = (
+        CONTEXTBENCH_RESULTS_FIELDS if contextbench_layout else RESULTS_FIELDS
+    )
 
     per_task_jsonl = output_dir / "appendix_minimal_per_task_log.jsonl"
     per_task_csv = output_dir / "appendix_minimal_per_task_log.csv"
@@ -119,10 +204,21 @@ def generate_appendix_files(run_roots: list[Path], output_dir: Path) -> Appendix
 
     write_jsonl(per_task_jsonl, per_task_rows)
     _write_csv(per_task_csv, PER_TASK_FIELDS, per_task_rows)
-    _write_csv(results_csv, RESULTS_FIELDS, results_rows)
-    results_markdown.write_text(_render_results_markdown(results_rows), encoding="utf-8")
+    _write_csv(results_csv, results_fields, results_rows)
+    results_markdown.write_text(
+        _render_results_markdown(
+            results_rows,
+            contextbench_layout=contextbench_layout,
+        ),
+        encoding="utf-8",
+    )
     per_attempt_markdown.write_text(
-        _render_per_attempt_markdown(per_task_rows, results_rows), encoding="utf-8"
+        _render_per_attempt_markdown(
+            per_task_rows,
+            results_rows,
+            contextbench_layout=contextbench_layout,
+        ),
+        encoding="utf-8",
     )
     prompt_tool_markdown.write_text(
         _render_prompt_tool_markdown(per_task_rows), encoding="utf-8"
@@ -309,6 +405,96 @@ def _build_per_task_rows(run_roots: list[Path]) -> list[dict[str, Any]]:
                     "bitloops_context_tokens": _pick_number(
                         metadata, ("bitloops_context_tokens",)
                     ),
+                    "contextbench_final_file_coverage": _pick_number(
+                        eval_row, ("final_file_coverage",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_file_precision": _pick_number(
+                        eval_row, ("final_file_precision",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_symbol_coverage": _pick_number(
+                        eval_row, ("final_symbol_coverage",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_symbol_precision": _pick_number(
+                        eval_row, ("final_symbol_precision",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_span_coverage": _pick_number(
+                        eval_row, ("final_span_coverage",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_span_precision": _pick_number(
+                        eval_row, ("final_span_precision",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_line_coverage": _pick_number(
+                        eval_row, ("final_line_coverage",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_final_line_precision": _pick_number(
+                        eval_row, ("final_line_precision",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_auc_file": _pick_number(
+                        eval_row, ("traj_auc_file",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_auc_symbol": _pick_number(
+                        eval_row, ("traj_auc_symbol",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_auc_span": _pick_number(
+                        eval_row, ("traj_auc_span",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_auc_line": _pick_number(
+                        eval_row, ("traj_auc_line",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_redundancy_file": _pick_number(
+                        eval_row, ("traj_redundancy_file",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_redundancy_symbol": _pick_number(
+                        eval_row, ("traj_redundancy_symbol",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_redundancy_span": _pick_number(
+                        eval_row, ("traj_redundancy_span",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_traj_redundancy_line": _pick_number(
+                        eval_row, ("traj_redundancy_line",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_editloc_recall": _pick_number(
+                        eval_row, ("editloc_recall",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
+                    "contextbench_editloc_precision": _pick_number(
+                        eval_row, ("editloc_precision",)
+                    )
+                    if isinstance(eval_row, dict)
+                    else None,
                     "evaluator_result": json.dumps(eval_row["raw"]) if eval_row else None,
                     "prompt_text": _extract_prompt_text(metadata),
                     "agent_command": _extract_command(metadata),
@@ -580,7 +766,11 @@ def _matches_model_prefix(normalized_model: str, *, prefixes: tuple[str, ...]) -
     return False
 
 
-def _build_results_rows(per_task_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_results_rows(
+    per_task_rows: list[dict[str, Any]],
+    *,
+    contextbench_layout: bool = False,
+) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for row in per_task_rows:
         key = (
@@ -607,32 +797,41 @@ def _build_results_rows(per_task_rows: list[dict[str, Any]]) -> list[dict[str, A
         variance_cost = _variance_of(rows, "estimated_cost")
         stddev_cost = _stddev_of(rows, "estimated_cost")
 
-        results.append(
-            {
-                "agent": agent,
-                "condition": condition,
-                "benchmark": benchmark,
-                "language": language,
-                "tasks": tasks,
-                "solved": solved,
-                "solve_rate": solved / tasks if tasks else 0.0,
-                "median_runtime_sec": runtime,
-                "median_tool_calls": tool_calls,
-                "median_file_reads": file_reads,
-                "median_search_actions": search_actions,
-                "median_cost": cost,
-                "mean_runtime_sec": mean_runtime,
-                "variance_runtime_sec": variance_runtime,
-                "stddev_runtime_sec": stddev_runtime,
-                "mean_cost": mean_cost,
-                "variance_cost": variance_cost,
-                "stddev_cost": stddev_cost,
-            }
-        )
+        result_row = {
+            "agent": agent,
+            "condition": condition,
+            "benchmark": benchmark,
+            "language": language,
+            "tasks": tasks,
+            "solved": solved,
+            "solve_rate": solved / tasks if tasks else 0.0,
+            "median_runtime_sec": runtime,
+            "median_tool_calls": tool_calls,
+            "median_file_reads": file_reads,
+            "median_search_actions": search_actions,
+            "median_cost": cost,
+            "mean_runtime_sec": mean_runtime,
+            "variance_runtime_sec": variance_runtime,
+            "stddev_runtime_sec": stddev_runtime,
+            "mean_cost": mean_cost,
+            "variance_cost": variance_cost,
+            "stddev_cost": stddev_cost,
+        }
+        if contextbench_layout:
+            for output_key, per_task_key in CONTEXTBENCH_RETRIEVAL_FIELD_MAP:
+                result_row[output_key] = _mean_of(rows, per_task_key)
+        results.append(result_row)
     return results
 
 
-def _render_results_markdown(rows: list[dict[str, Any]]) -> str:
+def _render_results_markdown(
+    rows: list[dict[str, Any]],
+    *,
+    contextbench_layout: bool = False,
+) -> str:
+    if contextbench_layout:
+        return _render_contextbench_results_markdown(rows)
+
     header = (
         "| Agent | Condition | Benchmark | Language | Tasks | Solved | Solve Rate "
         "| Median Runtime (s) | Median Tool Calls | Median File Reads "
@@ -678,7 +877,12 @@ def _render_results_markdown(rows: list[dict[str, Any]]) -> str:
 def _render_per_attempt_markdown(
     per_task_rows: list[dict[str, Any]],
     results_rows: list[dict[str, Any]],
+    *,
+    contextbench_layout: bool = False,
 ) -> str:
+    if contextbench_layout:
+        return _render_contextbench_per_attempt_markdown(per_task_rows, results_rows)
+
     lines: list[str] = ["# Per-Attempt Breakdown\n\n"]
 
     header = (
@@ -720,6 +924,174 @@ def _render_per_attempt_markdown(
         lines.append(f"- **Cost variance**: {_fmt_optional(result.get('variance_cost'))}\n")
 
     return "".join(lines)
+
+
+def _render_contextbench_results_markdown(rows: list[dict[str, Any]]) -> str:
+    header = (
+        "| Agent | Condition | Benchmark | Language | Tasks "
+        "| Final File Cov | Final File Prec | Final Symbol Cov | Final Symbol Prec "
+        "| Final Span Cov | Final Span Prec | Final Line Cov | Final Line Prec "
+        "| Traj AUC File | Traj AUC Symbol | Traj AUC Span | Traj AUC Line "
+        "| Traj Red File | Traj Red Symbol | Traj Red Span | Traj Red Line "
+        "| EditLoc Recall | EditLoc Precision "
+        "| Solved | Solve Rate | Median Runtime (s) | Median Tool Calls | Median File Reads "
+        "| Median Search Actions | Median Cost |\n"
+    )
+    sep = (
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+        "| --- | --- | --- | --- |\n"
+    )
+    lines = [header, sep]
+    for row in rows:
+        solve_rate = f"{float(row.get('solve_rate') or 0.0) * 100:.1f}%"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("agent", "")),
+                    str(row.get("condition", "")),
+                    str(row.get("benchmark", "")),
+                    str(row.get("language", "")),
+                    str(row.get("tasks", "")),
+                    _fmt_optional(row.get("final_file_coverage")),
+                    _fmt_optional(row.get("final_file_precision")),
+                    _fmt_optional(row.get("final_symbol_coverage")),
+                    _fmt_optional(row.get("final_symbol_precision")),
+                    _fmt_optional(row.get("final_span_coverage")),
+                    _fmt_optional(row.get("final_span_precision")),
+                    _fmt_optional(row.get("final_line_coverage")),
+                    _fmt_optional(row.get("final_line_precision")),
+                    _fmt_optional(row.get("traj_auc_file")),
+                    _fmt_optional(row.get("traj_auc_symbol")),
+                    _fmt_optional(row.get("traj_auc_span")),
+                    _fmt_optional(row.get("traj_auc_line")),
+                    _fmt_optional(row.get("traj_redundancy_file")),
+                    _fmt_optional(row.get("traj_redundancy_symbol")),
+                    _fmt_optional(row.get("traj_redundancy_span")),
+                    _fmt_optional(row.get("traj_redundancy_line")),
+                    _fmt_optional(row.get("editloc_recall")),
+                    _fmt_optional(row.get("editloc_precision")),
+                    str(row.get("solved", "")),
+                    solve_rate,
+                    _fmt_optional(row.get("median_runtime_sec")),
+                    _fmt_optional(row.get("median_tool_calls")),
+                    _fmt_optional(row.get("median_file_reads")),
+                    _fmt_optional(row.get("median_search_actions")),
+                    _fmt_optional(row.get("median_cost")),
+                ]
+            )
+            + " |\n"
+        )
+    return "".join(lines)
+
+
+def _render_contextbench_per_attempt_markdown(
+    per_task_rows: list[dict[str, Any]],
+    results_rows: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = ["# Per-Attempt Breakdown\n\n"]
+    lines.append("## Retrieval Metrics (Primary)\n\n")
+    header = (
+        "| Attempt | Task ID | Status | Final File Cov | Final File Prec | Final Symbol Cov "
+        "| Final Symbol Prec | Final Span Cov | Final Span Prec | Final Line Cov | Final Line Prec "
+        "| Traj AUC File | Traj AUC Symbol | Traj AUC Span | Traj AUC Line "
+        "| Traj Red File | Traj Red Symbol | Traj Red Span | Traj Red Line "
+        "| EditLoc Recall | EditLoc Precision |\n"
+    )
+    sep = (
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+        "| --- | --- | --- | --- | --- | --- |\n"
+    )
+    lines.append(header)
+    lines.append(sep)
+    for row in per_task_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("attempt", "")),
+                    str(row.get("task_id", "")),
+                    str(row.get("status", "")),
+                    _fmt_optional(row.get("contextbench_final_file_coverage")),
+                    _fmt_optional(row.get("contextbench_final_file_precision")),
+                    _fmt_optional(row.get("contextbench_final_symbol_coverage")),
+                    _fmt_optional(row.get("contextbench_final_symbol_precision")),
+                    _fmt_optional(row.get("contextbench_final_span_coverage")),
+                    _fmt_optional(row.get("contextbench_final_span_precision")),
+                    _fmt_optional(row.get("contextbench_final_line_coverage")),
+                    _fmt_optional(row.get("contextbench_final_line_precision")),
+                    _fmt_optional(row.get("contextbench_traj_auc_file")),
+                    _fmt_optional(row.get("contextbench_traj_auc_symbol")),
+                    _fmt_optional(row.get("contextbench_traj_auc_span")),
+                    _fmt_optional(row.get("contextbench_traj_auc_line")),
+                    _fmt_optional(row.get("contextbench_traj_redundancy_file")),
+                    _fmt_optional(row.get("contextbench_traj_redundancy_symbol")),
+                    _fmt_optional(row.get("contextbench_traj_redundancy_span")),
+                    _fmt_optional(row.get("contextbench_traj_redundancy_line")),
+                    _fmt_optional(row.get("contextbench_editloc_recall")),
+                    _fmt_optional(row.get("contextbench_editloc_precision")),
+                ]
+            )
+            + " |\n"
+        )
+
+    lines.append("\n## Summary\n\n")
+    for result in results_rows:
+        lines.append(
+            f"- **Final Coverage/Precision (file)**: "
+            f"{_fmt_optional(result.get('final_file_coverage'))} / {_fmt_optional(result.get('final_file_precision'))}\n"
+        )
+        lines.append(
+            f"- **Final Coverage/Precision (symbol)**: "
+            f"{_fmt_optional(result.get('final_symbol_coverage'))} / {_fmt_optional(result.get('final_symbol_precision'))}\n"
+        )
+        lines.append(
+            f"- **Final Coverage/Precision (span)**: "
+            f"{_fmt_optional(result.get('final_span_coverage'))} / {_fmt_optional(result.get('final_span_precision'))}\n"
+        )
+        lines.append(
+            f"- **Final Coverage/Precision (line)**: "
+            f"{_fmt_optional(result.get('final_line_coverage'))} / {_fmt_optional(result.get('final_line_precision'))}\n"
+        )
+        lines.append(
+            f"- **Trajectory AUC (file/symbol/span/line)**: "
+            f"{_fmt_optional(result.get('traj_auc_file'))} / {_fmt_optional(result.get('traj_auc_symbol'))} / "
+            f"{_fmt_optional(result.get('traj_auc_span'))} / {_fmt_optional(result.get('traj_auc_line'))}\n"
+        )
+        lines.append(
+            f"- **Trajectory Redundancy (file/symbol/span/line)**: "
+            f"{_fmt_optional(result.get('traj_redundancy_file'))} / {_fmt_optional(result.get('traj_redundancy_symbol'))} / "
+            f"{_fmt_optional(result.get('traj_redundancy_span'))} / {_fmt_optional(result.get('traj_redundancy_line'))}\n"
+        )
+        lines.append(
+            f"- **EditLoc (recall/precision)**: "
+            f"{_fmt_optional(result.get('editloc_recall'))} / {_fmt_optional(result.get('editloc_precision'))}\n"
+        )
+
+    lines.append("\n## Secondary Diagnostics\n\n")
+    for result in results_rows:
+        total = result.get("tasks", 0)
+        solved = result.get("solved", 0)
+        rate = f"{float(result['solve_rate']) * 100:.1f}%" if total else "N/A"
+        lines.append(f"- **Solve rate**: {solved}/{total} ({rate})\n")
+        lines.append(f"- **Median runtime**: {_fmt_optional(result.get('median_runtime_sec'))}s\n")
+        lines.append(f"- **Median tool calls**: {_fmt_optional(result.get('median_tool_calls'))}\n")
+        lines.append(f"- **Median cost**: ${_fmt_optional(result.get('median_cost'))}\n")
+
+    return "".join(lines)
+
+
+def _use_contextbench_results_layout(per_task_rows: list[dict[str, Any]]) -> bool:
+    if not per_task_rows:
+        return False
+    benchmarks = {
+        str(row.get("benchmark") or "").strip().lower()
+        for row in per_task_rows
+    }
+    if not benchmarks:
+        return False
+    return all(value.startswith("contextbench") for value in benchmarks if value)
 
 
 def _render_prompt_tool_markdown(per_task_rows: list[dict[str, Any]]) -> str:

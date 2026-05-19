@@ -1,0 +1,27 @@
+# Field reference: docs/contextbench.md
+preset = "codex_contextbench"
+
+[run]
+dataset_path = "datasets/contextbench_verified.train.jsonl"
+include_repos = []
+include_instance_ids = ["SWE-Bench-Verified__python__maintenance__bugfix__2e76c8cd"]
+max_instances = 1
+attempts = 1
+max_workers = 1
+timeout_seconds = 1200
+workspace_timeout_seconds = 600
+
+[model]
+name = "gpt-5.4"
+
+[evaluation]
+contextbench_repo = "third_party/ContextBench"
+contextbench_cache_dir = "third_party/ContextBench/repos"
+max_workers = 1
+timeout_seconds = 7200
+
+[modes.baseline.agent]
+extra_args = []
+
+[modes.with_bitloops.agent]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto"]

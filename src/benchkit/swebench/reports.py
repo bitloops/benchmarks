@@ -78,6 +78,24 @@ RUN_SUMMARY_FIELDS = [
     "estimated_cost_total",
     "tool_calls_total",
     "tool_calls_mean",
+    "contextbench_final_file_coverage_mean",
+    "contextbench_final_file_precision_mean",
+    "contextbench_final_symbol_coverage_mean",
+    "contextbench_final_symbol_precision_mean",
+    "contextbench_final_span_coverage_mean",
+    "contextbench_final_span_precision_mean",
+    "contextbench_final_line_coverage_mean",
+    "contextbench_final_line_precision_mean",
+    "contextbench_traj_auc_file_mean",
+    "contextbench_traj_auc_symbol_mean",
+    "contextbench_traj_auc_span_mean",
+    "contextbench_traj_auc_line_mean",
+    "contextbench_traj_redundancy_file_mean",
+    "contextbench_traj_redundancy_symbol_mean",
+    "contextbench_traj_redundancy_span_mean",
+    "contextbench_traj_redundancy_line_mean",
+    "contextbench_editloc_recall_mean",
+    "contextbench_editloc_precision_mean",
     "files_edited_total",
     "patch_size_total",
     "trace_jsonl_paths",
@@ -342,6 +360,60 @@ def _build_run_summary_row(run_root: Path) -> dict[str, Any]:
         "estimated_cost_total": _sum_float(per_task_rows, "estimated_cost"),
         "tool_calls_total": tool_calls_total,
         "tool_calls_mean": _mean_float(per_task_rows, "tool_calls"),
+        "contextbench_final_file_coverage_mean": _mean_float(
+            per_task_rows, "contextbench_final_file_coverage"
+        ),
+        "contextbench_final_file_precision_mean": _mean_float(
+            per_task_rows, "contextbench_final_file_precision"
+        ),
+        "contextbench_final_symbol_coverage_mean": _mean_float(
+            per_task_rows, "contextbench_final_symbol_coverage"
+        ),
+        "contextbench_final_symbol_precision_mean": _mean_float(
+            per_task_rows, "contextbench_final_symbol_precision"
+        ),
+        "contextbench_final_span_coverage_mean": _mean_float(
+            per_task_rows, "contextbench_final_span_coverage"
+        ),
+        "contextbench_final_span_precision_mean": _mean_float(
+            per_task_rows, "contextbench_final_span_precision"
+        ),
+        "contextbench_final_line_coverage_mean": _mean_float(
+            per_task_rows, "contextbench_final_line_coverage"
+        ),
+        "contextbench_final_line_precision_mean": _mean_float(
+            per_task_rows, "contextbench_final_line_precision"
+        ),
+        "contextbench_traj_auc_file_mean": _mean_float(
+            per_task_rows, "contextbench_traj_auc_file"
+        ),
+        "contextbench_traj_auc_symbol_mean": _mean_float(
+            per_task_rows, "contextbench_traj_auc_symbol"
+        ),
+        "contextbench_traj_auc_span_mean": _mean_float(
+            per_task_rows, "contextbench_traj_auc_span"
+        ),
+        "contextbench_traj_auc_line_mean": _mean_float(
+            per_task_rows, "contextbench_traj_auc_line"
+        ),
+        "contextbench_traj_redundancy_file_mean": _mean_float(
+            per_task_rows, "contextbench_traj_redundancy_file"
+        ),
+        "contextbench_traj_redundancy_symbol_mean": _mean_float(
+            per_task_rows, "contextbench_traj_redundancy_symbol"
+        ),
+        "contextbench_traj_redundancy_span_mean": _mean_float(
+            per_task_rows, "contextbench_traj_redundancy_span"
+        ),
+        "contextbench_traj_redundancy_line_mean": _mean_float(
+            per_task_rows, "contextbench_traj_redundancy_line"
+        ),
+        "contextbench_editloc_recall_mean": _mean_float(
+            per_task_rows, "contextbench_editloc_recall"
+        ),
+        "contextbench_editloc_precision_mean": _mean_float(
+            per_task_rows, "contextbench_editloc_precision"
+        ),
         "files_edited_total": _sum_int(per_task_rows, "files_edited"),
         "patch_size_total": _sum_int(per_task_rows, "patch_size"),
         "trace_jsonl_paths": trace_jsonl_paths,

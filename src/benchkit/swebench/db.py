@@ -39,6 +39,24 @@ TASK_ATTEMPT_FIELDS = [
     "first_file_edited",
     "first_test_command",
     "bitloops_context_tokens",
+    "contextbench_final_file_coverage",
+    "contextbench_final_file_precision",
+    "contextbench_final_symbol_coverage",
+    "contextbench_final_symbol_precision",
+    "contextbench_final_span_coverage",
+    "contextbench_final_span_precision",
+    "contextbench_final_line_coverage",
+    "contextbench_final_line_precision",
+    "contextbench_traj_auc_file",
+    "contextbench_traj_auc_symbol",
+    "contextbench_traj_auc_span",
+    "contextbench_traj_auc_line",
+    "contextbench_traj_redundancy_file",
+    "contextbench_traj_redundancy_symbol",
+    "contextbench_traj_redundancy_span",
+    "contextbench_traj_redundancy_line",
+    "contextbench_editloc_recall",
+    "contextbench_editloc_precision",
     "evaluator_result",
 ]
 
@@ -62,6 +80,24 @@ INTEGER_FIELDS = {
 REAL_FIELDS = {
     "runtime_sec",
     "estimated_cost",
+    "contextbench_final_file_coverage",
+    "contextbench_final_file_precision",
+    "contextbench_final_symbol_coverage",
+    "contextbench_final_symbol_precision",
+    "contextbench_final_span_coverage",
+    "contextbench_final_span_precision",
+    "contextbench_final_line_coverage",
+    "contextbench_final_line_precision",
+    "contextbench_traj_auc_file",
+    "contextbench_traj_auc_symbol",
+    "contextbench_traj_auc_span",
+    "contextbench_traj_auc_line",
+    "contextbench_traj_redundancy_file",
+    "contextbench_traj_redundancy_symbol",
+    "contextbench_traj_redundancy_span",
+    "contextbench_traj_redundancy_line",
+    "contextbench_editloc_recall",
+    "contextbench_editloc_precision",
 }
 
 RUN_COLUMNS = [
@@ -130,6 +166,24 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     first_file_edited TEXT,
     first_test_command TEXT,
     bitloops_context_tokens INTEGER,
+    contextbench_final_file_coverage REAL,
+    contextbench_final_file_precision REAL,
+    contextbench_final_symbol_coverage REAL,
+    contextbench_final_symbol_precision REAL,
+    contextbench_final_span_coverage REAL,
+    contextbench_final_span_precision REAL,
+    contextbench_final_line_coverage REAL,
+    contextbench_final_line_precision REAL,
+    contextbench_traj_auc_file REAL,
+    contextbench_traj_auc_symbol REAL,
+    contextbench_traj_auc_span REAL,
+    contextbench_traj_auc_line REAL,
+    contextbench_traj_redundancy_file REAL,
+    contextbench_traj_redundancy_symbol REAL,
+    contextbench_traj_redundancy_span REAL,
+    contextbench_traj_redundancy_line REAL,
+    contextbench_editloc_recall REAL,
+    contextbench_editloc_precision REAL,
     evaluator_result TEXT,
     PRIMARY KEY (run_id, task_id, attempt),
     FOREIGN KEY (run_id) REFERENCES runs(run_id)
@@ -217,6 +271,8 @@ def import_appendix_csv_to_sqlite(
     try:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(SCHEMA_SQL)
+        task_attempt_columns_sql = ", ".join(TASK_ATTEMPT_COLUMNS)
+        task_attempt_placeholders_sql = ", ".join(["?"] * len(TASK_ATTEMPT_COLUMNS))
         existing_run = connection.execute(
             "SELECT 1 FROM runs WHERE run_id = ?",
             (run_row["run_id"],),
@@ -254,17 +310,10 @@ def import_appendix_csv_to_sqlite(
                 tuple(run_row[column] for column in RUN_COLUMNS),
             )
             connection.executemany(
-                """
+                f"""
                 INSERT INTO task_attempts (
-                    run_id, task_id, attempt, benchmark, benchmark_version, repo,
-                    repo_label, language, agent, model_version, condition, status,
-                    runtime_sec, input_tokens, output_tokens, cache_read_input_tokens,
-                    cache_creation_input_tokens, total_input_processed_tokens,
-                    total_processed_tokens, estimated_cost,
-                    tool_calls, shell_commands, file_reads, search_actions, files_edited,
-                    patch_size, first_file_opened, first_file_edited, first_test_command,
-                    bitloops_context_tokens, evaluator_result
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    {task_attempt_columns_sql}
+                ) VALUES ({task_attempt_placeholders_sql})
                 ON CONFLICT(run_id, task_id, attempt) DO UPDATE SET
                     benchmark = excluded.benchmark,
                     benchmark_version = excluded.benchmark_version,
@@ -293,6 +342,24 @@ def import_appendix_csv_to_sqlite(
                     first_file_edited = excluded.first_file_edited,
                     first_test_command = excluded.first_test_command,
                     bitloops_context_tokens = excluded.bitloops_context_tokens,
+                    contextbench_final_file_coverage = excluded.contextbench_final_file_coverage,
+                    contextbench_final_file_precision = excluded.contextbench_final_file_precision,
+                    contextbench_final_symbol_coverage = excluded.contextbench_final_symbol_coverage,
+                    contextbench_final_symbol_precision = excluded.contextbench_final_symbol_precision,
+                    contextbench_final_span_coverage = excluded.contextbench_final_span_coverage,
+                    contextbench_final_span_precision = excluded.contextbench_final_span_precision,
+                    contextbench_final_line_coverage = excluded.contextbench_final_line_coverage,
+                    contextbench_final_line_precision = excluded.contextbench_final_line_precision,
+                    contextbench_traj_auc_file = excluded.contextbench_traj_auc_file,
+                    contextbench_traj_auc_symbol = excluded.contextbench_traj_auc_symbol,
+                    contextbench_traj_auc_span = excluded.contextbench_traj_auc_span,
+                    contextbench_traj_auc_line = excluded.contextbench_traj_auc_line,
+                    contextbench_traj_redundancy_file = excluded.contextbench_traj_redundancy_file,
+                    contextbench_traj_redundancy_symbol = excluded.contextbench_traj_redundancy_symbol,
+                    contextbench_traj_redundancy_span = excluded.contextbench_traj_redundancy_span,
+                    contextbench_traj_redundancy_line = excluded.contextbench_traj_redundancy_line,
+                    contextbench_editloc_recall = excluded.contextbench_editloc_recall,
+                    contextbench_editloc_precision = excluded.contextbench_editloc_precision,
                     evaluator_result = excluded.evaluator_result
                 """,
                 [tuple(row[column] for column in TASK_ATTEMPT_COLUMNS) for row in task_attempt_rows],
