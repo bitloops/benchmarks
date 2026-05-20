@@ -96,6 +96,7 @@ Optional wrapper argument:
   - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
   - by default runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true --no-embeddings --no-summaries`
+  - sets `BITLOOPS_TELEMETRY_OPTOUT=1` for Bitloops setup and the agent command environment
 - `--bitloops-embeddings-runtime <local|platform>`: opts back into embeddings during `bitloops init`
 - `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
 - `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`

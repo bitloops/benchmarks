@@ -40,6 +40,60 @@ name = "gpt-5.4"
         self.assertEqual(cfg.agent.id, "codex")
         self.assertEqual(cfg.evaluation.contextbench_repo, Path("third_party/ContextBench"))
 
+    def test_contextbench_with_bitloops_presets_enable_summaries(self) -> None:
+        for preset, agent_id in (
+            ("codex_contextbench", "codex"),
+            ("opencode_contextbench", "opencode"),
+        ):
+            with self.subTest(preset=preset):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    config_path = root / "config.toml"
+                    model_section = (
+                        """
+[model]
+name = "gpt-5.4"
+                        """.strip()
+                        if preset == "codex_contextbench"
+                        else ""
+                    )
+                    config_path.write_text(
+                        f"""
+preset = "{preset}"
+
+[run]
+dataset_path = "datasets/contextbench_verified.train.jsonl"
+max_instances = 1
+
+{model_section}
+                        """.strip(),
+                        encoding="utf-8",
+                    )
+
+                    cfg = load_run_config(config_path, mode="with_bitloops")
+
+                self.assertEqual(cfg.agent.id, agent_id)
+                self.assertEqual(cfg.condition, "with_bitloops")
+                self.assertIn("--bitloops-summary-mode", cfg.agent.extra_args)
+                summary_mode_index = cfg.agent.extra_args.index("--bitloops-summary-mode")
+                self.assertEqual(cfg.agent.extra_args[summary_mode_index + 1], "auto")
+                self.assertIn("--bitloops-embeddings-runtime", cfg.agent.extra_args)
+
+    def test_repo_opencode_contextbench_config_uses_ollama_glm_cloud(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        cfg = load_run_config(
+            repo_root / "configs" / "contextbench" / "opencode.toml",
+            mode="with_bitloops",
+        )
+
+        self.assertEqual(cfg.agent.id, "opencode")
+        self.assertEqual(cfg.model.provider, "ollama")
+        self.assertEqual(cfg.model.name, "glm-5.1:cloud")
+        self.assertEqual(
+            cfg.model_map["opencode"]["glm-5.1:cloud"],
+            "ollama/glm-5.1:cloud",
+        )
+
 
 class ContextBenchTrajectoryTests(unittest.TestCase):
     def test_build_contextbench_traj_data_extracts_read_and_bash_ranges(self) -> None:

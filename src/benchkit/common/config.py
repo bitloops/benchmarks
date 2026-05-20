@@ -519,7 +519,15 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                     "run": {
                         "condition": "with_bitloops",
                     },
-                    "agent": {"extra_args": ["--bitloops-init"]},
+                    "agent": {
+                        "extra_args": [
+                            "--bitloops-init",
+                            "--bitloops-embeddings-runtime",
+                            "platform",
+                            "--bitloops-summary-mode",
+                            "auto",
+                        ],
+                    },
                 },
             },
         },
@@ -535,9 +543,15 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                 "extra_args": [],
             },
             "model": {
-                "provider": "fireworks-ai",
+                "provider": "ollama",
+                "name": "glm-5.1:cloud",
                 "temperature": DEFAULT_TEMPERATURE,
                 "max_tokens": DEFAULT_MAX_TOKENS,
+            },
+            "model_map": {
+                "opencode": {
+                    "glm-5.1:cloud": "ollama/glm-5.1:cloud",
+                },
             },
             "evaluation": {
                 **common_evaluation_contextbench,
@@ -563,7 +577,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                             "--bitloops-embeddings-runtime",
                             "platform",
                             "--bitloops-summary-mode",
-                            "off",
+                            "auto",
                         ],
                     },
                 },

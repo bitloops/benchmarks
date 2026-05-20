@@ -51,6 +51,8 @@ CONFIG=configs/contextbench/opencode.toml
 MODE=with_bitloops
 ```
 
+The committed OpenCode ContextBench config routes through Ollama and currently resolves `glm-5.1:cloud` to `ollama/glm-5.1:cloud`.
+
 ## 4. Plan + Run
 
 ```bash

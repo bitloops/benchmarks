@@ -1019,12 +1019,22 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metadata["bitloops_daemon_start_mode"], "start_detached")
         self.assertTrue(metadata["bitloops_global_lock_enabled"])
         self.assertTrue(metadata["bitloops_global_lock_acquired"])
-        self.assertEqual(metadata["bitloops_start_command"], ["bitloops", "start", "--detached"])
+        self.assertEqual(
+            metadata["bitloops_start_command"],
+            ["bitloops", "start", "--telemetry=false", "--detached"],
+        )
         self.assertIsNone(metadata["bitloops_bootstrap_command"])
         first_command = mock_call.call_args_list[0].args[0]
         second_command = mock_call.call_args_list[1].args[0]
         self.assertEqual(first_command, ["bitloops", "status"])
-        self.assertEqual(second_command, ["bitloops", "start", "--detached"])
+        self.assertEqual(
+            second_command,
+            ["bitloops", "start", "--telemetry=false", "--detached"],
+        )
+        self.assertEqual(
+            mock_call.call_args_list[1].kwargs["env"]["BITLOOPS_TELEMETRY_OPTOUT"],
+            "1",
+        )
 
     def test_setup_bitloops_bootstraps_daemon_when_needed(self) -> None:
         responses = [
@@ -1050,7 +1060,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
             metadata["bitloops_daemon_start_mode"],
             "start_create_default_config",
         )
-        self.assertEqual(metadata["bitloops_start_command"], ["bitloops", "start", "--detached"])
+        self.assertEqual(
+            metadata["bitloops_start_command"],
+            ["bitloops", "start", "--telemetry=false", "--detached"],
+        )
         self.assertEqual(
             metadata["bitloops_bootstrap_command"],
             [
@@ -1072,6 +1085,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--detached",
             ],
         )
+        self.assertEqual(
+            mock_call.call_args_list[2].kwargs["env"]["BITLOOPS_TELEMETRY_OPTOUT"],
+            "1",
+        )
 
     def test_setup_bitloops_uses_non_interactive_init_flags(self) -> None:
         responses = [
@@ -1090,6 +1107,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
             )
 
         init_command = mock_call.call_args_list[1].args[0]
+        init_env = mock_call.call_args_list[1].kwargs["env"]
         self.assertEqual(
             init_command,
             [
@@ -1104,6 +1122,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--no-summaries",
             ],
         )
+        self.assertEqual(init_env["BITLOOPS_TELEMETRY_OPTOUT"], "1")
         self.assertFalse(metadata["bitloops_install_default_daemon"])
         self.assertTrue(metadata["bitloops_install_default_daemon_requested"])
 

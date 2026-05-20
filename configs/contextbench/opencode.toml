@@ -16,11 +16,10 @@ workspace_timeout_seconds = 1800
 # OpenCode runs with Ollama as a custom provider overlay.
 # Local daemon settings come from configs/opencode/ollama.json.
 provider = "ollama"
-name = "qwen2.5:14b"
-# Use configs/swebench/opencode_ollama_cloud.toml for Ollama Cloud-backed runs.
+name = "glm-5.1:cloud"
 
 [model_map.opencode]
-"qwen2.5:14b" = "ollama/qwen2.5:14b"
+"glm-5.1:cloud" = "ollama/glm-5.1:cloud"
 
 [evaluation]
 contextbench_repo = "third_party/ContextBench"
@@ -32,4 +31,4 @@ timeout_seconds = 7200
 extra_args = []
 
 [modes.with_bitloops.agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "off"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto"]

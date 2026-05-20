@@ -53,6 +53,7 @@ DEBUG_HTTP_FALLBACK_ENV_VAR = "BENCHKIT_DEBUG_HTTP_FALLBACK"
 DEBUG_SERVER_ENDPOINT_ENV_VAR = "BENCHKIT_DEBUG_SERVER_ENDPOINT"
 BITLOOPS_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_BITLOOPS_GLOBAL_LOCK_PATH"
 BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_DISABLE_BITLOOPS_GLOBAL_LOCK"
+BITLOOPS_TELEMETRY_OPTOUT_ENV_VAR = "BITLOOPS_TELEMETRY_OPTOUT"
 BITLOOPS_TASK_DAEMON_STOP_TIMEOUT_SECONDS = 30
 
 
@@ -431,6 +432,8 @@ def run_agent_wrapper(
     workspace = resolve_workspace(payload)
     bitloops_sandbox = resolve_bitloops_sandbox(payload)
     bitloops_env = build_bitloops_task_environment(bitloops_sandbox)
+    if getattr(args, "bitloops_init", False) and bitloops_env is None:
+        bitloops_env = build_bitloops_telemetry_optout_environment()
 
     try:
         reset_workspace(workspace)
@@ -566,7 +569,7 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
     if mode != "per_task_daemon":
         return None
 
-    env = dict(os.environ)
+    env = build_bitloops_telemetry_optout_environment()
     original_home = str(env.get("HOME", "")).strip()
     sandbox_config_path = _resolve_bitloops_sandbox_daemon_config_path(sandbox)
     path_map = {
@@ -626,6 +629,14 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
             )
     env["BITLOOPS_BENCHKIT_SANDBOX_MODE"] = mode
     return env
+
+
+def build_bitloops_telemetry_optout_environment(
+    env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    output = dict(os.environ if env is None else env)
+    output[BITLOOPS_TELEMETRY_OPTOUT_ENV_VAR] = "1"
+    return output
 
 
 def _mirror_aws_auth_cache_into_sandbox(*, original_home: Path, sandbox_home: Path) -> None:
@@ -1467,7 +1478,7 @@ def _ensure_bitloops_daemon_started(
 
     if not daemon_running:
         daemon_start_attempted = True
-        start_command = [binary, "start", "--detached"]
+        start_command = [binary, "start", "--telemetry=false", "--detached"]
         daemon_start_command = start_command
         start_stdout, start_stderr, start_code, start_elapsed_ms = call_command(
             start_command,
@@ -1709,6 +1720,7 @@ def setup_bitloops_for_workspace(
 ) -> dict[str, Any]:
     binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
     timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "1500"))
+    env = build_bitloops_telemetry_optout_environment(env)
     setup_started = time.time()
     (
         git_detached_head,
