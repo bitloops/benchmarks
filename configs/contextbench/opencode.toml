@@ -5,10 +5,20 @@ preset = "opencode_contextbench"
 [run]
 dataset_path = "datasets/contextbench_verified.train.jsonl"
 include_repos = []
-include_instance_ids = []
-max_instances = 1
+include_instance_ids = [
+  "SWE-Bench-Verified__python__maintenance__bugfix__e5236b5f",
+  "SWE-Bench-Verified__python__maintenance__bugfix__1409977d",
+  "SWE-PolyBench__python__maintenance__bugfix__31f7341a",
+  "SWE-PolyBench__typescript__maintenance__bugfix__42165c4e",
+  "Multi-SWE-Bench__typescript__maintenance__bugfix__5eee261d",
+  "Multi-SWE-Bench__go__maintenance__bugfix__d129d52f",
+  "SWE-Bench-Verified__python__maintenance__bugfix__28ed0b77",
+  "SWE-Bench-Verified__python__maintenance__bugfix__e989ba2d",
+]
+
+max_instances = 8
 attempts = 1
-max_workers = 1
+max_workers = 4
 timeout_seconds = 1200
 workspace_timeout_seconds = 1800
 
@@ -31,4 +41,4 @@ timeout_seconds = 7200
 extra_args = []
 
 [modes.with_bitloops.agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto", "--bitloops-disable-devql-guidance"]

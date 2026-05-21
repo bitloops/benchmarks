@@ -99,7 +99,7 @@ def _extract_files_and_spans(invocation: Any) -> tuple[set[str], dict[str, list[
 
     tool = str(invocation.get("tool") or "").strip().lower()
     if tool == "read":
-        path = _normalize_repo_path(invocation.get("path"))
+        path = _invocation_repo_path(invocation)
         if path:
             files.add(path)
             offset = _as_int(invocation.get("offset"))
@@ -109,7 +109,7 @@ def _extract_files_and_spans(invocation: Any) -> tuple[set[str], dict[str, list[
         return files, spans
 
     if tool == "grep":
-        path = _normalize_repo_path(invocation.get("path"))
+        path = _invocation_repo_path(invocation)
         if path:
             files.add(path)
         return files, spans
@@ -123,11 +123,6 @@ def _extract_files_and_spans(invocation: Any) -> tuple[set[str], dict[str, list[
                 _add_span(spans, path, span["start"], span["end"])
         return files, spans
 
-    raw_input = invocation.get("raw_input_json")
-    if isinstance(raw_input, str):
-        maybe_path = _normalize_repo_path(raw_input)
-        if maybe_path:
-            files.add(maybe_path)
     return files, spans
 
 
@@ -319,6 +314,23 @@ def _extract_grep_like_path(command: str) -> str | None:
     return _normalize_repo_path(match.group("path"))
 
 
+def _invocation_repo_path(invocation: dict[str, Any]) -> str | None:
+    path = _normalize_repo_path(invocation.get("path") or invocation.get("filePath"))
+    if path:
+        return path
+
+    raw_input = invocation.get("raw_input_json")
+    if not isinstance(raw_input, str) or not raw_input.strip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(raw_input)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return _normalize_repo_path(parsed.get("path") or parsed.get("filePath"))
+
+
 def _add_span(
     spans: dict[str, list[dict[str, int]]],
     path: str,
@@ -363,6 +375,8 @@ def _normalize_repo_path(raw: Any) -> str | None:
     if not token or token in {"-", "."}:
         return None
 
+    token = _strip_benchmark_workspace_prefix(token)
+
     for prefix in ("/testbed/", "/workspace/", "/app/"):
         if token.startswith(prefix):
             token = token[len(prefix) :]
@@ -385,3 +399,17 @@ def _normalize_repo_path(raw: Any) -> str | None:
     if Path(token).name in {"bash", "sh", "zsh"}:
         return None
     return token
+
+
+def _strip_benchmark_workspace_prefix(token: str) -> str:
+    marker = "/workspaces/"
+    if marker not in token:
+        return token
+    if not (token.startswith("/") or token.startswith("runs/") or "/runs/" in token):
+        return token
+
+    suffix = token.split(marker, 1)[1]
+    parts = suffix.split("/")
+    if len(parts) < 3:
+        return token
+    return "/".join(parts[2:])

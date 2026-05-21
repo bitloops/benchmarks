@@ -561,8 +561,11 @@ def _contextbench_dependency_preflight(
         "-c",
         (
             "import importlib.util,sys; "
-            "mods=['tree_sitter','tree_sitter_languages']; "
-            "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+            "missing=[]; "
+            "missing.extend(['tree_sitter'] if importlib.util.find_spec('tree_sitter') is None else []); "
+            "has_parser_pack=(importlib.util.find_spec('tree_sitter_languages') is not None "
+            "or importlib.util.find_spec('tree_sitter_language_pack') is not None); "
+            "missing.extend(['tree_sitter_languages|tree_sitter_language_pack'] if not has_parser_pack else []); "
             "print(','.join(missing)); "
             "sys.exit(1 if missing else 0)"
         ),
@@ -581,7 +584,9 @@ def _contextbench_dependency_preflight(
     return (
         "ContextBench evaluation preflight failed: missing dependencies "
         f"({missing}). Install into benchmark venv with "
-        "`./.venv/bin/python -m pip install -r third_party/ContextBench/requirements.txt`."
+        "`./.venv/bin/python -m pip install -r third_party/ContextBench/requirements.txt` "
+        "or, on Python 3.12+, `./.venv/bin/python -m pip install tree-sitter "
+        "tree-sitter-language-pack`."
     )
 
 

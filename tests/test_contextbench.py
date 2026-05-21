@@ -118,6 +118,48 @@ class ContextBenchTrajectoryTests(unittest.TestCase):
             {"start": 20, "end": 40},
         )
 
+    def test_build_contextbench_traj_data_extracts_opencode_file_path(self) -> None:
+        traj_data = build_contextbench_traj_data(
+            tool_invocations_curated=[
+                {
+                    "tool": "Read",
+                    "filePath": "/Users/me/runs/contextbench/workspaces/cli__cli/abc123/pkg/cmd/issue/delete/delete.go",
+                    "offset": 9,
+                    "limit": 3,
+                }
+            ],
+            tool_invocations_raw=[],
+        )
+
+        self.assertEqual(
+            traj_data["pred_files"],
+            ["pkg/cmd/issue/delete/delete.go"],
+        )
+        self.assertEqual(
+            traj_data["pred_spans"]["pkg/cmd/issue/delete/delete.go"][0],
+            {"start": 10, "end": 12},
+        )
+
+    def test_build_contextbench_traj_data_parses_raw_input_file_path(self) -> None:
+        traj_data = build_contextbench_traj_data(
+            tool_invocations_curated=[
+                {
+                    "tool": "Read",
+                    "raw_input_json": json.dumps(
+                        {
+                            "filePath": "/Users/me/runs/contextbench/workspaces/vuejs__core/def456/packages/runtime-core/src/componentProps.ts",
+                        }
+                    ),
+                }
+            ],
+            tool_invocations_raw=[],
+        )
+
+        self.assertEqual(
+            traj_data["pred_files"],
+            ["packages/runtime-core/src/componentProps.ts"],
+        )
+
     def test_build_contextbench_traj_data_falls_back_to_edit_when_no_primary_tools(self) -> None:
         traj_data = build_contextbench_traj_data(
             tool_invocations_curated=[

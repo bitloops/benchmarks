@@ -193,6 +193,7 @@ class EvaluationTests(unittest.TestCase):
 
             self.assertEqual(result.status, "ok")
             self.assertGreaterEqual(len(calls), 2)
+            self.assertIn("tree_sitter_language_pack", calls[0][2])
 
     def test_build_evaluation_env_adds_swebench_repo_to_pythonpath(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

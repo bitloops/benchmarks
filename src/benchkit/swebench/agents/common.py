@@ -54,6 +54,7 @@ DEBUG_SERVER_ENDPOINT_ENV_VAR = "BENCHKIT_DEBUG_SERVER_ENDPOINT"
 BITLOOPS_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_BITLOOPS_GLOBAL_LOCK_PATH"
 BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_DISABLE_BITLOOPS_GLOBAL_LOCK"
 BITLOOPS_TELEMETRY_OPTOUT_ENV_VAR = "BITLOOPS_TELEMETRY_OPTOUT"
+BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR = "BITLOOPS_PLATFORM_GATEWAY_TOKEN"
 BITLOOPS_TASK_DAEMON_STOP_TIMEOUT_SECONDS = 30
 
 
@@ -234,6 +235,17 @@ def env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+def _subprocess_env_for_cwd(
+    env: dict[str, str] | None,
+    cwd: str | None,
+) -> dict[str, str] | None:
+    if cwd is None:
+        return env
+    output = dict(os.environ if env is None else env)
+    output["PWD"] = str(Path(cwd).resolve())
+    return output
+
+
 def call_command(
     command: list[str],
     timeout_seconds: int,
@@ -249,7 +261,7 @@ def call_command(
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=env,
+        env=_subprocess_env_for_cwd(env, cwd),
         cwd=cwd,
         start_new_session=True,
     )
@@ -367,6 +379,11 @@ def add_bitloops_wrapper_args(parser: Any) -> Any:
         help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
     )
     parser.add_argument(
+        "--bitloops-disable-devql-guidance",
+        action="store_true",
+        help="Disable Bitloops' repo-local DevQL guidance/bootstrap messages during init.",
+    )
+    parser.add_argument(
         "--bitloops-embedding-mode",
         choices=("off", "deterministic", "refresh_on_upgrade", "semantic_aware_once"),
         help="Repo-local Bitloops embedding mode override to apply after init.",
@@ -448,6 +465,14 @@ def run_agent_wrapper(
     if getattr(args, "bitloops_init", False):
         try:
             if bitloops_env is not None and bitloops_sandbox is not None:
+                _seed_bitloops_cloud_inference_profiles(
+                    bitloops_sandbox,
+                    summary_mode=(
+                        "off"
+                        if getattr(args, "bitloops_no_summaries", False)
+                        else getattr(args, "bitloops_summary_mode", None)
+                    ),
+                )
                 task_daemon_handle = start_bitloops_task_daemon(
                     binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
                     timeout=bitloops_setup_timeout_seconds,
@@ -464,6 +489,11 @@ def run_agent_wrapper(
                 no_embeddings=getattr(args, "bitloops_no_embeddings", False),
                 no_summaries=getattr(args, "bitloops_no_summaries", False),
                 summary_mode=getattr(args, "bitloops_summary_mode", None),
+                disable_devql_guidance=getattr(
+                    args,
+                    "bitloops_disable_devql_guidance",
+                    False,
+                ),
                 embedding_mode=getattr(args, "bitloops_embedding_mode", None),
                 sandbox=bitloops_sandbox,
                 env=bitloops_env,
@@ -571,6 +601,8 @@ def build_bitloops_task_environment(sandbox: dict[str, Any] | None) -> dict[str,
 
     env = build_bitloops_telemetry_optout_environment()
     original_home = str(env.get("HOME", "")).strip()
+    if env.pop(BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR, None) is not None:
+        env["BENCHKIT_BITLOOPS_STRIPPED_PLATFORM_GATEWAY_TOKEN"] = "1"
     sandbox_config_path = _resolve_bitloops_sandbox_daemon_config_path(sandbox)
     path_map = {
         "HOME": sandbox.get("home_root"),
@@ -675,6 +707,166 @@ def _resolve_bitloops_sandbox_daemon_config_path(sandbox: dict[str, Any] | None)
     return candidates[0]
 
 
+def _toml_string(value: str) -> str:
+    return json.dumps(str(value))
+
+
+def _replace_toml_table(content: str, table_name: str, body: str) -> str:
+    table_text = f"[{table_name}]\n{body.rstrip()}\n"
+    table_pattern = re.compile(
+        rf"(?ms)^\[{re.escape(table_name)}\]\n.*?(?=^\[|\Z)"
+    )
+    if table_pattern.search(content):
+        return table_pattern.sub(table_text, content, count=1)
+    separator = "\n\n" if content.strip() else ""
+    return f"{content.rstrip()}{separator}{table_text}"
+
+
+def _seed_bitloops_cloud_inference_profiles(
+    sandbox: dict[str, Any] | None,
+    *,
+    summary_mode: str | None,
+    bind_semantic_inference: bool = False,
+) -> Path | None:
+    config_path = _resolve_bitloops_sandbox_daemon_config_path(sandbox)
+    if config_path is None:
+        return None
+
+    config_root = config_path.parent
+    platform_embeddings_binary = _resolve_bitloops_managed_tool_binary(
+        "bitloops-platform-embeddings",
+        config_root
+        / "tools"
+        / "bitloops-platform-embeddings"
+        / "bitloops-platform-embeddings",
+    )
+    inference_binary = _resolve_bitloops_managed_tool_binary(
+        "bitloops-inference",
+        config_root
+        / "tools"
+        / "bitloops-inference"
+        / "bitloops-inference",
+    )
+    relational_db_path = config_root / "stores" / "relational" / "relational.db"
+    events_db_path = config_root / "stores" / "event" / "events.duckdb"
+    blob_store_path = config_root / "stores" / "blob"
+    effective_summary_mode = (
+        summary_mode.strip().lower()
+        if isinstance(summary_mode, str) and summary_mode.strip()
+        else "off"
+    )
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    tables = {
+        "runtime": "\n".join(
+            [
+                "local_dev = false",
+            ]
+        ),
+        "stores": "",
+        "stores.relational": f"sqlite_path = {_toml_string(str(relational_db_path))}",
+        "stores.events": f"duckdb_path = {_toml_string(str(events_db_path))}",
+        "stores.blob": f"local_path = {_toml_string(str(blob_store_path))}",
+        "logging": "",
+        "telemetry": "enabled = false",
+        "dashboard": "",
+        "dashboard.local_dashboard": "tls = false",
+        "inference": "",
+        "inference.runtimes": "",
+        "inference.runtimes.bitloops_platform_embeddings": "\n".join(
+            [
+                f"command = {_toml_string(str(platform_embeddings_binary))}",
+                'args = ["--api-key-env", "BITLOOPS_PLATFORM_GATEWAY_TOKEN"]',
+                "startup_timeout_secs = 60",
+                "request_timeout_secs = 300",
+            ]
+        ),
+        "inference.runtimes.bitloops_inference": "\n".join(
+            [
+                f"command = {_toml_string(str(inference_binary))}",
+                "args = []",
+                "startup_timeout_secs = 60",
+                "request_timeout_secs = 300",
+            ]
+        ),
+        "inference.profiles": "",
+        "inference.profiles.platform_code": "\n".join(
+            [
+                'task = "embeddings"',
+                'driver = "bitloops_embeddings_ipc"',
+                'runtime = "bitloops_platform_embeddings"',
+                'model = "bge-m3"',
+            ]
+        ),
+        "inference.profiles.guidance_llm": "\n".join(
+            [
+                'task = "text_generation"',
+                'runtime = "bitloops_inference"',
+                'driver = "bitloops_platform_chat"',
+                'model = "ministral-3-3b-instruct"',
+                'api_key = "${BITLOOPS_PLATFORM_GATEWAY_TOKEN}"',
+                'temperature = "0.1"',
+                "max_output_tokens = 4096",
+            ]
+        ),
+        "inference.profiles.summary_llm": "\n".join(
+            [
+                'task = "text_generation"',
+                'runtime = "bitloops_inference"',
+                'driver = "bitloops_platform_chat"',
+                'model = "ministral-3-3b-instruct"',
+                'api_key = "${BITLOOPS_PLATFORM_GATEWAY_TOKEN}"',
+                'temperature = "0.1"',
+                "max_output_tokens = 200",
+            ]
+        ),
+        "context_guidance": "",
+        "context_guidance.inference": 'guidance_generation = "guidance_llm"',
+        "semantic_clones": f'summary_mode = "{effective_summary_mode}"',
+    }
+    if bind_semantic_inference:
+        semantic_inference = [
+            'code_embeddings = "platform_code"',
+        ]
+        if effective_summary_mode != "off":
+            semantic_inference.extend(
+                [
+                    'summary_generation = "summary_llm"',
+                    'summary_embeddings = "platform_code"',
+                ]
+            )
+        tables["semantic_clones.inference"] = "\n".join(semantic_inference)
+    for table_name, body in tables.items():
+        content = _replace_toml_table(content, table_name, body)
+    config_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+    return config_path
+
+
+def _resolve_bitloops_managed_tool_binary(tool_name: str, sandbox_binary: Path) -> Path:
+    raw_host_home = os.environ.get("HOME", "").strip()
+    host_home = Path(raw_host_home).expanduser() if raw_host_home else None
+    candidates = []
+    if host_home is not None:
+        if sys.platform == "darwin":
+            candidates.append(
+                host_home
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "tools"
+                / tool_name
+                / tool_name
+            )
+        candidates.append(
+            host_home / ".local" / "share" / "bitloops" / "tools" / tool_name / tool_name
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return sandbox_binary
+
+
 def _mirror_file_if_present(*, source: Path, destinations: tuple[Path, ...]) -> None:
     if not source.exists() or not source.is_file():
         return
@@ -683,43 +875,62 @@ def _mirror_file_if_present(*, source: Path, destinations: tuple[Path, ...]) -> 
         shutil.copy2(source, destination)
 
 
+def _bitloops_auth_runtime_state_sources(original_home: Path) -> list[Path]:
+    candidates = [
+        original_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite",
+    ]
+    if sys.platform == "darwin":
+        candidates.append(
+            original_home
+            / "Library"
+            / "Application Support"
+            / "bitloops"
+            / "stores"
+            / "runtime"
+            / "runtime.sqlite"
+        )
+    return list(dict.fromkeys(candidates))
+
+
 def _mirror_bitloops_auth_state_into_sandbox(*, original_home: Path, sandbox_home: Path) -> None:
-    runtime_state_source = (
-        original_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
-    )
-    if not runtime_state_source.exists() or not runtime_state_source.is_file():
+    rows: list[tuple[Any, ...]] = []
+    for runtime_state_source in _bitloops_auth_runtime_state_sources(original_home):
+        if not runtime_state_source.exists() or not runtime_state_source.is_file():
+            continue
+
+        try:
+            source_connection = sqlite3.connect(
+                f"file:{runtime_state_source}?mode=ro",
+                uri=True,
+                timeout=1.0,
+            )
+        except sqlite3.Error:
+            continue
+
+        try:
+            rows = source_connection.execute(
+                """
+                SELECT document_kind, payload, updated_at
+                FROM runtime_documents
+                WHERE document_kind = ?
+                """,
+                ("workos_auth_session_state",),
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        finally:
+            source_connection.close()
+
+        if rows:
+            break
+
+    if not rows:
         return
 
     runtime_state_destination = (
         sandbox_home / ".local" / "state" / "bitloops" / "daemon" / "runtime.sqlite"
     )
     runtime_state_destination.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        source_connection = sqlite3.connect(
-            f"file:{runtime_state_source}?mode=ro",
-            uri=True,
-            timeout=1.0,
-        )
-    except sqlite3.Error:
-        return
-
-    try:
-        rows = source_connection.execute(
-            """
-            SELECT document_kind, payload, updated_at
-            FROM runtime_documents
-            WHERE document_kind = ?
-            """,
-            ("workos_auth_session_state",),
-        ).fetchall()
-    except sqlite3.Error:
-        return
-    finally:
-        source_connection.close()
-
-    if not rows:
-        return
 
     destination_connection = sqlite3.connect(runtime_state_destination)
     try:
@@ -912,6 +1123,191 @@ def _load_runtime_document(
     return payload if isinstance(payload, dict) else None
 
 
+def _bitloops_authorization_metadata(
+    runtime_db_path: Path | None,
+    *,
+    env: dict[str, str] | None = None,
+    binary: str | None = None,
+    cwd: str | None = None,
+    timeout_seconds: int = 15,
+) -> dict[str, Any]:
+    auth_state = _load_runtime_document(
+        runtime_db_path,
+        document_kind="workos_auth_session_state",
+    )
+    gateway_token_present = bool(
+        str((env or {}).get(BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR, "")).strip()
+    )
+    login_token_probe_attempted = bool(binary and env is not None)
+    login_token_probe_ok = False
+    login_token_probe_elapsed_ms: int | None = None
+    login_token_probe_return_code: int | None = None
+    login_token_probe_timed_out = False
+    if login_token_probe_attempted:
+        try:
+            stdout, _stderr, return_code, elapsed_ms = call_command(
+                [str(binary), "login", "token"],
+                timeout_seconds,
+                env=env,
+                cwd=cwd,
+            )
+            login_token_probe_elapsed_ms = elapsed_ms
+            login_token_probe_return_code = return_code
+            login_token_probe_ok = return_code == 0 and bool(stdout.strip())
+        except subprocess.TimeoutExpired:
+            login_token_probe_timed_out = True
+
+    authorization_source = None
+    if auth_state is not None:
+        authorization_source = "runtime_document"
+    elif login_token_probe_ok:
+        authorization_source = "login_token_probe"
+    elif gateway_token_present and not login_token_probe_attempted:
+        authorization_source = f"env:{BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR}"
+    return {
+        "bitloops_cloud_authorized": authorization_source is not None,
+        "bitloops_cloud_authorization_source": authorization_source,
+        "bitloops_platform_gateway_token_present": gateway_token_present,
+        "bitloops_login_token_probe_attempted": login_token_probe_attempted,
+        "bitloops_login_token_probe_ok": login_token_probe_ok,
+        "bitloops_login_token_probe_elapsed_ms": login_token_probe_elapsed_ms,
+        "bitloops_login_token_probe_return_code": login_token_probe_return_code,
+        "bitloops_login_token_probe_timed_out": login_token_probe_timed_out,
+        "bitloops_auth_runtime_db_path": (
+            str(runtime_db_path) if runtime_db_path is not None else None
+        ),
+    }
+
+
+def _bitloops_init_environment_with_fresh_platform_token(
+    *,
+    binary: str,
+    env: dict[str, str],
+    cwd: str | None,
+    timeout_seconds: int = 15,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    init_env = dict(env)
+    metadata: dict[str, Any] = {
+        "bitloops_init_platform_token_probe_attempted": True,
+        "bitloops_init_platform_token_probe_ok": False,
+        "bitloops_init_platform_token_probe_elapsed_ms": None,
+        "bitloops_init_platform_token_probe_return_code": None,
+        "bitloops_init_platform_token_probe_timed_out": False,
+        "bitloops_init_platform_token_injected": False,
+    }
+    try:
+        stdout, _stderr, return_code, elapsed_ms = call_command(
+            [binary, "login", "token"],
+            timeout_seconds,
+            env=env,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        metadata["bitloops_init_platform_token_probe_timed_out"] = True
+        return init_env, metadata
+
+    token = stdout.strip()
+    metadata["bitloops_init_platform_token_probe_elapsed_ms"] = elapsed_ms
+    metadata["bitloops_init_platform_token_probe_return_code"] = return_code
+    metadata["bitloops_init_platform_token_probe_ok"] = return_code == 0 and bool(token)
+    if return_code == 0 and token:
+        init_env[BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR] = token
+        metadata["bitloops_init_platform_token_injected"] = True
+    return init_env, metadata
+
+
+def _bitloops_relational_db_path_for_session(
+    latest_session: dict[str, Any],
+) -> Path | None:
+    daemon_config_root = str(latest_session.get("daemon_config_root", "")).strip()
+    if not daemon_config_root:
+        return None
+    return Path(daemon_config_root) / "stores" / "relational" / "relational.db"
+
+
+def _count_relational_rows(
+    relational_db_path: Path | None,
+    sql: str,
+) -> int | None:
+    if relational_db_path is None or not relational_db_path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(
+            f"file:{relational_db_path}?mode=ro",
+            uri=True,
+            timeout=1.0,
+        )
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(sql).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _summary_materialization_ready_for_session(
+    latest_session: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    selections = latest_session.get("selections")
+    run_summaries = isinstance(selections, dict) and bool(selections.get("run_summaries"))
+    run_summary_embeddings = isinstance(selections, dict) and bool(
+        selections.get("run_summary_embeddings")
+    )
+    relational_db_path = _bitloops_relational_db_path_for_session(latest_session)
+    summary_rows = _count_relational_rows(
+        relational_db_path,
+        "SELECT COUNT(*) FROM symbol_semantics_current",
+    )
+    summary_embedding_rows = _count_relational_rows(
+        relational_db_path,
+        (
+            "SELECT COUNT(*) FROM symbol_embeddings_current "
+            "WHERE representation_kind = 'summary'"
+        ),
+    )
+    metadata = {
+        "summary_materialization_required": run_summaries,
+        "summary_embeddings_required": run_summary_embeddings,
+        "summary_relational_db_path": (
+            str(relational_db_path) if relational_db_path is not None else None
+        ),
+        "summary_rows": summary_rows,
+        "summary_embedding_rows": summary_embedding_rows,
+    }
+    summaries_ready = not run_summaries or (summary_rows is not None and summary_rows > 0)
+    summary_embedding_coverage_complete = (
+        summary_rows is not None
+        and summary_embedding_rows is not None
+        and summary_embedding_rows >= summary_rows
+    )
+    summary_embedding_rows_missing = (
+        max(summary_rows - summary_embedding_rows, 0)
+        if summary_rows is not None and summary_embedding_rows is not None
+        else None
+    )
+    summary_embeddings_ready = (
+        not run_summary_embeddings
+        or (
+            summary_embedding_rows is not None
+            and summary_embedding_rows > 0
+            and (not run_summaries or summary_embedding_coverage_complete)
+        )
+    )
+    metadata["summary_embedding_coverage_complete"] = summary_embedding_coverage_complete
+    metadata["summary_embedding_rows_missing"] = summary_embedding_rows_missing
+    metadata["summary_materialization_ready"] = summaries_ready
+    metadata["summary_embeddings_ready"] = summary_embeddings_ready
+    return summaries_ready and summary_embeddings_ready, metadata
+
+
 def _embeddings_gate_config_path_candidates(
     latest_session: dict[str, Any],
     *,
@@ -1014,6 +1410,143 @@ def _bitloops_embeddings_ready_for_session(
     return readiness == "ready", metadata
 
 
+def _active_bitloops_summary_inference_commands(repo_root: str | None) -> list[str]:
+    marker = str(repo_root or "").strip()
+    if not marker:
+        return []
+
+    stdout = ""
+    for command in (["ps", "-axo", "command="], ["ps", "-eo", "command="]):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            stdout = result.stdout
+            break
+    if not stdout:
+        return []
+
+    active: list[str] = []
+    for line in stdout.splitlines():
+        command_line = line.strip()
+        if (
+            marker in command_line
+            and "bitloops-inference" in command_line
+            and " run " in f" {command_line} "
+            and "--profile summary_llm" in command_line
+        ):
+            active.append(command_line)
+    return active
+
+
+def _sync_task_completed_successfully(task: dict[str, Any]) -> bool:
+    progress = task.get("progress")
+    result = task.get("result")
+    return (
+        str(task.get("status", "")).strip() == "completed"
+        and isinstance(progress, dict)
+        and str(progress.get("type", "")).strip() == "sync"
+        and isinstance(progress.get("value"), dict)
+        and str(progress["value"].get("phase", "")).strip() == "complete"
+        and isinstance(result, dict)
+        and str(result.get("type", "")).strip() == "sync"
+        and isinstance(result.get("value"), dict)
+        and bool(result["value"].get("success"))
+    )
+
+
+def _follow_up_sync_satisfied(
+    *,
+    latest_session: dict[str, Any],
+    repo_tasks: list[dict[str, Any]],
+) -> tuple[bool, dict[str, Any] | None]:
+    if latest_session.get("follow_up_sync_required") is False:
+        return True, None
+    if latest_session.get("follow_up_sync_required") is not True:
+        return False, None
+
+    session_submitted_at = int(latest_session.get("submitted_at_unix") or 0)
+    follow_up_tasks = [
+        task
+        for task in repo_tasks
+        if str(task.get("kind", "")).strip() == "sync"
+        and str(task.get("source", "")).strip() == "watcher"
+        and int(task.get("submitted_at_unix") or 0) >= session_submitted_at
+        and _sync_task_completed_successfully(task)
+    ]
+    if not follow_up_tasks:
+        return False, None
+    follow_up_tasks.sort(key=lambda item: int(item.get("submitted_at_unix") or 0))
+    return True, follow_up_tasks[-1]
+
+
+def _init_devql_tasks_ready(
+    *,
+    latest_session: dict[str, Any],
+    repo_tasks: list[dict[str, Any]],
+) -> tuple[bool, dict[str, Any]]:
+    init_session_id = str(latest_session.get("init_session_id", "")).strip()
+    init_tasks = [
+        task
+        for task in repo_tasks
+        if str(task.get("source", "")).strip() == "init"
+        and (
+            not init_session_id
+            or str(task.get("init_session_id", "")).strip() == init_session_id
+        )
+    ]
+    status_counts: dict[str, int] = {}
+    completed_kinds: set[str] = set()
+    incomplete_tasks: list[dict[str, Any]] = []
+    for task in init_tasks:
+        status = str(task.get("status", "")).strip() or "<missing>"
+        kind = str(task.get("kind", "")).strip() or "<missing>"
+        status_counts[f"{kind}:{status}"] = status_counts.get(f"{kind}:{status}", 0) + 1
+        if status == "completed":
+            completed_kinds.add(kind)
+        else:
+            incomplete_tasks.append(
+                {
+                    "task_id": task.get("task_id"),
+                    "kind": kind,
+                    "status": status,
+                    "error": task.get("error"),
+                }
+            )
+
+    selections = latest_session.get("selections")
+    required_kinds: set[str] = set()
+    if isinstance(selections, dict):
+        if bool(selections.get("run_ingest")):
+            required_kinds.add("ingest")
+        if bool(selections.get("run_code_embeddings")):
+            required_kinds.add("embeddings_bootstrap")
+
+    missing_kinds = sorted(kind for kind in required_kinds if kind not in completed_kinds)
+    failed_tasks = [
+        task
+        for task in incomplete_tasks
+        if str(task.get("status", "")).strip() == "failed"
+    ]
+    metadata = {
+        "init_queue_task_status_counts": status_counts,
+        "init_queue_required_kinds": sorted(required_kinds),
+        "init_queue_missing_kinds": missing_kinds,
+        "init_queue_incomplete_tasks": incomplete_tasks,
+        "init_queue_failed_tasks": failed_tasks,
+    }
+    return not incomplete_tasks and not missing_kinds, metadata
+
+
 def _bitloops_init_ready_via_runtime_state(
     *,
     runtime_db_path: Path | None,
@@ -1047,10 +1580,14 @@ def _bitloops_init_ready_via_runtime_state(
     if not isinstance(tasks, list) or not isinstance(sessions, list):
         return False, None
 
-    repo_tasks = [
+    all_repo_tasks = [
         task for task in tasks
         if isinstance(task, dict)
         and str(task.get("repo_root", "")).strip() == repo_root_value
+    ]
+    repo_tasks = [
+        task for task in all_repo_tasks
+        if isinstance(task, dict)
         and str(task.get("source", "")).strip() == "init"
         and str(task.get("kind", "")).strip() == "sync"
     ]
@@ -1077,18 +1614,18 @@ def _bitloops_init_ready_via_runtime_state(
     progress = latest_task.get("progress")
     result = latest_task.get("result")
     selections = latest_session.get("selections")
-    sync_complete = (
-        str(latest_task.get("status", "")).strip() == "completed"
-        and isinstance(progress, dict)
-        and str(progress.get("type", "")).strip() == "sync"
-        and isinstance(progress.get("value"), dict)
-        and str(progress["value"].get("phase", "")).strip() == "complete"
-        and isinstance(result, dict)
-        and str(result.get("type", "")).strip() == "sync"
-        and isinstance(result.get("value"), dict)
-        and bool(result["value"].get("success"))
+    sync_complete = _sync_task_completed_successfully(latest_task)
+    (
+        follow_up_sync_satisfied,
+        follow_up_sync_task,
+    ) = _follow_up_sync_satisfied(
+        latest_session=latest_session,
+        repo_tasks=all_repo_tasks,
     )
-    no_follow_up_sync = latest_session.get("follow_up_sync_required") is False
+    init_queue_ready, init_queue_metadata = _init_devql_tasks_ready(
+        latest_session=latest_session,
+        repo_tasks=all_repo_tasks,
+    )
     initial_sync_recorded = latest_session.get("initial_sync_completion_seq") is not None
     no_background_jobs = True
     if isinstance(enrichment_state, dict):
@@ -1101,21 +1638,13 @@ def _bitloops_init_ready_via_runtime_state(
         embeddings_state=embeddings_state,
         repo_root=repo_root_value,
     )
-
-    ready = (
-        sync_complete
-        and no_follow_up_sync
-        and initial_sync_recorded
-        and (
-            not isinstance(selections, dict)
-            or bool(selections.get("run_sync", False))
-        )
-        and no_background_jobs
-        and embeddings_ready
+    active_summary_inference_commands = _active_bitloops_summary_inference_commands(
+        repo_root_value
     )
-    if not ready:
-        return False, None
-
+    no_active_summary_inference = not active_summary_inference_commands
+    summary_materialized, summary_metadata = _summary_materialization_ready_for_session(
+        latest_session
+    )
     progress_value = progress.get("value", {}) if isinstance(progress, dict) else {}
     result_value = result.get("value", {}) if isinstance(result, dict) else {}
     metadata = {
@@ -1131,9 +1660,38 @@ def _bitloops_init_ready_via_runtime_state(
         "parse_errors": progress_value.get("parseErrors"),
         "sync_success": result_value.get("success"),
         "follow_up_sync_required": latest_session.get("follow_up_sync_required"),
+        "follow_up_sync_satisfied": follow_up_sync_satisfied,
+        "follow_up_sync_task_id": (
+            follow_up_sync_task.get("task_id")
+            if isinstance(follow_up_sync_task, dict)
+            else None
+        ),
         "initial_sync_completion_seq": latest_session.get("initial_sync_completion_seq"),
+        "active_summary_inference_processes": len(active_summary_inference_commands),
+        **init_queue_metadata,
         **embeddings_metadata,
+        **summary_metadata,
     }
+
+    if not init_queue_ready and init_queue_metadata.get("init_queue_failed_tasks"):
+        return False, metadata
+
+    ready = (
+        sync_complete
+        and follow_up_sync_satisfied
+        and initial_sync_recorded
+        and (
+            not isinstance(selections, dict)
+            or bool(selections.get("run_sync", False))
+        )
+        and init_queue_ready
+        and no_background_jobs
+        and embeddings_ready
+        and summary_materialized
+    )
+    if not ready:
+        return False, metadata
+
     return True, metadata
 
 
@@ -1194,6 +1752,79 @@ def _run_command_with_runtime_ready_shortcut(
                 stderr=stderr,
             )
         time.sleep(1.0)
+
+
+def _wait_for_bitloops_runtime_ready(
+    *,
+    timeout_seconds: int,
+    env: dict[str, str] | None,
+    cwd: str | None,
+    required: bool,
+) -> dict[str, Any]:
+    if not required:
+        return {
+            "bitloops_runtime_ready_wait_attempted": False,
+            "bitloops_runtime_ready": None,
+            "bitloops_runtime_ready_wait_elapsed_ms": 0,
+            "bitloops_runtime_ready_stable_polls": 0,
+            "bitloops_runtime_ready_metadata": None,
+        }
+
+    start = time.time()
+    runtime_db_path = _resolve_bitloops_runtime_db_path(env)
+    stable_polls_required = max(
+        1,
+        int(os.environ.get("BITLOOPS_RUNTIME_READY_STABLE_POLLS", "3")),
+    )
+    poll_interval_seconds = max(
+        0.1,
+        float(os.environ.get("BITLOOPS_RUNTIME_READY_POLL_INTERVAL_SECONDS", "1")),
+    )
+    ready_streak = 0
+    last_metadata: dict[str, Any] | None = None
+
+    while (time.time() - start) < timeout_seconds:
+        ready, metadata = _bitloops_init_ready_via_runtime_state(
+            runtime_db_path=runtime_db_path,
+            repo_root=cwd,
+        )
+        last_metadata = metadata
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("init_queue_failed_tasks")
+        ):
+            raise RuntimeError(
+                "Bitloops init task failed while waiting for runtime readiness: "
+                + json.dumps(metadata, ensure_ascii=False)
+            )
+        if ready:
+            ready_streak += 1
+            if ready_streak >= stable_polls_required:
+                return {
+                    "bitloops_runtime_ready_wait_attempted": True,
+                    "bitloops_runtime_ready": True,
+                    "bitloops_runtime_ready_wait_elapsed_ms": int(
+                        (time.time() - start) * 1000
+                    ),
+                    "bitloops_runtime_ready_stable_polls": ready_streak,
+                    "bitloops_runtime_ready_metadata": metadata,
+                }
+        else:
+            ready_streak = 0
+        time.sleep(poll_interval_seconds)
+
+    raise TimeoutError(
+        "timed out waiting for Bitloops runtime readiness after init: "
+        + json.dumps(
+            {
+                "runtime_db_path": str(runtime_db_path) if runtime_db_path else None,
+                "repo_root": cwd,
+                "last_metadata": last_metadata,
+                "stable_polls_required": stable_polls_required,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def _bitloops_init_status_is_terminal(status: str) -> bool:
@@ -1558,6 +2189,7 @@ def _run_bitloops_init(
     embeddings_runtime: str | None,
     no_embeddings: bool,
     no_summaries: bool = False,
+    disable_devql_guidance: bool = False,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
 ) -> dict[str, Any]:
@@ -1599,13 +2231,28 @@ def _run_bitloops_init(
             init_command.extend(["--embeddings-runtime", effective_embeddings_runtime])
         if include_no_summaries_flag:
             init_command.append("--no-summaries")
+        if disable_devql_guidance:
+            init_command.append("--disable-devql-guidance")
 
-        use_init_status_shortcut = (
+        use_per_task_daemon_shortcut = (
             isinstance(env, dict)
             and str(env.get("BITLOOPS_BENCHKIT_SANDBOX_MODE", "")).strip().lower()
             == "per_task_daemon"
         )
-        if use_init_status_shortcut:
+        if use_per_task_daemon_shortcut and sync:
+            (
+                init_stdout,
+                init_stderr,
+                init_code,
+                current_init_elapsed_ms,
+                runtime_ready_shortcut_metadata,
+            ) = _run_command_with_runtime_ready_shortcut(
+                command=init_command,
+                timeout_seconds=timeout,
+                env=env,
+                cwd=cwd,
+            )
+        elif use_per_task_daemon_shortcut:
             (
                 init_stdout,
                 init_stderr,
@@ -1688,6 +2335,7 @@ def _run_bitloops_init(
         "bitloops_init_elapsed_ms": init_elapsed_ms,
         "bitloops_init_db_lock_retry_count": init_db_lock_retry_count,
         "bitloops_init_db_lock_retry_used": init_db_lock_retry_count > 0,
+        "bitloops_disable_devql_guidance": disable_devql_guidance,
         "bitloops_init_runtime_ready_shortcut_used": runtime_ready_shortcut_metadata is not None,
         "bitloops_init_runtime_ready_shortcut": runtime_ready_shortcut_metadata,
         "bitloops_init_status_command": (
@@ -1712,6 +2360,7 @@ def setup_bitloops_for_workspace(
     no_embeddings: bool = False,
     no_summaries: bool = False,
     summary_mode: str | None = None,
+    disable_devql_guidance: bool = False,
     embedding_mode: str | None = None,
     sandbox: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
@@ -1747,18 +2396,50 @@ def setup_bitloops_for_workspace(
     else:
         effective_summary_mode = "off"
     effective_no_summaries = effective_summary_mode == "off"
+    sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
+    bind_cloud_semantic_profiles = (
+        sandbox_mode == "per_task_daemon"
+        and requested_embeddings_runtime == "platform"
+        and not effective_no_embeddings
+    )
     repo_config_path = _apply_bitloops_repo_semantic_modes(
+        summary_mode=effective_summary_mode,
         embedding_mode=embedding_mode,
+        embedding_profile="platform_code" if bind_cloud_semantic_profiles else None,
+        summary_generation_profile=(
+            "summary_llm"
+            if bind_cloud_semantic_profiles and not effective_no_summaries
+            else None
+        ),
+        summary_embedding_profile=(
+            "platform_code"
+            if bind_cloud_semantic_profiles and not effective_no_summaries
+            else None
+        ),
         cwd=cwd,
     )
 
     daemon_metadata: dict[str, Any]
     init_metadata: dict[str, Any]
-    sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
+    runtime_ready_metadata: dict[str, Any]
+    authorization_metadata: dict[str, Any] = {}
+    init_platform_token_metadata: dict[str, Any] = {}
     if sandbox_mode == "per_task_daemon":
         sandbox_env = env or build_bitloops_task_environment(sandbox)
         if sandbox_env is None:
             raise RuntimeError("per-task Bitloops sandbox requested without a valid environment")
+        sandbox_config_path = _seed_bitloops_cloud_inference_profiles(
+            sandbox,
+            summary_mode=effective_summary_mode,
+            bind_semantic_inference=bind_cloud_semantic_profiles,
+        )
+        init_env, init_platform_token_metadata = (
+            _bitloops_init_environment_with_fresh_platform_token(
+                binary=binary,
+                env=sandbox_env,
+                cwd=cwd,
+            )
+        )
         handle = task_daemon_handle or start_bitloops_task_daemon(
             binary=binary,
             timeout=timeout,
@@ -1803,6 +2484,9 @@ def setup_bitloops_for_workspace(
             "bitloops_task_xdg_state_home": sandbox.get("xdg_state_home"),
             "bitloops_task_xdg_cache_home": sandbox.get("xdg_cache_home"),
             "bitloops_task_xdg_data_home": sandbox.get("xdg_data_home"),
+            "bitloops_task_daemon_cloud_config_path": (
+                str(sandbox_config_path) if sandbox_config_path is not None else None
+            ),
         }
         init_metadata = _run_bitloops_init(
             binary=binary,
@@ -1814,9 +2498,28 @@ def setup_bitloops_for_workspace(
             embeddings_runtime=requested_embeddings_runtime,
             no_embeddings=effective_no_embeddings,
             no_summaries=effective_no_summaries,
-            env=sandbox_env,
+            disable_devql_guidance=disable_devql_guidance,
+            env=init_env,
             cwd=cwd,
         )
+        runtime_ready_metadata = _wait_for_bitloops_runtime_ready(
+            timeout_seconds=timeout,
+            env=sandbox_env,
+            cwd=cwd,
+            required=sync,
+        )
+        authorization_metadata = _bitloops_authorization_metadata(
+            _resolve_bitloops_runtime_db_path(sandbox_env),
+            env=sandbox_env,
+            binary=binary,
+            cwd=cwd,
+        )
+        if not authorization_metadata["bitloops_cloud_authorized"]:
+            raise RuntimeError(
+                "Bitloops Cloud authorisation was not recorded in the per-task "
+                "runtime after `bitloops init`. Complete the Bitloops login prompt "
+                "during setup, then retry the benchmark instance."
+            )
     else:
         global_lock_enabled = not env_flag(BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR, default=False)
         global_lock_path = _resolve_bitloops_global_lock_path() if global_lock_enabled else None
@@ -1845,8 +2548,15 @@ def setup_bitloops_for_workspace(
                     embeddings_runtime=requested_embeddings_runtime,
                     no_embeddings=effective_no_embeddings,
                     no_summaries=effective_no_summaries,
+                    disable_devql_guidance=disable_devql_guidance,
                     env=env,
                     cwd=cwd,
+                )
+                runtime_ready_metadata = _wait_for_bitloops_runtime_ready(
+                    timeout_seconds=timeout,
+                    env=env,
+                    cwd=cwd,
+                    required=False,
                 )
         else:
             daemon_metadata = _ensure_bitloops_daemon_started(
@@ -1865,8 +2575,15 @@ def setup_bitloops_for_workspace(
                 embeddings_runtime=requested_embeddings_runtime,
                 no_embeddings=effective_no_embeddings,
                 no_summaries=effective_no_summaries,
+                disable_devql_guidance=disable_devql_guidance,
                 env=env,
                 cwd=cwd,
+            )
+            runtime_ready_metadata = _wait_for_bitloops_runtime_ready(
+                timeout_seconds=timeout,
+                env=env,
+                cwd=cwd,
+                required=False,
             )
         daemon_metadata.setdefault("bitloops_global_lock_enabled", global_lock_enabled)
         daemon_metadata.setdefault(
@@ -1901,6 +2618,7 @@ def setup_bitloops_for_workspace(
         "bitloops_no_embeddings": effective_no_embeddings,
         "bitloops_no_summaries": effective_no_summaries,
         "bitloops_summary_mode": effective_summary_mode,
+        "bitloops_disable_devql_guidance": disable_devql_guidance,
         "bitloops_embedding_mode": embedding_mode,
         "bitloops_git_detached_head": git_detached_head,
         "bitloops_git_checkout_attempted": git_checkout_attempted,
@@ -1911,6 +2629,9 @@ def setup_bitloops_for_workspace(
         "bitloops_setup_elapsed_ms": int((time.time() - setup_started) * 1000),
         **daemon_metadata,
         **init_metadata,
+        **init_platform_token_metadata,
+        **runtime_ready_metadata,
+        **authorization_metadata,
     }
 
 
@@ -1918,9 +2639,12 @@ def _apply_bitloops_repo_semantic_modes(
     *,
     summary_mode: str | None = None,
     embedding_mode: str | None = None,
+    embedding_profile: str | None = None,
+    summary_generation_profile: str | None = None,
+    summary_embedding_profile: str | None = None,
     cwd: str | None = None,
 ) -> Path | None:
-    updates = {
+    semantic_updates = {
         key: value
         for key, value in {
             "summary_mode": summary_mode,
@@ -1928,13 +2652,30 @@ def _apply_bitloops_repo_semantic_modes(
         }.items()
         if isinstance(value, str) and value.strip()
     }
-    if not updates:
+    inference_updates = {
+        key: value
+        for key, value in {
+            "code_embeddings": embedding_profile,
+            "summary_generation": summary_generation_profile,
+            "summary_embeddings": summary_embedding_profile,
+        }.items()
+        if isinstance(value, str) and value.strip()
+    }
+    if not semantic_updates and not inference_updates:
         return None
 
     workspace_root = Path(cwd).expanduser() if isinstance(cwd, str) and cwd.strip() else Path.cwd()
     config_path = workspace_root / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    content = _upsert_toml_table_values(content, "semantic_clones", updates)
+    if semantic_updates:
+        content = _upsert_toml_table_values(content, "semantic_clones", semantic_updates)
+    if inference_updates:
+        content = _upsert_toml_table_values(
+            content,
+            "semantic_clones.inference",
+            inference_updates,
+        )
     config_path.write_text(content, encoding="utf-8")
     return config_path
 
@@ -3265,14 +4006,22 @@ def _ensure_trailing_newline(text: str) -> str:
 _MINIMAL_PROMPT_INTRO = "Investigate and fix the following issue by editing files directly in the workspace."
 
 
+def _payload_run_condition(payload: dict[str, Any]) -> str:
+    run = payload.get("run", {})
+    if not isinstance(run, dict):
+        return ""
+    return str(run.get("condition", "")).strip().lower()
+
+
 def _resolve_prompt_protocol(payload: dict[str, Any]) -> str:
-    _ = payload
+    if _payload_run_condition(payload) == "with_bitloops":
+        return "minimal_bitloops_devql"
     return "minimal"
 
 
 def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     protocol = _resolve_prompt_protocol(payload)
-    version = "minimal_v3"
+    version = "minimal_bitloops_devql_v1" if protocol == "minimal_bitloops_devql" else "minimal_v3"
     hash_input = f"{version}|protocol={protocol}"
     return {
         "prompt_protocol": protocol,
@@ -3281,12 +4030,24 @@ def prompt_template_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_BITLOOPS_DEVQL_PROMPT = """Before using normal repository exploration tools, run a shell command that starts with:
+bitloops devql query '{ selectArtefacts(by: { search: "<task keywords>" }) { count artefacts(first: 10) { path symbolFqn canonicalKind startLine endLine score } } }'
+
+Use the returned paths and symbols to guide your investigation. You may fall back to normal file/search tools after that DevQL query."""
+
+
 def render_task_prompt(payload: dict[str, Any], wrapper_name: str) -> str:
     problem = str(payload.get("problem_statement", "")).strip()
     _ = wrapper_name  # Signature kept for wrapper compatibility.
+    bitloops_instruction = (
+        f"\n\n{_BITLOOPS_DEVQL_PROMPT}"
+        if _resolve_prompt_protocol(payload) == "minimal_bitloops_devql"
+        else ""
+    )
     return (
         f"{_MINIMAL_PROMPT_INTRO}\n\n"
-        "Do not commit your changes; just leave the edited files in place.\n\n"
+        "Do not commit your changes; just leave the edited files in place."
+        f"{bitloops_instruction}\n\n"
         f"{problem}"
     )
 

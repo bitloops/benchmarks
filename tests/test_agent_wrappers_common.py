@@ -5,6 +5,7 @@ import contextlib
 import importlib
 import importlib.util
 import json
+import os
 import re
 import sqlite3
 import tempfile
@@ -28,7 +29,7 @@ common_impl = importlib.import_module("benchkit.swebench.agents.common")
 
 
 class AgentWrapperCommonTests(unittest.TestCase):
-    def test_render_task_prompt_is_minimal_for_bitloops_condition(self) -> None:
+    def test_render_task_prompt_instructs_devql_for_bitloops_condition(self) -> None:
         prompt = common.render_task_prompt(
             {
                 "instance_id": "ruff__1",
@@ -44,8 +45,9 @@ class AgentWrapperCommonTests(unittest.TestCase):
 
         self.assertTrue(prompt.startswith("Investigate and fix the following issue by editing files directly in the workspace."))
         self.assertIn("Do not commit your changes; just leave the edited files in place.", prompt)
+        self.assertIn("bitloops devql query", prompt)
+        self.assertIn("Use the returned paths and symbols", prompt)
         self.assertTrue(prompt.endswith("Fix the failing lint behavior."))
-        self.assertNotIn("bitloops devql", prompt)
         self.assertNotIn("Issue:\n", prompt)
 
     def test_render_task_prompt_is_minimal_for_baseline_condition(self) -> None:
@@ -219,6 +221,28 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(stdout, "\ufffd")
         self.assertEqual(stderr, "\ufffd")
         self.assertGreaterEqual(elapsed_ms, 0)
+
+    def test_call_command_rewrites_pwd_when_cwd_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace:
+            resolved_workspace = str(Path(workspace).resolve())
+            stdout, stderr, return_code, _ = common.call_command(
+                [
+                    common.sys.executable,
+                    "-c",
+                    (
+                        "import os; "
+                        "print(os.getcwd()); "
+                        "print(os.environ.get('PWD', ''))"
+                    ),
+                ],
+                5,
+                env={**os.environ, "PWD": "/stale/pwd"},
+                cwd=workspace,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout.splitlines(), [resolved_workspace, resolved_workspace])
 
     def test_call_command_starts_new_session_and_kills_process_group_on_timeout(self) -> None:
         class FakeProcess:
@@ -1628,6 +1652,259 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(env["BITLOOPS_BENCHKIT_SANDBOX_MODE"], "per_task_daemon")
         self.assertEqual(env["PATH"], "/usr/bin")
 
+    def test_seed_bitloops_cloud_inference_profiles_writes_sandbox_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_root = Path(temp_dir) / "home"
+            sandbox = {
+                "mode": "per_task_daemon",
+                "home_root": str(home_root),
+            }
+
+            config_path = common_impl._seed_bitloops_cloud_inference_profiles(
+                sandbox,
+                summary_mode="auto",
+            )
+
+            assert config_path is not None
+            rendered = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("[telemetry]\nenabled = false", rendered)
+        self.assertIn("[inference.runtimes.bitloops_platform_embeddings]", rendered)
+        self.assertIn('driver = "bitloops_embeddings_ipc"', rendered)
+        self.assertIn("[inference.profiles.summary_llm]", rendered)
+        self.assertIn('driver = "bitloops_platform_chat"', rendered)
+        self.assertIn('model = "ministral-3-3b-instruct"', rendered)
+        self.assertIn('summary_mode = "auto"', rendered)
+        self.assertNotIn('summary_generation = "summary_llm"', rendered)
+        self.assertNotIn("ollama", rendered.lower())
+
+    def test_seed_bitloops_cloud_inference_profiles_can_bind_cloud_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_root = Path(temp_dir) / "home"
+            sandbox = {
+                "mode": "per_task_daemon",
+                "home_root": str(home_root),
+            }
+
+            config_path = common_impl._seed_bitloops_cloud_inference_profiles(
+                sandbox,
+                summary_mode="auto",
+                bind_semantic_inference=True,
+            )
+
+            assert config_path is not None
+            rendered = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("[semantic_clones.inference]", rendered)
+        self.assertIn('code_embeddings = "platform_code"', rendered)
+        self.assertIn('summary_generation = "summary_llm"', rendered)
+        self.assertIn('summary_embeddings = "platform_code"', rendered)
+        self.assertNotIn("summary_local", rendered)
+        self.assertNotIn("ollama", rendered.lower())
+
+    def test_apply_bitloops_repo_semantic_modes_writes_cloud_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+
+            config_path = common_impl._apply_bitloops_repo_semantic_modes(
+                summary_mode="auto",
+                embedding_profile="platform_code",
+                summary_generation_profile="summary_llm",
+                summary_embedding_profile="platform_code",
+                cwd=str(workspace),
+            )
+
+            assert config_path is not None
+            rendered = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("[semantic_clones]", rendered)
+        self.assertIn('summary_mode = "auto"', rendered)
+        self.assertIn("[semantic_clones.inference]", rendered)
+        self.assertIn('code_embeddings = "platform_code"', rendered)
+        self.assertIn('summary_generation = "summary_llm"', rendered)
+        self.assertIn('summary_embeddings = "platform_code"', rendered)
+
+    def test_mirror_bitloops_auth_state_uses_application_support_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_home = root / "original"
+            sandbox_home = root / "sandbox"
+            runtime_source = (
+                original_home
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "stores"
+                / "runtime"
+                / "runtime.sqlite"
+            )
+            runtime_source.parent.mkdir(parents=True)
+            connection = sqlite3.connect(runtime_source)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE runtime_documents (
+                        document_kind TEXT PRIMARY KEY,
+                        payload TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runtime_documents (document_kind, payload, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        "workos_auth_session_state",
+                        json.dumps({"access_token": "token"}),
+                        "2026-05-21 00:00:00",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch.object(common_impl.sys, "platform", "darwin"):
+                common_impl._mirror_bitloops_auth_state_into_sandbox(
+                    original_home=original_home,
+                    sandbox_home=sandbox_home,
+                )
+
+            runtime_destination = (
+                sandbox_home
+                / ".local"
+                / "state"
+                / "bitloops"
+                / "daemon"
+                / "runtime.sqlite"
+            )
+            copied = sqlite3.connect(runtime_destination).execute(
+                "SELECT payload FROM runtime_documents WHERE document_kind = ?",
+                ("workos_auth_session_state",),
+            ).fetchone()
+
+        self.assertIsNotNone(copied)
+        self.assertEqual(json.loads(copied[0])["access_token"], "token")
+
+    def test_bitloops_authorization_metadata_accepts_gateway_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_db_path = Path(temp_dir) / "runtime.sqlite"
+
+            metadata = common_impl._bitloops_authorization_metadata(
+                runtime_db_path,
+                env={"BITLOOPS_PLATFORM_GATEWAY_TOKEN": "token"},
+            )
+
+        self.assertTrue(metadata["bitloops_cloud_authorized"])
+        self.assertEqual(
+            metadata["bitloops_cloud_authorization_source"],
+            "env:BITLOOPS_PLATFORM_GATEWAY_TOKEN",
+        )
+        self.assertTrue(metadata["bitloops_platform_gateway_token_present"])
+        self.assertEqual(metadata["bitloops_auth_runtime_db_path"], str(runtime_db_path))
+
+    def test_bitloops_authorization_metadata_probes_login_token(self) -> None:
+        with patch.object(
+            common_impl,
+            "call_command",
+            return_value=("fresh-token\n", "", 0, 12),
+        ) as mock_call:
+            metadata = common_impl._bitloops_authorization_metadata(
+                None,
+                env={"HOME": "/tmp/benchkit/home"},
+                binary="bitloops",
+                cwd="/tmp/workspace",
+            )
+
+        self.assertTrue(metadata["bitloops_cloud_authorized"])
+        self.assertEqual(metadata["bitloops_cloud_authorization_source"], "login_token_probe")
+        self.assertTrue(metadata["bitloops_login_token_probe_attempted"])
+        self.assertTrue(metadata["bitloops_login_token_probe_ok"])
+        self.assertEqual(metadata["bitloops_login_token_probe_elapsed_ms"], 12)
+        mock_call.assert_called_once_with(
+            ["bitloops", "login", "token"],
+            15,
+            env={"HOME": "/tmp/benchkit/home"},
+            cwd="/tmp/workspace",
+        )
+
+    def test_bitloops_authorization_metadata_rejects_static_token_when_probe_fails(self) -> None:
+        with patch.object(
+            common_impl,
+            "call_command",
+            return_value=("", "expired", 1, 12),
+        ):
+            metadata = common_impl._bitloops_authorization_metadata(
+                None,
+                env={"BITLOOPS_PLATFORM_GATEWAY_TOKEN": "expired-token"},
+                binary="bitloops",
+                cwd="/tmp/workspace",
+            )
+
+        self.assertFalse(metadata["bitloops_cloud_authorized"])
+        self.assertIsNone(metadata["bitloops_cloud_authorization_source"])
+        self.assertTrue(metadata["bitloops_platform_gateway_token_present"])
+        self.assertTrue(metadata["bitloops_login_token_probe_attempted"])
+        self.assertFalse(metadata["bitloops_login_token_probe_ok"])
+        self.assertEqual(metadata["bitloops_login_token_probe_return_code"], 1)
+
+    def test_bitloops_init_environment_injects_fresh_token_only_for_init(self) -> None:
+        base_env = {"HOME": "/tmp/benchkit/home"}
+        with patch.object(
+            common_impl,
+            "call_command",
+            return_value=("fresh-token\n", "", 0, 12),
+        ) as mock_call:
+            init_env, metadata = common_impl._bitloops_init_environment_with_fresh_platform_token(
+                binary="bitloops",
+                env=base_env,
+                cwd="/tmp/workspace",
+            )
+
+        self.assertNotIn("BITLOOPS_PLATFORM_GATEWAY_TOKEN", base_env)
+        self.assertEqual(init_env["BITLOOPS_PLATFORM_GATEWAY_TOKEN"], "fresh-token")
+        self.assertTrue(metadata["bitloops_init_platform_token_probe_ok"])
+        self.assertTrue(metadata["bitloops_init_platform_token_injected"])
+        mock_call.assert_called_once_with(
+            ["bitloops", "login", "token"],
+            15,
+            env=base_env,
+            cwd="/tmp/workspace",
+        )
+
+    def test_build_bitloops_task_environment_strips_platform_gateway_token(self) -> None:
+        sandbox = {
+            "mode": "per_task_daemon",
+            "home_root": "/tmp/benchkit/home",
+            "xdg_config_home": "/tmp/benchkit/home/xdg",
+            "xdg_state_home": "/tmp/benchkit/home/xdg-state",
+            "xdg_cache_home": "/tmp/benchkit/home/xdg-cache",
+            "xdg_data_home": "/tmp/benchkit/home/xdg-data",
+        }
+        with patch.dict(
+            common_impl.os.environ,
+            {
+                "HOME": "/Users/tester",
+                "BITLOOPS_PLATFORM_GATEWAY_TOKEN": "short-lived-token",
+            },
+            clear=True,
+        ), patch.object(
+            common_impl,
+            "_mirror_aws_auth_cache_into_sandbox",
+        ), patch.object(
+            common_impl,
+            "_mirror_bitloops_auth_state_into_sandbox",
+        ), patch.object(
+            common_impl,
+            "_ensure_macos_default_keychain_for_sandbox",
+        ):
+            env = common_impl.build_bitloops_task_environment(sandbox)
+
+        assert env is not None
+        self.assertNotIn("BITLOOPS_PLATFORM_GATEWAY_TOKEN", env)
+        self.assertEqual(env["BENCHKIT_BITLOOPS_STRIPPED_PLATFORM_GATEWAY_TOKEN"], "1")
+
     def test_build_bitloops_task_environment_preserves_existing_rust_cache_env(self) -> None:
         sandbox = {
             "mode": "per_task_daemon",
@@ -1967,30 +2244,66 @@ class AgentWrapperCommonTests(unittest.TestCase):
             "bitloops_init_fallback_used": False,
             "bitloops_init_elapsed_ms": 11,
         }
+        call_order: list[str] = []
+
+        def fake_run_bitloops_init(**_kwargs):
+            call_order.append("init")
+            return init_metadata
+
+        def fake_wait_for_runtime_ready(**kwargs):
+            call_order.append("runtime_ready")
+            self.assertTrue(kwargs["required"])
+            return {
+                "bitloops_runtime_ready_wait_attempted": True,
+                "bitloops_runtime_ready": True,
+                "bitloops_runtime_ready_wait_elapsed_ms": 123,
+                "bitloops_runtime_ready_stable_polls": 3,
+                "bitloops_runtime_ready_metadata": {"repo_root": "/tmp/workspace"},
+            }
 
         with patch.object(
-            common,
+            common_impl,
             "_ensure_git_branch_for_bitloops_sync",
             return_value=(False, False, None, None, 0),
         ), patch.object(
-            common,
+            common_impl,
             "_run_bitloops_init",
-            return_value=init_metadata,
-        ) as mock_init, patch.object(common, "_acquire_bitloops_global_lock") as mock_lock:
-            metadata = common.setup_bitloops_for_workspace(
-                agent_name="claude-code",
-                bitloops_bin="bitloops",
-                timeout_seconds=30,
-                sandbox=sandbox,
-                env={"HOME": sandbox["home_root"]},
-                cwd="/tmp/workspace",
-                task_daemon_handle=handle,
-            )
+            side_effect=fake_run_bitloops_init,
+        ) as mock_init, patch.object(
+            common_impl,
+            "_seed_bitloops_cloud_inference_profiles",
+            return_value=Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml"),
+        ), patch.object(
+            common_impl,
+            "_bitloops_authorization_metadata",
+            return_value={"bitloops_cloud_authorized": True},
+        ), patch.object(
+            common_impl,
+            "_bitloops_init_environment_with_fresh_platform_token",
+            return_value=({"HOME": sandbox["home_root"], "BITLOOPS_PLATFORM_GATEWAY_TOKEN": "token"}, {}),
+        ), patch.object(common_impl, "_acquire_bitloops_global_lock") as mock_lock:
+            with patch.object(
+                common_impl,
+                "_wait_for_bitloops_runtime_ready",
+                side_effect=fake_wait_for_runtime_ready,
+            ) as mock_wait:
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    sandbox=sandbox,
+                    env={"HOME": sandbox["home_root"]},
+                    cwd="/tmp/workspace",
+                    task_daemon_handle=handle,
+                )
 
         mock_lock.assert_not_called()
         mock_init.assert_called_once()
+        mock_wait.assert_called_once()
+        self.assertEqual(call_order, ["init", "runtime_ready"])
         self.assertFalse(metadata["bitloops_global_lock_enabled"])
         self.assertFalse(metadata["bitloops_setup_serialized"])
+        self.assertTrue(metadata["bitloops_runtime_ready"])
         self.assertTrue(metadata["bitloops_task_daemon_enabled"])
         self.assertEqual(metadata["bitloops_task_daemon_port"], 43123)
         self.assertEqual(metadata["bitloops_task_daemon_pid"], 9981)
@@ -2023,11 +2336,11 @@ class AgentWrapperCommonTests(unittest.TestCase):
         )
 
         with patch.object(
-            common,
+            common_impl,
             "_ensure_git_branch_for_bitloops_sync",
             return_value=(False, False, None, None, 0),
         ), patch.object(
-            common,
+            common_impl,
             "_run_bitloops_init",
             return_value={
                 "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
@@ -2035,8 +2348,30 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "bitloops_init_fallback_used": False,
                 "bitloops_init_elapsed_ms": 11,
             },
-        ) as mock_init:
-            common.setup_bitloops_for_workspace(
+        ) as mock_init, patch.object(
+            common_impl,
+            "_wait_for_bitloops_runtime_ready",
+            return_value={
+                "bitloops_runtime_ready_wait_attempted": True,
+                "bitloops_runtime_ready": True,
+                "bitloops_runtime_ready_wait_elapsed_ms": 1,
+                "bitloops_runtime_ready_stable_polls": 3,
+                "bitloops_runtime_ready_metadata": {},
+            },
+        ), patch.object(
+            common_impl,
+            "_seed_bitloops_cloud_inference_profiles",
+            return_value=Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml"),
+        ), patch.object(
+            common_impl,
+            "_bitloops_authorization_metadata",
+            return_value={"bitloops_cloud_authorized": True},
+        ), patch.object(
+            common_impl,
+            "_bitloops_init_environment_with_fresh_platform_token",
+            return_value=({"HOME": sandbox["home_root"], "BITLOOPS_PLATFORM_GATEWAY_TOKEN": "token"}, {}),
+        ):
+            common_impl.setup_bitloops_for_workspace(
                 agent_name="claude-code",
                 bitloops_bin="bitloops",
                 timeout_seconds=30,
@@ -2127,36 +2462,23 @@ class AgentWrapperCommonTests(unittest.TestCase):
         )
         self.assertEqual(events, ["terminate", ("wait", 5)])
 
-    def test_run_bitloops_init_shortcuts_when_init_status_is_complete(self) -> None:
+    def test_run_bitloops_init_uses_runtime_ready_shortcut_for_per_task_sync(self) -> None:
         shortcut_metadata = {
-            "status_command": ["bitloops", "init", "status", "--json"],
-            "current_init_session_id": "init-session-1",
-            "session": {
-                "initSessionId": "init-session-1",
-                "status": "completed",
-                "statusLabel": "Completed",
-                "followUpSyncRequired": False,
-                "summaryText": "Setup tasks completed",
-                "terminalError": None,
-                "lanes": [
-                    {
-                        "title": "Sync",
-                        "label": "sync",
-                        "status": "completed",
-                        "statusLabel": "Completed",
-                        "summaryText": "10 / 10 complete",
-                        "queue": {"queued": 0, "running": 0, "failed": 0},
-                        "warnings": [],
-                    }
-                ],
-            },
+            "repo_root": "/tmp/workspace",
+            "sync_status": "completed",
+            "follow_up_sync_satisfied": True,
+            "embeddings_gate_readiness": "ready",
         }
         with patch.object(
-            common,
-            "_run_command_with_init_status_shortcut",
+            common_impl,
+            "_run_command_with_runtime_ready_shortcut",
             return_value=("", "", 0, 19, shortcut_metadata),
-        ) as mock_shortcut:
-            metadata = common._run_bitloops_init(
+        ) as mock_shortcut, patch.object(
+            common_impl,
+            "_run_command_with_init_status_shortcut",
+            side_effect=AssertionError("init status shortcut should not be used for sync"),
+        ) as mock_status_shortcut:
+            metadata = common_impl._run_bitloops_init(
                 binary="bitloops",
                 timeout=30,
                 agent_name="claude-code",
@@ -2165,6 +2487,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 install_default_daemon=False,
                 embeddings_runtime=None,
                 no_embeddings=False,
+                disable_devql_guidance=True,
                 env={
                     "BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon",
                 },
@@ -2172,16 +2495,19 @@ class AgentWrapperCommonTests(unittest.TestCase):
             )
 
         mock_shortcut.assert_called_once()
-        self.assertTrue(metadata["bitloops_init_status_shortcut_used"])
-        self.assertEqual(metadata["bitloops_init_status_command"], ["bitloops", "init", "status", "--json"])
-        self.assertFalse(metadata["bitloops_init_runtime_ready_shortcut_used"])
-        ready = metadata["bitloops_init_status_shortcut"]
+        self.assertIn(
+            "--disable-devql-guidance",
+            mock_shortcut.call_args.kwargs["command"],
+        )
+        mock_status_shortcut.assert_not_called()
+        self.assertFalse(metadata["bitloops_init_status_shortcut_used"])
+        self.assertIsNone(metadata["bitloops_init_status_command"])
+        self.assertTrue(metadata["bitloops_init_runtime_ready_shortcut_used"])
+        self.assertTrue(metadata["bitloops_disable_devql_guidance"])
+        ready = metadata["bitloops_init_runtime_ready_shortcut"]
         assert isinstance(ready, dict)
-        self.assertEqual(ready["current_init_session_id"], "init-session-1")
-        session = ready["session"]
-        assert isinstance(session, dict)
-        self.assertEqual(session["status"], "completed")
-        self.assertEqual(session["summaryText"], "Setup tasks completed")
+        self.assertEqual(ready["sync_status"], "completed")
+        self.assertEqual(ready["embeddings_gate_readiness"], "ready")
 
     def test_run_command_with_init_status_shortcut_returns_when_session_completes(self) -> None:
         class _HangingProcess:
@@ -2242,13 +2568,13 @@ class AgentWrapperCommonTests(unittest.TestCase):
         ]
         process = _HangingProcess()
 
-        with patch.object(common.subprocess, "Popen", return_value=process), patch.object(
-            common,
+        with patch.object(common_impl.subprocess, "Popen", return_value=process), patch.object(
+            common_impl,
             "call_command",
             side_effect=status_calls,
-        ) as mock_call, patch.object(common.time, "sleep") as mock_sleep:
+        ) as mock_call, patch.object(common_impl.time, "sleep") as mock_sleep:
             stdout, stderr, return_code, elapsed_ms, metadata = (
-                common._run_command_with_init_status_shortcut(
+                common_impl._run_command_with_init_status_shortcut(
                     command=["bitloops", "init", "--agent", "claude-code"],
                     timeout_seconds=30,
                     env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
@@ -2308,21 +2634,21 @@ class AgentWrapperCommonTests(unittest.TestCase):
             },
         }
         process = _HangingProcess()
-        status_timeout = common.subprocess.TimeoutExpired(
+        status_timeout = common_impl.subprocess.TimeoutExpired(
             cmd=["bitloops", "init", "status", "--json"],
             timeout=10,
         )
 
-        with patch.object(common.subprocess, "Popen", return_value=process), patch.object(
-            common,
+        with patch.object(common_impl.subprocess, "Popen", return_value=process), patch.object(
+            common_impl,
             "call_command",
             side_effect=[
                 status_timeout,
                 (json.dumps(status_payload), "", 0, 4),
             ],
-        ) as mock_call, patch.object(common.time, "sleep") as mock_sleep:
+        ) as mock_call, patch.object(common_impl.time, "sleep") as mock_sleep:
             stdout, stderr, return_code, elapsed_ms, metadata = (
-                common._run_command_with_init_status_shortcut(
+                common_impl._run_command_with_init_status_shortcut(
                     command=["bitloops", "init", "--agent", "opencode"],
                     timeout_seconds=30,
                     env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
@@ -2360,18 +2686,18 @@ class AgentWrapperCommonTests(unittest.TestCase):
         }
 
         def _status_call(*_args, **_kwargs):
-            common.time.sleep(0.1)
+            common_impl.time.sleep(0.1)
             return json.dumps(status_payload), "", 0, 4
 
         with patch.object(
-            common,
+            common_impl,
             "call_command",
             side_effect=_status_call,
         ):
             stdout, stderr, return_code, elapsed_ms, metadata = (
-                common._run_command_with_init_status_shortcut(
+                common_impl._run_command_with_init_status_shortcut(
                     command=[
-                        common.sys.executable,
+                        common_impl.sys.executable,
                         "-c",
                         (
                             "import sys, time; "
@@ -2406,16 +2732,16 @@ class AgentWrapperCommonTests(unittest.TestCase):
             },
         }
         with patch.object(
-            common,
+            common_impl,
             "_run_command_with_init_status_shortcut",
             return_value=("", "", 0, 17, shortcut_metadata),
             create=True,
         ) as mock_shortcut, patch.object(
-            common,
+            common_impl,
             "call_command",
             side_effect=AssertionError("plain init execution should not be used"),
         ):
-            metadata = common._run_bitloops_init(
+            metadata = common_impl._run_bitloops_init(
                 binary="bitloops",
                 timeout=30,
                 agent_name="claude-code",
@@ -2558,13 +2884,16 @@ class AgentWrapperCommonTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            ready, metadata = common._bitloops_init_ready_via_runtime_state(
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
                 runtime_db_path=runtime_db,
                 repo_root=str(workspace),
-            )
+        )
 
         self.assertFalse(ready)
-        self.assertIsNone(metadata)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["embeddings_gate_readiness"], "pending")
+        self.assertTrue(metadata["embeddings_gate_blocked"])
+        self.assertEqual(metadata["embeddings_gate_active_task_id"], "bootstrap-task-1")
 
     def test_bitloops_runtime_ready_allows_ready_embeddings_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2669,16 +2998,433 @@ class AgentWrapperCommonTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            ready, metadata = common._bitloops_init_ready_via_runtime_state(
+            with patch.object(
+                common_impl,
+                "_active_bitloops_summary_inference_commands",
+                return_value=["bitloops-inference run --profile summary_llm"],
+            ):
+                blocked_ready, blocked_metadata = (
+                    common_impl._bitloops_init_ready_via_runtime_state(
+                        runtime_db_path=runtime_db,
+                        repo_root=str(workspace),
+                    )
+                )
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+        )
+
+        self.assertFalse(blocked_ready)
+        assert isinstance(blocked_metadata, dict)
+        self.assertEqual(blocked_metadata["active_summary_inference_processes"], 1)
+        self.assertTrue(ready)
+        assert isinstance(metadata, dict)
+        self.assertTrue(metadata["embeddings_bootstrap_requested"])
+        self.assertEqual(metadata["embeddings_gate_readiness"], "ready")
+        self.assertFalse(metadata["embeddings_gate_blocked"])
+        self.assertEqual(metadata["active_summary_inference_processes"], 0)
+
+    def test_bitloops_runtime_ready_requires_materialized_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_semantics_current (artefact_id TEXT)"
+                )
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (representation_kind TEXT)"
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                        {
+                            "task_id": "summary-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "summary_bootstrap",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_summaries": True,
+                                "run_summary_embeddings": True,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertFalse(ready)
+        assert isinstance(metadata, dict)
+        self.assertTrue(metadata["summary_materialization_required"])
+        self.assertTrue(metadata["summary_embeddings_required"])
+        self.assertEqual(metadata["summary_rows"], 0)
+        self.assertEqual(metadata["summary_embedding_rows"], 0)
+        self.assertFalse(metadata["summary_materialization_ready"])
+        self.assertFalse(metadata["summary_embeddings_ready"])
+
+    def test_bitloops_runtime_ready_accepts_materialized_summaries_without_summary_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_semantics_current (artefact_id TEXT)"
+                )
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                relational_connection.executemany(
+                    "INSERT INTO symbol_semantics_current(artefact_id) VALUES (?)",
+                    [("symbol-1",), ("symbol-2",)],
+                )
+                relational_connection.executemany(
+                    "INSERT INTO symbol_embeddings_current(artefact_id, representation_kind) VALUES (?, ?)",
+                    [("symbol-1", "summary"), ("symbol-2", "summary")],
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_summaries": True,
+                                "run_summary_embeddings": True,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
                 runtime_db_path=runtime_db,
                 repo_root=str(workspace),
             )
 
         self.assertTrue(ready)
         assert isinstance(metadata, dict)
-        self.assertTrue(metadata["embeddings_bootstrap_requested"])
-        self.assertEqual(metadata["embeddings_gate_readiness"], "ready")
-        self.assertFalse(metadata["embeddings_gate_blocked"])
+        self.assertEqual(metadata["init_queue_missing_kinds"], [])
+        self.assertTrue(metadata["summary_materialization_ready"])
+        self.assertTrue(metadata["summary_embeddings_ready"])
+        self.assertEqual(metadata["summary_rows"], 2)
+        self.assertEqual(metadata["summary_embedding_rows"], 2)
+
+    def test_summary_materialization_requires_embedding_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            daemon_config_root = root / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            connection = sqlite3.connect(relational_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE symbol_semantics_current (artefact_id TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                connection.executemany(
+                    "INSERT INTO symbol_semantics_current(artefact_id) VALUES (?)",
+                    [("symbol-1",), ("symbol-2",)],
+                )
+                connection.execute(
+                    "INSERT INTO symbol_embeddings_current(artefact_id, representation_kind) VALUES (?, ?)",
+                    ("symbol-1", "summary"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._summary_materialization_ready_for_session(
+                {
+                    "daemon_config_root": str(daemon_config_root),
+                    "selections": {
+                        "run_summaries": True,
+                        "run_summary_embeddings": True,
+                    },
+                }
+            )
+
+        self.assertFalse(ready)
+        self.assertEqual(metadata["summary_rows"], 2)
+        self.assertEqual(metadata["summary_embedding_rows"], 1)
+        self.assertEqual(metadata["summary_embedding_rows_missing"], 1)
+        self.assertFalse(metadata["summary_embedding_coverage_complete"])
+        self.assertFalse(metadata["summary_embeddings_ready"])
+
+    def test_wait_for_bitloops_runtime_ready_requires_stable_ready_polls(self) -> None:
+        with patch.dict(
+            common_impl.os.environ,
+            {
+                "BITLOOPS_RUNTIME_READY_STABLE_POLLS": "2",
+                "BITLOOPS_RUNTIME_READY_POLL_INTERVAL_SECONDS": "0.1",
+            },
+            clear=False,
+        ), patch.object(
+            common_impl,
+            "_resolve_bitloops_runtime_db_path",
+            return_value=Path("/tmp/runtime.sqlite"),
+        ), patch.object(
+            common_impl,
+            "_bitloops_init_ready_via_runtime_state",
+            side_effect=[
+                (False, None),
+                (True, {"ready_seq": 1}),
+                (True, {"ready_seq": 2}),
+            ],
+        ) as mock_ready, patch.object(common_impl.time, "sleep") as mock_sleep:
+            metadata = common_impl._wait_for_bitloops_runtime_ready(
+                timeout_seconds=30,
+                env={"HOME": "/tmp/home"},
+                cwd="/tmp/workspace",
+                required=True,
+            )
+
+        self.assertEqual(mock_ready.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertTrue(metadata["bitloops_runtime_ready"])
+        self.assertEqual(metadata["bitloops_runtime_ready_stable_polls"], 2)
+        self.assertEqual(
+            metadata["bitloops_runtime_ready_metadata"],
+            {"ready_seq": 2},
+        )
+
+    def test_follow_up_sync_satisfied_by_completed_watcher_sync(self) -> None:
+        satisfied, task = common_impl._follow_up_sync_satisfied(
+            latest_session={
+                "follow_up_sync_required": True,
+                "submitted_at_unix": 100,
+            },
+            repo_tasks=[
+                {
+                    "task_id": "sync-task-init",
+                    "source": "init",
+                    "kind": "sync",
+                    "submitted_at_unix": 100,
+                    "status": "completed",
+                    "progress": {
+                        "type": "sync",
+                        "value": {"phase": "complete"},
+                    },
+                    "result": {
+                        "type": "sync",
+                        "value": {"success": True},
+                    },
+                },
+                {
+                    "task_id": "sync-task-watcher",
+                    "source": "watcher",
+                    "kind": "sync",
+                    "submitted_at_unix": 101,
+                    "status": "completed",
+                    "progress": {
+                        "type": "sync",
+                        "value": {"phase": "complete"},
+                    },
+                    "result": {
+                        "type": "sync",
+                        "value": {"success": True},
+                    },
+                },
+            ],
+        )
+
+        self.assertTrue(satisfied)
+        assert isinstance(task, dict)
+        self.assertEqual(task["task_id"], "sync-task-watcher")
+
+    def test_init_devql_tasks_ready_blocks_failed_ingest(self) -> None:
+        ready, metadata = common_impl._init_devql_tasks_ready(
+            latest_session={
+                "init_session_id": "init-session-1",
+                "selections": {"run_ingest": True},
+            },
+            repo_tasks=[
+                {
+                    "task_id": "sync-task-1",
+                    "source": "init",
+                    "kind": "sync",
+                    "status": "completed",
+                    "init_session_id": "init-session-1",
+                },
+                {
+                    "task_id": "ingest-task-1",
+                    "source": "init",
+                    "kind": "ingest",
+                    "status": "failed",
+                    "init_session_id": "init-session-1",
+                    "error": "joining SQLite query task: task was cancelled",
+                },
+            ],
+        )
+
+        self.assertFalse(ready)
+        self.assertEqual(metadata["init_queue_missing_kinds"], ["ingest"])
+        self.assertEqual(
+            metadata["init_queue_incomplete_tasks"],
+            [
+                {
+                    "task_id": "ingest-task-1",
+                    "kind": "ingest",
+                    "status": "failed",
+                    "error": "joining SQLite query task: task was cancelled",
+                }
+            ],
+        )
+        self.assertEqual(metadata["init_queue_failed_tasks"], metadata["init_queue_incomplete_tasks"])
+
+    def test_wait_for_bitloops_runtime_ready_fails_fast_on_failed_init_task(self) -> None:
+        with patch.object(
+            common_impl,
+            "_resolve_bitloops_runtime_db_path",
+            return_value=Path("/tmp/runtime.sqlite"),
+        ), patch.object(
+            common_impl,
+            "_bitloops_init_ready_via_runtime_state",
+            return_value=(
+                False,
+                {
+                    "repo_root": "/tmp/workspace",
+                    "init_queue_failed_tasks": [
+                        {
+                            "task_id": "ingest-task-1",
+                            "kind": "ingest",
+                            "status": "failed",
+                            "error": "joining SQLite query task: task was cancelled",
+                        }
+                    ],
+                },
+            ),
+        ), patch.object(common_impl.time, "sleep") as mock_sleep:
+            with self.assertRaisesRegex(RuntimeError, "Bitloops init task failed"):
+                common_impl._wait_for_bitloops_runtime_ready(
+                    timeout_seconds=30,
+                    env={"HOME": "/tmp/home"},
+                    cwd="/tmp/workspace",
+                    required=True,
+                )
+
+        mock_sleep.assert_not_called()
 
     def test_debug_log_posts_when_http_fallback_opted_in(self) -> None:
         with patch.dict(common.os.environ, {"BENCHKIT_DEBUG_HTTP_FALLBACK": "1"}), patch.object(
