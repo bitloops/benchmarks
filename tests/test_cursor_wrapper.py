@@ -19,6 +19,15 @@ class CursorWrapperTests(unittest.TestCase):
             args = wrapper.parse_args()
         self.assertTrue(args.bitloops_no_summaries)
 
+    def test_parse_args_accepts_bitloops_summary_mode_on(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["cursor_wrapper.py", "--bitloops-summary-mode", "on"],
+        ):
+            args = wrapper.parse_args()
+        self.assertEqual(args.bitloops_summary_mode, "on")
+
     def test_resolve_bitloops_setup_timeout_uses_25_minute_floor_for_short_runs(self) -> None:
         payload = {"run": {"timeout_seconds": 900}}
         with patch.dict(wrapper.os.environ, {}, clear=True):

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import contextlib
 import importlib
-import importlib.util
 import json
 import os
 import re
@@ -15,13 +14,7 @@ from unittest.mock import patch
 
 
 def _load_common_module():
-    module_path = Path(__file__).resolve().parents[1] / "scripts" / "agents" / "common.py"
-    spec = importlib.util.spec_from_file_location("agent_common", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load scripts/agents/common.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("benchkit.swebench.agents.common")
 
 
 common = _load_common_module()
@@ -1583,10 +1576,72 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "--ingest=true",
                 "--embeddings-runtime",
                 "platform",
+                "--summaries-runtime",
+                "platform",
             ],
         )
         self.assertFalse(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "auto")
+
+    def test_setup_bitloops_summary_mode_on_forces_summaries_enabled(self) -> None:
+        responses = [
+            ("Bitloops daemon: running\n", "", 0, 5),
+            ("Bitloops init completed", "", 0, 16),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(common_impl, "call_command", side_effect=responses) as mock_call:
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="codex",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    embeddings_runtime="platform",
+                    summary_mode="on",
+                    cwd=str(workspace),
+                )
+
+        self.assertEqual(
+            mock_call.call_args_list[1].args[0],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "codex",
+                "--telemetry=false",
+                "--sync=true",
+                "--ingest=true",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
+            ],
+        )
+        self.assertFalse(metadata["bitloops_no_summaries"])
+        self.assertEqual(metadata["bitloops_summary_mode"], "on")
+
+    def test_setup_bitloops_rejects_conflicting_summary_controls(self) -> None:
+        with patch.object(
+            common_impl,
+            "_ensure_git_branch_for_bitloops_sync",
+        ) as mock_git_sync, patch.object(common_impl, "call_command") as mock_call:
+            with self.assertRaisesRegex(
+                ValueError,
+                "cannot be combined with --bitloops-summary-mode on",
+            ):
+                common_impl.setup_bitloops_for_workspace(
+                    agent_name="codex",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    no_summaries=True,
+                    summary_mode="on",
+                )
+
+        mock_git_sync.assert_not_called()
+        mock_call.assert_not_called()
 
     def test_setup_bitloops_records_global_lock_wait_metadata(self) -> None:
         responses = [
@@ -1690,6 +1745,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 sandbox,
                 summary_mode="auto",
                 bind_semantic_inference=True,
+                summaries_runtime="platform",
             )
 
             assert config_path is not None

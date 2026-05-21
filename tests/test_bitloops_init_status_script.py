@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import sqlite3
 import tempfile
 from pathlib import Path
 import unittest
@@ -200,6 +201,8 @@ class BitloopsInitStatusScriptTests(unittest.TestCase):
             db_snapshot={
                 "repo_id": "repo-123",
                 "embedding_counts": {"code": 200, "identity": 200, "summary": 40},
+                "summary_rows": 50,
+                "summary_embedding_rows": 40,
                 "summary_mailbox_items": 12,
                 "workplane_jobs": [
                     ("semantic_clones.clone_rebuild", "pending", 1),
@@ -215,7 +218,92 @@ class BitloopsInitStatusScriptTests(unittest.TestCase):
         self.assertIn("Sync: Completed", rendered)
         self.assertIn("Code Embeddings: Running | 100 / 200 indexed", rendered)
         self.assertIn("Stored embeddings: code=200, identity=200, summary=40", rendered)
+        self.assertIn("Summary materialization: summaries=50, summary_embeddings=40", rendered)
         self.assertIn("Summary mailbox items: 12", rendered)
+
+    def test_render_snapshot_includes_summary_materialization_counts(self) -> None:
+        rendered = script.render_snapshot(
+            run_id="20260427_103024_a73844",
+            repo="tokio-rs/axum",
+            instance_id="tokio-rs__axum-1119",
+            workspace_root=Path("/tmp/workspace"),
+            attempt=None,
+            status_payload=None,
+            db_snapshot={
+                "repo_id": "repo-123",
+                "summary_rows": 50,
+                "summary_embedding_rows": 12,
+                "embedding_counts": {},
+            },
+            status_error=None,
+        )
+
+        self.assertIn("Summary materialization: summaries=50, summary_embeddings=12", rendered)
+
+    def test_resolve_repo_id_prefers_init_status_repo_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            relational_db = Path(temp_dir) / "relational.db"
+            connection = sqlite3.connect(relational_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE repositories (repo_id TEXT, provider TEXT, organization TEXT, name TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO repositories(repo_id, provider, organization, name) VALUES (?, ?, ?, ?)",
+                    ("github-repo", "github", "pallets", "flask"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            resolved = script._resolve_repo_id(
+                relational_db=relational_db,
+                repo="pallets/flask",
+                status_payload={"repoId": "init-status-repo"},
+            )
+
+            self.assertEqual(resolved, "init-status-repo")
+
+    def test_load_db_snapshot_uses_status_repo_id_for_embedding_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            config_root = home / "Library" / "Application Support" / "bitloops"
+            relational_root = config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            connection = sqlite3.connect(relational_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (repo_id TEXT, representation_kind TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE symbol_semantics_current (repo_id TEXT)"
+                )
+                connection.executemany(
+                    "INSERT INTO symbol_embeddings_current(repo_id, representation_kind) VALUES (?, ?)",
+                    [
+                        ("repo-1", "code"),
+                        ("repo-1", "summary"),
+                    ],
+                )
+                connection.executemany(
+                    "INSERT INTO symbol_semantics_current(repo_id) VALUES (?)",
+                    [("repo-1",), ("repo-1",)],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            snapshot = script.load_db_snapshot(
+                bitloops_home=home,
+                repo="pallets/flask",
+                status_payload={"repoId": "repo-1"},
+            )
+
+            self.assertEqual(snapshot["repo_id"], "repo-1")
+            self.assertEqual(snapshot["embedding_counts"], {"code": 1, "summary": 1})
+            self.assertEqual(snapshot["summary_rows"], 2)
+            self.assertEqual(snapshot["summary_embedding_rows"], 1)
 
 
 if __name__ == "__main__":

@@ -375,8 +375,16 @@ def add_bitloops_wrapper_args(parser: Any) -> Any:
     )
     parser.add_argument(
         "--bitloops-summary-mode",
-        choices=("auto", "off"),
-        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
+        choices=("auto", "off", "on"),
+        help=(
+            "Deprecated benchmark wrapper control. Prefer --bitloops-summaries-runtime "
+            "and/or --bitloops-no-summaries."
+        ),
+    )
+    parser.add_argument(
+        "--bitloops-summaries-runtime",
+        choices=("local", "platform"),
+        help="Summaries runtime to configure during Bitloops init.",
     )
     parser.add_argument(
         "--bitloops-disable-devql-guidance",
@@ -472,6 +480,7 @@ def run_agent_wrapper(
                         if getattr(args, "bitloops_no_summaries", False)
                         else getattr(args, "bitloops_summary_mode", None)
                     ),
+                    summaries_runtime=getattr(args, "bitloops_summaries_runtime", None),
                 )
                 task_daemon_handle = start_bitloops_task_daemon(
                     binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
@@ -489,6 +498,7 @@ def run_agent_wrapper(
                 no_embeddings=getattr(args, "bitloops_no_embeddings", False),
                 no_summaries=getattr(args, "bitloops_no_summaries", False),
                 summary_mode=getattr(args, "bitloops_summary_mode", None),
+                summaries_runtime=getattr(args, "bitloops_summaries_runtime", None),
                 disable_devql_guidance=getattr(
                     args,
                     "bitloops_disable_devql_guidance",
@@ -726,6 +736,7 @@ def _seed_bitloops_cloud_inference_profiles(
     sandbox: dict[str, Any] | None,
     *,
     summary_mode: str | None,
+    summaries_runtime: str | None = None,
     bind_semantic_inference: bool = False,
 ) -> Path | None:
     config_path = _resolve_bitloops_sandbox_daemon_config_path(sandbox)
@@ -754,6 +765,11 @@ def _seed_bitloops_cloud_inference_profiles(
         summary_mode.strip().lower()
         if isinstance(summary_mode, str) and summary_mode.strip()
         else "off"
+    )
+    effective_summaries_runtime = (
+        summaries_runtime.strip().lower()
+        if isinstance(summaries_runtime, str) and summaries_runtime.strip()
+        else None
     )
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -829,7 +845,7 @@ def _seed_bitloops_cloud_inference_profiles(
         semantic_inference = [
             'code_embeddings = "platform_code"',
         ]
-        if effective_summary_mode != "off":
+        if effective_summary_mode != "off" and effective_summaries_runtime == "platform":
             semantic_inference.extend(
                 [
                     'summary_generation = "summary_llm"',
@@ -1687,6 +1703,7 @@ def _bitloops_init_ready_via_runtime_state(
         and init_queue_ready
         and no_background_jobs
         and embeddings_ready
+        and no_active_summary_inference
         and summary_materialized
     )
     if not ready:
@@ -2187,6 +2204,7 @@ def _run_bitloops_init(
     ingest: bool,
     install_default_daemon: bool,
     embeddings_runtime: str | None,
+    summaries_runtime: str | None = None,
     no_embeddings: bool,
     no_summaries: bool = False,
     disable_devql_guidance: bool = False,
@@ -2197,6 +2215,7 @@ def _run_bitloops_init(
     include_ingest_flag = True
     include_no_summaries_flag = no_summaries
     effective_embeddings_runtime = None if no_embeddings else embeddings_runtime
+    effective_summaries_runtime = None if no_summaries else summaries_runtime
     init_fallback_used = False
     init_command: list[str] = []
     init_stdout = ""
@@ -2231,6 +2250,8 @@ def _run_bitloops_init(
             init_command.extend(["--embeddings-runtime", effective_embeddings_runtime])
         if include_no_summaries_flag:
             init_command.append("--no-summaries")
+        elif effective_summaries_runtime:
+            init_command.extend(["--summaries-runtime", effective_summaries_runtime])
         if disable_devql_guidance:
             init_command.append("--disable-devql-guidance")
 
@@ -2301,6 +2322,12 @@ def _run_bitloops_init(
                 cwd=cwd,
             )
             fallback_applied = True
+        if effective_summaries_runtime and _bitloops_init_rejects_summaries_runtime_flag(
+            init_stdout,
+            init_stderr,
+        ):
+            effective_summaries_runtime = None
+            fallback_applied = True
 
         if not fallback_applied:
             if (
@@ -2360,6 +2387,7 @@ def setup_bitloops_for_workspace(
     no_embeddings: bool = False,
     no_summaries: bool = False,
     summary_mode: str | None = None,
+    summaries_runtime: str | None = None,
     disable_devql_guidance: bool = False,
     embedding_mode: str | None = None,
     sandbox: dict[str, Any] | None = None,
@@ -2370,6 +2398,39 @@ def setup_bitloops_for_workspace(
     binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
     timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "1500"))
     env = build_bitloops_telemetry_optout_environment(env)
+    requested_summary_mode = (
+        summary_mode.strip().lower() if isinstance(summary_mode, str) and summary_mode.strip() else None
+    )
+    requested_summaries_runtime = (
+        summaries_runtime.strip().lower()
+        if isinstance(summaries_runtime, str) and summaries_runtime.strip()
+        else None
+    )
+    if requested_summary_mode not in {None, "auto", "off", "on"}:
+        raise ValueError(
+            "bitloops summary mode must be one of: auto, off, on"
+        )
+    if requested_summaries_runtime not in {None, "local", "platform"}:
+        raise ValueError(
+            "bitloops summaries runtime must be one of: local, platform"
+        )
+    if no_summaries and requested_summary_mode == "on":
+        raise ValueError(
+            "Conflicting Bitloops summaries controls: --bitloops-no-summaries "
+            "cannot be combined with --bitloops-summary-mode on."
+        )
+    if no_summaries and requested_summaries_runtime is not None:
+        raise ValueError(
+            "Conflicting Bitloops summaries controls: --bitloops-no-summaries "
+            "cannot be combined with --bitloops-summaries-runtime."
+        )
+    if no_summaries:
+        effective_summary_mode = "off"
+    elif requested_summary_mode is not None:
+        effective_summary_mode = requested_summary_mode
+    else:
+        effective_summary_mode = "off"
+    effective_no_summaries = effective_summary_mode == "off"
     setup_started = time.time()
     (
         git_detached_head,
@@ -2386,34 +2447,39 @@ def setup_bitloops_for_workspace(
         embeddings_runtime.strip() if isinstance(embeddings_runtime, str) and embeddings_runtime.strip() else None
     )
     effective_no_embeddings = no_embeddings or requested_embeddings_runtime is None
-    requested_summary_mode = (
-        summary_mode.strip().lower() if isinstance(summary_mode, str) and summary_mode.strip() else None
-    )
+    effective_summaries_runtime = requested_summaries_runtime
     if no_summaries:
-        effective_summary_mode = "off"
-    elif requested_summary_mode is not None:
-        effective_summary_mode = requested_summary_mode
-    else:
-        effective_summary_mode = "off"
-    effective_no_summaries = effective_summary_mode == "off"
+        effective_summaries_runtime = None
+    elif effective_summary_mode != "off" and effective_summaries_runtime is None:
+        # Backward-compatible bridge for deprecated --bitloops-summary-mode controls.
+        effective_summaries_runtime = requested_embeddings_runtime
     sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
     bind_cloud_semantic_profiles = (
         sandbox_mode == "per_task_daemon"
         and requested_embeddings_runtime == "platform"
         and not effective_no_embeddings
     )
+    repo_summary_mode_override = (
+        requested_summary_mode
+        if requested_summary_mode in {"auto", "on"}
+        else None
+    )
     repo_config_path = _apply_bitloops_repo_semantic_modes(
-        summary_mode=effective_summary_mode,
+        summary_mode=repo_summary_mode_override,
         embedding_mode=embedding_mode,
         embedding_profile="platform_code" if bind_cloud_semantic_profiles else None,
         summary_generation_profile=(
             "summary_llm"
-            if bind_cloud_semantic_profiles and not effective_no_summaries
+            if bind_cloud_semantic_profiles
+            and not effective_no_summaries
+            and effective_summaries_runtime == "platform"
             else None
         ),
         summary_embedding_profile=(
             "platform_code"
-            if bind_cloud_semantic_profiles and not effective_no_summaries
+            if bind_cloud_semantic_profiles
+            and not effective_no_summaries
+            and effective_summaries_runtime == "platform"
             else None
         ),
         cwd=cwd,
@@ -2431,6 +2497,7 @@ def setup_bitloops_for_workspace(
         sandbox_config_path = _seed_bitloops_cloud_inference_profiles(
             sandbox,
             summary_mode=effective_summary_mode,
+            summaries_runtime=effective_summaries_runtime,
             bind_semantic_inference=bind_cloud_semantic_profiles,
         )
         init_env, init_platform_token_metadata = (
@@ -2496,6 +2563,7 @@ def setup_bitloops_for_workspace(
             ingest=ingest,
             install_default_daemon=install_default_daemon,
             embeddings_runtime=requested_embeddings_runtime,
+            summaries_runtime=effective_summaries_runtime,
             no_embeddings=effective_no_embeddings,
             no_summaries=effective_no_summaries,
             disable_devql_guidance=disable_devql_guidance,
@@ -2546,6 +2614,7 @@ def setup_bitloops_for_workspace(
                     ingest=ingest,
                     install_default_daemon=False,
                     embeddings_runtime=requested_embeddings_runtime,
+                    summaries_runtime=effective_summaries_runtime,
                     no_embeddings=effective_no_embeddings,
                     no_summaries=effective_no_summaries,
                     disable_devql_guidance=disable_devql_guidance,
@@ -2573,6 +2642,7 @@ def setup_bitloops_for_workspace(
                 ingest=ingest,
                 install_default_daemon=install_default_daemon,
                 embeddings_runtime=requested_embeddings_runtime,
+                summaries_runtime=effective_summaries_runtime,
                 no_embeddings=effective_no_embeddings,
                 no_summaries=effective_no_summaries,
                 disable_devql_guidance=disable_devql_guidance,
@@ -2618,6 +2688,7 @@ def setup_bitloops_for_workspace(
         "bitloops_no_embeddings": effective_no_embeddings,
         "bitloops_no_summaries": effective_no_summaries,
         "bitloops_summary_mode": effective_summary_mode,
+        "bitloops_summaries_runtime": effective_summaries_runtime,
         "bitloops_disable_devql_guidance": disable_devql_guidance,
         "bitloops_embedding_mode": embedding_mode,
         "bitloops_git_detached_head": git_detached_head,
@@ -2741,6 +2812,11 @@ def _bitloops_init_rejects_install_default_daemon_flag(
 def _bitloops_init_rejects_no_summaries_flag(stdout: str, stderr: str) -> bool:
     text = "\n".join((stdout, stderr)).strip().lower()
     return "unexpected argument '--no-summaries'" in text
+
+
+def _bitloops_init_rejects_summaries_runtime_flag(stdout: str, stderr: str) -> bool:
+    text = "\n".join((stdout, stderr)).strip().lower()
+    return "unexpected argument '--summaries-runtime'" in text
 
 
 def _bitloops_init_hit_database_lock(stdout: str, stderr: str) -> bool:

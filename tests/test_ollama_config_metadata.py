@@ -110,6 +110,7 @@ def _build_ollama_config(root: Path) -> RunConfig:
         workspace_isolation_mode="shared_repo_commit",
         bitloops_enabled=False,
         bitloops_sandbox_mode="disabled",
+        artifact_retention_policy="appendix_summary",
         repo_url_template="https://github.com/{repo}.git",
         git_bin="git",
         workspace_root=None,

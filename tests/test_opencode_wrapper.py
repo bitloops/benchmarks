@@ -22,6 +22,15 @@ class OpencodeWrapperTests(unittest.TestCase):
             args = wrapper.parse_args()
         self.assertTrue(args.bitloops_no_summaries)
 
+    def test_parse_args_accepts_bitloops_summary_mode_on(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["opencode_wrapper.py", "--bitloops-summary-mode", "on"],
+        ):
+            args = wrapper.parse_args()
+        self.assertEqual(args.bitloops_summary_mode, "on")
+
     def test_resolve_opencode_bin_prefers_env_override(self) -> None:
         with patch.dict(wrapper.os.environ, {"OPENCODE_BIN": "/tmp/custom-opencode"}, clear=False):
             self.assertEqual(wrapper.resolve_opencode_bin(), "/tmp/custom-opencode")

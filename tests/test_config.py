@@ -66,6 +66,7 @@ timeout_seconds = 3600
             self.assertEqual(cfg.workspace_isolation_mode, "shared_repo_commit")
             self.assertFalse(cfg.bitloops_enabled)
             self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
+            self.assertEqual(cfg.artifact_retention_policy, "appendix_summary")
             self.assertEqual(cfg.prompt_protocol, "minimal")
             self.assertEqual(
                 cfg.model_map["claude_code"]["opus-4-6"],
@@ -138,6 +139,53 @@ seed = 4242
             self.assertEqual(cfg.model.temperature, 0.15)
             self.assertEqual(cfg.model.seed, 4242)
             self.assertEqual(cfg.model_map["opencode"]["gpt-5"], "openai/gpt-5")
+
+    def test_load_run_config_accepts_artifact_retention_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            raw = """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+artifact_retention_policy = "appendix_transcripts"
+
+[agent]
+id = "opencode"
+
+[model]
+provider = "openai"
+name = "gpt-5"
+            """.strip()
+            path = temp_root / "config.toml"
+            path.write_text(raw, encoding="utf-8")
+
+            cfg = load_run_config(path)
+            self.assertEqual(cfg.artifact_retention_policy, "appendix_transcripts")
+
+    def test_load_run_config_rejects_invalid_artifact_retention_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            raw = """
+[run]
+benchmark = "swebench_multilingual"
+dataset_path = "datasets/sample.jsonl"
+artifact_retention_policy = "invalid_mode"
+
+[agent]
+id = "opencode"
+
+[model]
+provider = "openai"
+name = "gpt-5"
+            """.strip()
+            path = temp_root / "config.toml"
+            path.write_text(raw, encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "run.artifact_retention_policy must be one of",
+            ):
+                load_run_config(path)
 
     def test_load_run_config_rejects_non_minimal_prompt_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -381,8 +429,7 @@ name = "deepseek-v4-pro"
                     "--bitloops-init",
                     "--bitloops-embeddings-runtime",
                     "platform",
-                    "--bitloops-summary-mode",
-                    "off",
+                    "--bitloops-no-summaries",
                 ],
             )
             self.assertEqual(

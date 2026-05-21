@@ -24,4 +24,4 @@ timeout_seconds = 7200
 extra_args = []
 
 [modes.with_bitloops.agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto", "--bitloops-disable-devql-guidance"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summaries-runtime", "platform", "--bitloops-disable-devql-guidance"]

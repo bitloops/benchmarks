@@ -98,9 +98,10 @@ Optional wrapper argument:
   - by default runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true --no-embeddings --no-summaries`
   - sets `BITLOOPS_TELEMETRY_OPTOUT=1` for Bitloops setup and the agent command environment
 - `--bitloops-embeddings-runtime <local|platform>`: opts back into embeddings during `bitloops init`
+- `--bitloops-summaries-runtime <local|platform>`: opts back into summaries during `bitloops init`
 - `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
 - `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`
-- `--bitloops-summary-mode <auto|off>`: benchmark-wrapper control; `auto` opts back into Bitloops' default summary behavior, and `off` is a compatibility alias for `--bitloops-no-summaries`
+- `--bitloops-summary-mode <auto|off|on>`: deprecated benchmark-wrapper control retained for compatibility; prefer `--bitloops-summaries-runtime` and/or `--bitloops-no-summaries`
 
 With no extra args, benchmark wrappers issue:
 
@@ -120,7 +121,7 @@ bitloops_sandbox_mode = "per_task_daemon"
 extra_args = [
   "--bitloops-init",
   "--bitloops-embeddings-runtime", "platform",
-  "--bitloops-summary-mode", "auto",
+  "--bitloops-summaries-runtime", "platform",
 ]
 ```
 

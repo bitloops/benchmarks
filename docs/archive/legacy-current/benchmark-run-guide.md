@@ -238,11 +238,21 @@ Bitloops runs:
 | `--bitloops-ingest`             | `true`, `false`                                                     | Control whether init queues ingest           |
 | `--bitloops-embeddings-runtime` | `local`, `platform`                                                 | Select embeddings runtime for init           |
 | `--bitloops-no-embeddings`      | none                                                                | Disable embeddings setup during init         |
-| `--bitloops-summary-mode`       | `auto`, `off`                                                       | Override summary mode in task-local config   |
+| `--bitloops-summary-mode`       | `auto`, `off`, `on`                                                 | `auto` keeps init defaults, `off` disables summaries, `on` explicitly keeps summaries enabled |
 | `--bitloops-embedding-mode`     | `off`, `deterministic`, `refresh_on_upgrade`, `semantic_aware_once` | Override embedding mode in task-local config |
 
 Use benchmark TOML `extra_args` to request those overrides. You do not need to
 manually create the repo-local `config.toml` for benchmark runs.
+
+Example forcing summaries on:
+
+```toml
+extra_args = [
+  "--bitloops-init",
+  "--bitloops-embeddings-runtime", "platform",
+  "--bitloops-summary-mode", "on",
+]
+```
 
 ## 7) Narrow to one task (optional)
 

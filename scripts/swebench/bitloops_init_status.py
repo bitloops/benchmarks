@@ -349,11 +349,90 @@ def call_command(
     return completed.stdout, completed.stderr, completed.returncode
 
 
+def _repo_id_from_status_payload(status_payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(status_payload, dict):
+        return None
+    repo_id = status_payload.get("repoId")
+    if repo_id is None:
+        return None
+    text = str(repo_id).strip()
+    return text or None
+
+
+def _relational_db_path(*, bitloops_home: Path, status_payload: dict[str, Any] | None) -> Path:
+    session = status_payload.get("session") if isinstance(status_payload, dict) else None
+    if isinstance(session, dict):
+        daemon_config_root = str(session.get("daemonConfigRoot") or session.get("daemon_config_root") or "").strip()
+        if daemon_config_root:
+            return Path(daemon_config_root).expanduser() / "stores" / "relational" / "relational.db"
+    return (
+        bitloops_home
+        / "Library"
+        / "Application Support"
+        / "bitloops"
+        / "stores"
+        / "relational"
+        / "relational.db"
+    )
+
+
+def _resolve_repo_id(
+    *,
+    relational_db: Path,
+    repo: str,
+    status_payload: dict[str, Any] | None,
+) -> str | None:
+    repo_id = _repo_id_from_status_payload(status_payload)
+    if repo_id is not None:
+        return repo_id
+
+    provider = "github"
+    organization, _, name = repo.partition("/")
+    repo_rows = _safe_query_all(
+        relational_db,
+        """
+        SELECT repo_id, provider, organization, name
+        FROM repositories
+        WHERE provider = ? AND organization = ? AND name = ?
+        """,
+        (provider, organization, name),
+    )
+    if repo_rows:
+        return str(repo_rows[0][0])
+
+    fallback_rows = _safe_query_all(
+        relational_db,
+        """
+        SELECT repo_id
+        FROM repositories
+        WHERE organization = ? AND name = ?
+        ORDER BY provider
+        LIMIT 1
+        """,
+        (organization, name),
+    )
+    if fallback_rows:
+        return str(fallback_rows[0][0])
+    return None
+
+
+def _count_relational_rows(relational_db: Path, sql: str, params: tuple[Any, ...] = ()) -> int | None:
+    rows = _safe_query_all(relational_db, sql, params)
+    if not rows:
+        return None
+    try:
+        return int(rows[0][0])
+    except (TypeError, ValueError):
+        return None
+
+
 def load_bitloops_init_status(
     *,
     workspace_root: Path,
     bitloops_home: Path,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    if not workspace_root.is_dir():
+        return None, f"workspace not found: {workspace_root}"
     env = build_bitloops_env(bitloops_home)
     stdout, stderr, return_code = call_command(
         ["bitloops", "init", "status", "--json"],
@@ -388,6 +467,7 @@ def load_db_snapshot(
     *,
     bitloops_home: Path,
     repo: str,
+    status_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime_db = (
         bitloops_home
@@ -398,30 +478,20 @@ def load_db_snapshot(
         / "runtime"
         / "runtime.sqlite"
     )
-    relational_db = (
-        bitloops_home
-        / "Library"
-        / "Application Support"
-        / "bitloops"
-        / "stores"
-        / "relational"
-        / "relational.db"
+    relational_db = _relational_db_path(
+        bitloops_home=bitloops_home,
+        status_payload=status_payload,
     )
 
-    provider = "github"
-    organization, _, name = repo.partition("/")
-    repo_rows = _safe_query_all(
-        relational_db,
-        """
-        SELECT repo_id, provider, organization, name
-        FROM repositories
-        WHERE provider = ? AND organization = ? AND name = ?
-        """,
-        (provider, organization, name),
+    repo_id = _resolve_repo_id(
+        relational_db=relational_db,
+        repo=repo,
+        status_payload=status_payload,
     )
-    repo_id = repo_rows[0][0] if repo_rows else None
 
     embedding_counts: dict[str, int] = {}
+    summary_rows: int | None = None
+    summary_embedding_rows: int | None = None
     if repo_id is not None:
         for representation_kind, count in _safe_query_all(
             relational_db,
@@ -435,6 +505,19 @@ def load_db_snapshot(
             (repo_id,),
         ):
             embedding_counts[str(representation_kind)] = int(count)
+        summary_rows = _count_relational_rows(
+            relational_db,
+            "SELECT COUNT(*) FROM symbol_semantics_current WHERE repo_id = ?",
+            (repo_id,),
+        )
+        summary_embedding_rows = _count_relational_rows(
+            relational_db,
+            """
+            SELECT COUNT(*) FROM symbol_embeddings_current
+            WHERE repo_id = ? AND representation_kind = 'summary'
+            """,
+            (repo_id,),
+        )
 
     embedding_mailbox_rows = _safe_query_all(
         runtime_db,
@@ -460,7 +543,10 @@ def load_db_snapshot(
     )
     return {
         "repo_id": repo_id,
+        "relational_db_path": str(relational_db),
         "embedding_counts": embedding_counts,
+        "summary_rows": summary_rows,
+        "summary_embedding_rows": summary_embedding_rows,
         "embedding_mailbox_items": [
             (str(kind), str(item_kind), str(status), int(count))
             for kind, item_kind, status, count in embedding_mailbox_rows
@@ -531,6 +617,16 @@ def render_snapshot(
     else:
         lines.append("Stored embeddings: none yet")
 
+    summary_rows = db_snapshot.get("summary_rows")
+    summary_embedding_rows = db_snapshot.get("summary_embedding_rows")
+    if summary_rows is not None or summary_embedding_rows is not None:
+        summary_parts = []
+        if summary_rows is not None:
+            summary_parts.append(f"summaries={summary_rows}")
+        if summary_embedding_rows is not None:
+            summary_parts.append(f"summary_embeddings={summary_embedding_rows}")
+        lines.append("Summary materialization: " + ", ".join(summary_parts))
+
     embedding_mailbox_items = db_snapshot.get("embedding_mailbox_items", [])
     if embedding_mailbox_items:
         mailbox_parts = [
@@ -569,6 +665,7 @@ def build_snapshot_payload(
     db_snapshot = load_db_snapshot(
         bitloops_home=paths.bitloops_home,
         repo=str(record.get("repo", "")),
+        status_payload=status_payload,
     )
     return {
         "run_id": run_root.name,

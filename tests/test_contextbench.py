@@ -74,9 +74,9 @@ max_instances = 1
 
                 self.assertEqual(cfg.agent.id, agent_id)
                 self.assertEqual(cfg.condition, "with_bitloops")
-                self.assertIn("--bitloops-summary-mode", cfg.agent.extra_args)
-                summary_mode_index = cfg.agent.extra_args.index("--bitloops-summary-mode")
-                self.assertEqual(cfg.agent.extra_args[summary_mode_index + 1], "auto")
+                self.assertIn("--bitloops-summaries-runtime", cfg.agent.extra_args)
+                summaries_runtime_index = cfg.agent.extra_args.index("--bitloops-summaries-runtime")
+                self.assertEqual(cfg.agent.extra_args[summaries_runtime_index + 1], "platform")
                 self.assertIn("--bitloops-embeddings-runtime", cfg.agent.extra_args)
 
     def test_repo_opencode_contextbench_config_uses_ollama_glm_cloud(self) -> None:

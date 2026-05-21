@@ -9,6 +9,7 @@ from benchkit.swebench.cli import (
     run_execute,
     run_export_hf,
     run_plan,
+    run_prune_artifacts,
 )
 from benchkit.swebench.dataset import BENCHMARK_CONTEXTBENCH_VERIFIED
 
@@ -38,6 +39,12 @@ def main() -> None:
         type=Path,
         default=None,
         help="Custom appendix output dir",
+    )
+    run_parser.add_argument(
+        "--artifact-retention-policy",
+        choices=("appendix_summary", "appendix_transcripts", "appendix_only", "keep_all"),
+        default=None,
+        help="Post-run artifact retention policy override",
     )
 
     export_parser = subparsers.add_parser(
@@ -104,6 +111,45 @@ def main() -> None:
         default=Path("reports/benchmarks.sqlite"),
         help="SQLite DB file path",
     )
+    prune_parser = subparsers.add_parser(
+        "prune-artifacts",
+        help="Prune heavy benchmark artifacts from existing run roots (dry-run by default)",
+    )
+    prune_parser.add_argument(
+        "--run-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="Optional repeatable run root path(s). If omitted, auto-discovers under --runs-root.",
+    )
+    prune_parser.add_argument(
+        "--runs-root",
+        type=Path,
+        default=Path("runs"),
+        help="Base directory used for run auto-discovery when --run-root is omitted",
+    )
+    prune_parser.add_argument(
+        "--benchmark",
+        default=BENCHMARK_CONTEXTBENCH_VERIFIED,
+        help="Optional benchmark filter for auto-discovery",
+    )
+    prune_parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=None,
+        help="Only prune run roots last modified before N days ago",
+    )
+    prune_parser.add_argument(
+        "--artifact-retention-policy",
+        choices=("appendix_summary", "appendix_transcripts", "appendix_only", "keep_all"),
+        default="appendix_summary",
+        help="Retention policy to enforce while pruning historical artifacts",
+    )
+    prune_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply deletions. Without this flag, prune-artifacts is preview-only.",
+    )
 
     args = parser.parse_args()
 
@@ -119,6 +165,7 @@ def main() -> None:
             args.max_workers,
             appendix_output_dir=args.appendix_output_dir,
             appendix=args.appendix,
+            artifact_retention_policy_override=args.artifact_retention_policy,
         )
         return
     if args.command == "export-hf":
@@ -145,6 +192,16 @@ def main() -> None:
         return
     if args.command == "db-import":
         run_db_import(args.appendix_csv, args.run_root, args.db_path)
+        return
+    if args.command == "prune-artifacts":
+        run_prune_artifacts(
+            run_roots=args.run_root,
+            runs_root=args.runs_root,
+            benchmark=args.benchmark,
+            older_than_days=args.older_than_days,
+            artifact_retention_policy=args.artifact_retention_policy,
+            apply=args.apply,
+        )
         return
     raise RuntimeError(f"Unsupported command: {args.command}")
 
