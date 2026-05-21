@@ -14,38 +14,85 @@ BASELINE_PATH = (
     / "appendix_minimal_per_task_log.jsonl"
 )
 
-BITLOOPS_RUNS = {
-    "SWE-Bench-Verified__python__maintenance__bugfix__e989ba2d": {
-        "appendix": ROOT
-        / "reports"
-        / "appendix"
-        / "opencode_bitloops_e989ba2d_rerun_summarygate"
-        / "appendix_minimal_per_task_log.jsonl",
-        "trace": ROOT
-        / "runs"
-        / "contextbench_verified"
-        / "20260521"
-        / "20260521_082049_8ac2d9"
-        / "attempts"
-        / "attempt-01"
-        / "trace.jsonl",
-    },
-    "SWE-Bench-Verified__python__maintenance__bugfix__1409977d": {
-        "appendix": ROOT
-        / "reports"
-        / "appendix"
-        / "opencode_bitloops_1409977d_retry_readiness_fix"
-        / "appendix_minimal_per_task_log.jsonl",
-        "trace": ROOT
-        / "runs"
-        / "contextbench_verified"
-        / "20260521"
-        / "20260521_101227_5327ce"
-        / "attempts"
-        / "attempt-01"
-        / "trace.jsonl",
-    },
-}
+
+def bitloops_run(
+    instance_id: str,
+    appendix_dir: str,
+    run_date: str,
+    run_id: str,
+) -> tuple[str, dict[str, Path]]:
+    return (
+        instance_id,
+        {
+            "appendix": ROOT
+            / "reports"
+            / "appendix"
+            / appendix_dir
+            / "appendix_minimal_per_task_log.jsonl",
+            "trace": ROOT
+            / "runs"
+            / "contextbench_verified"
+            / run_date
+            / run_id
+            / "attempts"
+            / "attempt-01"
+            / "trace.jsonl",
+        },
+    )
+
+
+BITLOOPS_RUNS = dict(
+    [
+        bitloops_run(
+            "SWE-Bench-Verified__python__maintenance__bugfix__e5236b5f",
+            "opencode_bitloops_e5236b5f_readiness_fix",
+            "20260521",
+            "20260521_110734_df9e07",
+        ),
+        bitloops_run(
+            "SWE-Bench-Verified__python__maintenance__bugfix__1409977d",
+            "opencode_bitloops_1409977d_retry_readiness_fix",
+            "20260521",
+            "20260521_101227_5327ce",
+        ),
+        bitloops_run(
+            "SWE-PolyBench__python__maintenance__bugfix__31f7341a",
+            "opencode_bitloops_31f7341a_retry_after_login",
+            "20260521",
+            "20260521_112553_25475c",
+        ),
+        bitloops_run(
+            "SWE-PolyBench__typescript__maintenance__bugfix__42165c4e",
+            "opencode_bitloops_42165c4e_readiness_fix",
+            "20260521",
+            "20260521_114415_e06d3f",
+        ),
+        bitloops_run(
+            "Multi-SWE-Bench__typescript__maintenance__bugfix__5eee261d",
+            "opencode_bitloops_5eee261d_readiness_fix",
+            "20260521",
+            "20260521_114643_316fdb",
+        ),
+        bitloops_run(
+            "Multi-SWE-Bench__go__maintenance__bugfix__d129d52f",
+            "opencode_bitloops_d129d52f_readiness_fix",
+            "20260521",
+            "20260521_115738_deab3a",
+        ),
+        bitloops_run(
+            "SWE-Bench-Verified__python__maintenance__bugfix__28ed0b77",
+            "opencode_bitloops_28ed0b77_readiness_fix",
+            "20260521",
+            "20260521_120343_f14961",
+        ),
+        bitloops_run(
+            "SWE-Bench-Verified__python__maintenance__bugfix__e989ba2d",
+            "opencode_bitloops_e989ba2d_rerun_summarygate",
+            "20260521",
+            "20260521_082049_8ac2d9",
+        ),
+    ]
+)
 
 
 def load_jsonl_rows(path: Path) -> list[dict]:
@@ -289,8 +336,11 @@ def main() -> None:
     ]
     average_row = {
         "instance_id": "MEAN_OF_RUNS",
-        "repo": "n=2",
-        "status_transition": "2/2 solved -> solved",
+        "repo": f"n={len(BITLOOPS_RUNS)}",
+        "status_transition": (
+            f"{sum(row['status_transition'].endswith(' -> solved') for row in gain_rows)}/"
+            f"{len(BITLOOPS_RUNS)} solved -> solved"
+        ),
     }
     for column in numeric_gain_columns:
         values = [row[column] for row in gain_rows if isinstance(row.get(column), (int, float))]
