@@ -24,6 +24,7 @@ class AppendixTests(unittest.TestCase):
                     "configure",
                     "--file",
                     "/tmp/bitloops/config.toml",
+                    "--no-start",
                 ],
                 "bitloops_start_command": ["bitloops", "daemon", "start"],
                 "bitloops_init_command": ["bitloops", "init", "--agent", "codex"],
@@ -34,7 +35,7 @@ class AppendixTests(unittest.TestCase):
             commands,
             [
                 "bitloops status",
-                "bitloops configure --file /tmp/bitloops/config.toml",
+                "bitloops configure --file /tmp/bitloops/config.toml --no-start",
                 "bitloops daemon start",
                 "bitloops init --agent codex",
             ],

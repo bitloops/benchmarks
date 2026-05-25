@@ -93,7 +93,7 @@ Optional wrapper argument:
 - `--bitloops-init`: runs non-interactive Bitloops setup in the task workspace
   before invoking the agent CLI:
   - resolves the task-local Bitloops sandbox/runtime
-  - for isolated per-task daemons, writes the benchmark-generated daemon config and installs it with `bitloops configure --file <config.toml>`
+  - for isolated per-task daemons, writes the benchmark-generated daemon config and installs it once per daemon config root with `bitloops configure --file <config.toml> --no-start`
   - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
   - by default runs `bitloops init --agent <agent> --sync=true --ingest=true`

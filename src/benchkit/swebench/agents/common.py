@@ -56,6 +56,8 @@ BITLOOPS_DISABLE_GLOBAL_LOCK_ENV_VAR = "BENCHKIT_DISABLE_BITLOOPS_GLOBAL_LOCK"
 BITLOOPS_TELEMETRY_OPTOUT_ENV_VAR = "BITLOOPS_TELEMETRY_OPTOUT"
 BITLOOPS_PLATFORM_GATEWAY_TOKEN_ENV_VAR = "BITLOOPS_PLATFORM_GATEWAY_TOKEN"
 BITLOOPS_TASK_DAEMON_STOP_TIMEOUT_SECONDS = 30
+BITLOOPS_CONFIGURE_STATE_FILENAME = ".benchkit-bitloops-configure.json"
+BITLOOPS_CONFIGURE_LOCK_FILENAME = ".benchkit-bitloops-configure.lock"
 
 
 def _debug_log(*, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -2179,7 +2181,7 @@ def _run_bitloops_configure(
             "bitloops_configure_elapsed_ms": 0,
         }
 
-    command = [binary, "configure", "--file", str(config_path)]
+    command = [binary, "configure", "--file", str(config_path), "--no-start"]
     stdout, stderr, return_code, elapsed_ms = call_command(
         command,
         timeout,
@@ -2201,7 +2203,188 @@ def _run_bitloops_configure(
         "bitloops_configure_command": command,
         "bitloops_configure_file_path": str(config_path),
         "bitloops_configure_elapsed_ms": elapsed_ms,
+        "bitloops_configure_return_code": return_code,
     }
+
+
+def _bitloops_configure_state_path(config_path: Path) -> Path:
+    return config_path.parent / BITLOOPS_CONFIGURE_STATE_FILENAME
+
+
+def _bitloops_configure_lock_path(config_path: Path) -> Path:
+    return config_path.parent / BITLOOPS_CONFIGURE_LOCK_FILENAME
+
+
+def _hash_bitloops_config_file(config_path: Path) -> str | None:
+    try:
+        return hashlib.sha256(config_path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _read_bitloops_configure_state(state_path: Path) -> dict[str, Any] | None:
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _write_bitloops_configure_state(
+    state_path: Path,
+    *,
+    config_path: Path,
+    config_hash: str,
+    command: list[str],
+) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = state_path.with_name(f"{state_path.name}.tmp.{os.getpid()}")
+    payload = {
+        "version": 1,
+        "config_hash": config_hash,
+        "config_path": str(config_path),
+        "command": command,
+        "configured_at_ms": int(time.time() * 1000),
+    }
+    temporary_path.write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, state_path)
+
+
+@contextlib.contextmanager
+def _acquire_bitloops_configure_lock(
+    *,
+    lock_path: Path,
+    timeout_seconds: int,
+) -> Any:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    wait_started = time.time()
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if (time.time() - wait_started) >= timeout_seconds:
+                    raise TimeoutError(
+                        f"timed out waiting for Bitloops configure lock: {lock_path}"
+                    )
+                time.sleep(0.1)
+        wait_elapsed_ms = int((time.time() - wait_started) * 1000)
+        try:
+            yield wait_elapsed_ms
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _run_bitloops_configure_once(
+    *,
+    binary: str,
+    timeout: int,
+    config_path: Path | None,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    if config_path is None:
+        return {
+            "bitloops_configure_applied": False,
+            "bitloops_configure_command": None,
+            "bitloops_configure_file_path": None,
+            "bitloops_configure_elapsed_ms": 0,
+            "bitloops_configure_config_hash": None,
+            "bitloops_configure_state_path": None,
+            "bitloops_configure_lock_path": None,
+            "bitloops_configure_lock_wait_elapsed_ms": 0,
+            "bitloops_configure_skipped_reason": "no_config_file",
+            "bitloops_configure_previous_config_hash": None,
+            "bitloops_configure_return_code": None,
+        }
+
+    command = [binary, "configure", "--file", str(config_path), "--no-start"]
+    config_hash = _hash_bitloops_config_file(config_path)
+    if config_hash is None:
+        metadata = _run_bitloops_configure(
+            binary=binary,
+            timeout=timeout,
+            config_path=config_path,
+            env=env,
+            cwd=cwd,
+        )
+        metadata.update(
+            {
+                "bitloops_configure_config_hash": None,
+                "bitloops_configure_state_path": None,
+                "bitloops_configure_lock_path": None,
+                "bitloops_configure_lock_wait_elapsed_ms": 0,
+                "bitloops_configure_skipped_reason": None,
+                "bitloops_configure_previous_config_hash": None,
+            }
+        )
+        return metadata
+
+    state_path = _bitloops_configure_state_path(config_path)
+    lock_path = _bitloops_configure_lock_path(config_path)
+    with _acquire_bitloops_configure_lock(
+        lock_path=lock_path,
+        timeout_seconds=timeout,
+    ) as lock_wait_elapsed_ms:
+        state = _read_bitloops_configure_state(state_path)
+        previous_config_hash = (
+            str(state.get("config_hash", "")).strip()
+            if isinstance(state, dict)
+            else ""
+        )
+        if previous_config_hash == config_hash:
+            return {
+                "bitloops_configure_applied": False,
+                "bitloops_configure_command": None,
+                "bitloops_configure_file_path": str(config_path),
+                "bitloops_configure_elapsed_ms": 0,
+                "bitloops_configure_config_hash": config_hash,
+                "bitloops_configure_state_path": str(state_path),
+                "bitloops_configure_lock_path": str(lock_path),
+                "bitloops_configure_lock_wait_elapsed_ms": lock_wait_elapsed_ms,
+                "bitloops_configure_skipped_reason": "already_configured",
+                "bitloops_configure_previous_config_hash": previous_config_hash,
+                "bitloops_configure_return_code": None,
+            }
+        if previous_config_hash:
+            raise RuntimeError(
+                "bitloops configure refused: generated daemon config changed for "
+                f"existing daemon state at {state_path} "
+                f"(previous={previous_config_hash}, current={config_hash}). "
+                "Use a new daemon sandbox/root or remove the previous daemon state "
+                "before reconfiguring."
+            )
+
+        metadata = _run_bitloops_configure(
+            binary=binary,
+            timeout=timeout,
+            config_path=config_path,
+            env=env,
+            cwd=cwd,
+        )
+        _write_bitloops_configure_state(
+            state_path,
+            config_path=config_path,
+            config_hash=config_hash,
+            command=command,
+        )
+        metadata.update(
+            {
+                "bitloops_configure_config_hash": config_hash,
+                "bitloops_configure_state_path": str(state_path),
+                "bitloops_configure_lock_path": str(lock_path),
+                "bitloops_configure_lock_wait_elapsed_ms": lock_wait_elapsed_ms,
+                "bitloops_configure_skipped_reason": None,
+                "bitloops_configure_previous_config_hash": None,
+            }
+        )
+        return metadata
 
 
 def _run_bitloops_init(
@@ -2389,7 +2572,9 @@ def setup_bitloops_for_workspace(
     else:
         effective_summary_mode = "off"
     effective_no_summaries = effective_summary_mode == "off"
-    effective_embedding_mode = "off" if effective_no_embeddings else embedding_mode
+    effective_embedding_mode = (
+        "off" if effective_no_embeddings else (embedding_mode or "semantic_aware_once")
+    )
     sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
     bind_cloud_semantic_profiles = (
         sandbox_mode == "per_task_daemon"
@@ -2425,6 +2610,13 @@ def setup_bitloops_for_workspace(
         "bitloops_configure_command": None,
         "bitloops_configure_file_path": None,
         "bitloops_configure_elapsed_ms": 0,
+        "bitloops_configure_config_hash": None,
+        "bitloops_configure_state_path": None,
+        "bitloops_configure_lock_path": None,
+        "bitloops_configure_lock_wait_elapsed_ms": 0,
+        "bitloops_configure_skipped_reason": None,
+        "bitloops_configure_previous_config_hash": None,
+        "bitloops_configure_return_code": None,
     }
     if sandbox_mode == "per_task_daemon":
         sandbox_env = env or build_bitloops_task_environment(sandbox)
@@ -2438,7 +2630,7 @@ def setup_bitloops_for_workspace(
                 summary_mode=effective_summary_mode,
                 bind_semantic_inference=bind_cloud_semantic_profiles,
             )
-            configure_metadata = _run_bitloops_configure(
+            configure_metadata = _run_bitloops_configure_once(
                 binary=binary,
                 timeout=timeout,
                 config_path=sandbox_config_path,

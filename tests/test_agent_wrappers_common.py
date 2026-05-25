@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import contextlib
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -1549,7 +1550,9 @@ class AgentWrapperCommonTests(unittest.TestCase):
         )
         self.assertFalse(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "auto")
+        self.assertEqual(metadata["bitloops_embedding_mode"], "semantic_aware_once")
         self.assertIn('summary_mode = "auto"', rendered)
+        self.assertIn('embedding_mode = "semantic_aware_once"', rendered)
 
     def test_setup_bitloops_records_global_lock_wait_metadata(self) -> None:
         responses = [
@@ -2211,7 +2214,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
 
         def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
             del timeout_seconds, env, cwd
-            if command == ["bitloops", "configure", "--file", str(config_path)]:
+            if command == ["bitloops", "configure", "--file", str(config_path), "--no-start"]:
                 call_order.append("configure")
                 return "configured", "", 0, 7
             raise AssertionError(f"unexpected command: {command}")
@@ -2282,11 +2285,14 @@ class AgentWrapperCommonTests(unittest.TestCase):
         mock_start.assert_called_once()
         mock_init.assert_called_once()
         mock_wait.assert_called_once()
-        self.assertEqual(call_order, ["configure", "daemon_start", "init", "runtime_ready"])
+        self.assertEqual(
+            call_order,
+            ["configure", "daemon_start", "init", "runtime_ready"],
+        )
         self.assertTrue(metadata["bitloops_configure_applied"])
         self.assertEqual(
             metadata["bitloops_configure_command"],
-            ["bitloops", "configure", "--file", str(config_path)],
+            ["bitloops", "configure", "--file", str(config_path), "--no-start"],
         )
         self.assertEqual(metadata["bitloops_configure_file_path"], str(config_path))
         self.assertEqual(metadata["bitloops_configure_elapsed_ms"], 7)
@@ -2347,6 +2353,174 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     env={"HOME": sandbox["home_root"]},
                     cwd="/tmp/workspace",
                 )
+
+    def test_setup_bitloops_per_task_skips_configure_when_config_was_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home_root = root / "home"
+            config_path = (
+                home_root
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "config.toml"
+            )
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("[runtime]\nlocal_dev = false\n", encoding="utf-8")
+            config_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            state_path = config_path.parent / ".benchkit-bitloops-configure.json"
+            state_path.write_text(
+                json.dumps({"config_hash": config_hash, "config_path": str(config_path)}),
+                encoding="utf-8",
+            )
+            sandbox = {
+                "mode": "per_task_daemon",
+                "sandbox_root": str(root / "sandbox"),
+                "home_root": str(home_root),
+                "xdg_config_home": str(home_root / "xdg"),
+                "xdg_state_home": str(home_root / "xdg-state"),
+                "xdg_cache_home": str(home_root / "xdg-cache"),
+                "xdg_data_home": str(home_root / "xdg-data"),
+            }
+            handle = SimpleNamespace(
+                port=43123,
+                process=SimpleNamespace(pid=9981),
+                stderr_log_path=root / "daemon.stderr.log",
+            )
+            call_order: list[str] = []
+
+            def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
+                del timeout_seconds, env, cwd
+                if command == ["bitloops", "configure", "--file", str(config_path), "--no-start"]:
+                    raise AssertionError("configure should be skipped for matching daemon config")
+                raise AssertionError(f"unexpected command: {command}")
+
+            def fake_start_bitloops_task_daemon(**_kwargs):
+                call_order.append("daemon_start")
+                return handle
+
+            def fake_run_bitloops_init(**_kwargs):
+                call_order.append("init")
+                return {
+                    "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
+                    "bitloops_init_fallback_used": False,
+                    "bitloops_init_elapsed_ms": 11,
+                }
+
+            def fake_wait_for_runtime_ready(**_kwargs):
+                call_order.append("runtime_ready")
+                return {
+                    "bitloops_runtime_ready_wait_attempted": True,
+                    "bitloops_runtime_ready": True,
+                    "bitloops_runtime_ready_wait_elapsed_ms": 1,
+                    "bitloops_runtime_ready_stable_polls": 3,
+                    "bitloops_runtime_ready_metadata": {},
+                }
+
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(
+                common_impl,
+                "_run_bitloops_init",
+                side_effect=fake_run_bitloops_init,
+            ), patch.object(
+                common_impl,
+                "call_command",
+                side_effect=fake_call_command,
+            ), patch.object(
+                common_impl,
+                "start_bitloops_task_daemon",
+                side_effect=fake_start_bitloops_task_daemon,
+            ), patch.object(
+                common_impl,
+                "_seed_bitloops_cloud_inference_profiles",
+                return_value=config_path,
+            ), patch.object(
+                common_impl,
+                "_bitloops_authorization_metadata",
+                return_value={"bitloops_cloud_authorized": True},
+            ), patch.object(
+                common_impl,
+                "_bitloops_init_environment_with_fresh_platform_token",
+                return_value=({"HOME": str(home_root), "BITLOOPS_PLATFORM_GATEWAY_TOKEN": "token"}, {}),
+            ), patch.object(
+                common_impl,
+                "_wait_for_bitloops_runtime_ready",
+                side_effect=fake_wait_for_runtime_ready,
+            ):
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    sandbox=sandbox,
+                    env={"HOME": str(home_root)},
+                    cwd="/tmp/workspace",
+                )
+
+        self.assertEqual(call_order, ["daemon_start", "init", "runtime_ready"])
+        self.assertFalse(metadata["bitloops_configure_applied"])
+        self.assertIsNone(metadata["bitloops_configure_command"])
+        self.assertEqual(metadata["bitloops_configure_skipped_reason"], "already_configured")
+        self.assertEqual(metadata["bitloops_configure_config_hash"], config_hash)
+        self.assertEqual(metadata["bitloops_configure_state_path"], str(state_path))
+
+    def test_setup_bitloops_per_task_rejects_changed_daemon_config_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home_root = root / "home"
+            config_path = (
+                home_root
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "config.toml"
+            )
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("[runtime]\nlocal_dev = false\n", encoding="utf-8")
+            state_path = config_path.parent / ".benchkit-bitloops-configure.json"
+            state_path.write_text(
+                json.dumps({"config_hash": "old-hash", "config_path": str(config_path)}),
+                encoding="utf-8",
+            )
+            sandbox = {
+                "mode": "per_task_daemon",
+                "sandbox_root": str(root / "sandbox"),
+                "home_root": str(home_root),
+                "xdg_config_home": str(home_root / "xdg"),
+                "xdg_state_home": str(home_root / "xdg-state"),
+                "xdg_cache_home": str(home_root / "xdg-cache"),
+                "xdg_data_home": str(home_root / "xdg-data"),
+            }
+
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(
+                common_impl,
+                "_seed_bitloops_cloud_inference_profiles",
+                return_value=config_path,
+            ), patch.object(
+                common_impl,
+                "call_command",
+                return_value=("configured", "", 0, 7),
+            ), patch.object(
+                common_impl,
+                "start_bitloops_task_daemon",
+                side_effect=AssertionError("daemon should not start after config mismatch"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "generated daemon config changed"):
+                    common_impl.setup_bitloops_for_workspace(
+                        agent_name="claude-code",
+                        bitloops_bin="bitloops",
+                        timeout_seconds=30,
+                        embeddings_runtime="platform",
+                        sandbox=sandbox,
+                        env={"HOME": str(home_root)},
+                        cwd="/tmp/workspace",
+                    )
 
     def test_setup_bitloops_per_task_sandbox_passes_embeddings_to_config_generation(self) -> None:
         sandbox = {
