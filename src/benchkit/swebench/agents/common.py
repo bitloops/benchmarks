@@ -361,22 +361,22 @@ def add_bitloops_wrapper_args(parser: Any) -> Any:
     parser.add_argument(
         "--bitloops-embeddings-runtime",
         choices=("local", "platform"),
-        help="Embeddings runtime to configure during Bitloops init.",
+        help="Embeddings runtime to apply in benchmark-generated Bitloops config.",
     )
     parser.add_argument(
         "--bitloops-no-embeddings",
         action="store_true",
-        help="Disable embeddings setup during Bitloops init.",
+        help="Disable embeddings setup in benchmark-generated Bitloops config.",
     )
     parser.add_argument(
         "--bitloops-no-summaries",
         action="store_true",
-        help="Disable summaries setup during Bitloops init.",
+        help="Disable summaries setup in benchmark-generated Bitloops config.",
     )
     parser.add_argument(
         "--bitloops-summary-mode",
         choices=("auto", "off"),
-        help="Benchmark wrapper control: 'auto' keeps Bitloops init defaults, 'off' maps to --bitloops-no-summaries.",
+        help="Benchmark wrapper control for generated Bitloops config: 'auto' enables summaries, 'off' disables them.",
     )
     parser.add_argument(
         "--bitloops-disable-devql-guidance",
@@ -464,22 +464,6 @@ def run_agent_wrapper(
     task_daemon_handle = None
     if getattr(args, "bitloops_init", False):
         try:
-            if bitloops_env is not None and bitloops_sandbox is not None:
-                _seed_bitloops_cloud_inference_profiles(
-                    bitloops_sandbox,
-                    summary_mode=(
-                        "off"
-                        if getattr(args, "bitloops_no_summaries", False)
-                        else getattr(args, "bitloops_summary_mode", None)
-                    ),
-                )
-                task_daemon_handle = start_bitloops_task_daemon(
-                    binary=os.environ.get("BITLOOPS_BIN", "bitloops"),
-                    timeout=bitloops_setup_timeout_seconds,
-                    env=bitloops_env,
-                    sandbox=bitloops_sandbox,
-                    cwd=str(workspace),
-                )
             bitloops_metadata = setup_bitloops_for_workspace(
                 agent_name=agent_name,
                 timeout_seconds=bitloops_setup_timeout_seconds,
@@ -498,8 +482,9 @@ def run_agent_wrapper(
                 sandbox=bitloops_sandbox,
                 env=bitloops_env,
                 cwd=str(workspace),
-                task_daemon_handle=task_daemon_handle,
+                return_task_daemon_handle=True,
             )
+            task_daemon_handle = bitloops_metadata.pop("_bitloops_task_daemon_handle", None)
         except Exception as exc:
             stop_bitloops_task_daemon(task_daemon_handle)
             fatal_error(
@@ -1688,6 +1673,7 @@ def _bitloops_init_ready_via_runtime_state(
         and no_background_jobs
         and embeddings_ready
         and summary_materialized
+        and no_active_summary_inference
     )
     if not ready:
         return False, metadata
@@ -1963,7 +1949,6 @@ def start_bitloops_task_daemon(
         binary,
         "daemon",
         "start",
-        "--create-default-config",
         "--no-telemetry",
         "--http",
         "--host",
@@ -2178,6 +2163,47 @@ def _ensure_bitloops_daemon_started(
     }
 
 
+def _run_bitloops_configure(
+    *,
+    binary: str,
+    timeout: int,
+    config_path: Path | None,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    if config_path is None:
+        return {
+            "bitloops_configure_applied": False,
+            "bitloops_configure_command": None,
+            "bitloops_configure_file_path": None,
+            "bitloops_configure_elapsed_ms": 0,
+        }
+
+    command = [binary, "configure", "--file", str(config_path)]
+    stdout, stderr, return_code, elapsed_ms = call_command(
+        command,
+        timeout,
+        env=env,
+        cwd=cwd,
+    )
+    if return_code != 0:
+        raise RuntimeError(
+            "bitloops configure failed: "
+            + _serialize_command_failure(
+                command=command,
+                stdout=stdout,
+                stderr=stderr,
+                return_code=return_code,
+            )
+        )
+    return {
+        "bitloops_configure_applied": True,
+        "bitloops_configure_command": command,
+        "bitloops_configure_file_path": str(config_path),
+        "bitloops_configure_elapsed_ms": elapsed_ms,
+    }
+
+
 def _run_bitloops_init(
     *,
     binary: str,
@@ -2185,18 +2211,11 @@ def _run_bitloops_init(
     agent_name: str,
     sync: bool,
     ingest: bool,
-    install_default_daemon: bool,
-    embeddings_runtime: str | None,
-    no_embeddings: bool,
-    no_summaries: bool = False,
     disable_devql_guidance: bool = False,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
 ) -> dict[str, Any]:
-    include_install_default_daemon = install_default_daemon
     include_ingest_flag = True
-    include_no_summaries_flag = no_summaries
-    effective_embeddings_runtime = None if no_embeddings else embeddings_runtime
     init_fallback_used = False
     init_command: list[str] = []
     init_stdout = ""
@@ -2218,19 +2237,10 @@ def _run_bitloops_init(
             "init",
             "--agent",
             agent_name,
-            "--telemetry=false",
             f"--sync={'true' if sync else 'false'}",
         ]
-        if include_install_default_daemon:
-            init_command.append("--install-default-daemon")
         if include_ingest_flag:
             init_command.append(f"--ingest={'true' if ingest else 'false'}")
-        if no_embeddings:
-            init_command.append("--no-embeddings")
-        elif effective_embeddings_runtime:
-            init_command.extend(["--embeddings-runtime", effective_embeddings_runtime])
-        if include_no_summaries_flag:
-            init_command.append("--no-summaries")
         if disable_devql_guidance:
             init_command.append("--disable-devql-guidance")
 
@@ -2285,22 +2295,6 @@ def _run_bitloops_init(
         if include_ingest_flag and _bitloops_init_rejects_ingest_flag(init_stdout, init_stderr):
             include_ingest_flag = False
             fallback_applied = True
-        if include_install_default_daemon and _bitloops_init_rejects_install_default_daemon_flag(
-            init_stdout,
-            init_stderr,
-        ):
-            include_install_default_daemon = False
-            fallback_applied = True
-        if include_no_summaries_flag and _bitloops_init_rejects_no_summaries_flag(
-            init_stdout,
-            init_stderr,
-        ):
-            include_no_summaries_flag = False
-            _apply_bitloops_repo_semantic_modes(
-                summary_mode="off",
-                cwd=cwd,
-            )
-            fallback_applied = True
 
         if not fallback_applied:
             if (
@@ -2329,7 +2323,6 @@ def _run_bitloops_init(
         )
 
     return {
-        "bitloops_install_default_daemon": include_install_default_daemon,
         "bitloops_init_command": init_command,
         "bitloops_init_fallback_used": init_fallback_used,
         "bitloops_init_elapsed_ms": init_elapsed_ms,
@@ -2355,7 +2348,6 @@ def setup_bitloops_for_workspace(
     timeout_seconds: int | None = None,
     sync: bool = True,
     ingest: bool = True,
-    install_default_daemon: bool = True,
     embeddings_runtime: str | None = None,
     no_embeddings: bool = False,
     no_summaries: bool = False,
@@ -2366,6 +2358,7 @@ def setup_bitloops_for_workspace(
     env: dict[str, str] | None = None,
     cwd: str | None = None,
     task_daemon_handle: BitloopsTaskDaemonHandle | None = None,
+    return_task_daemon_handle: bool = False,
 ) -> dict[str, Any]:
     binary = (bitloops_bin or os.environ.get("BITLOOPS_BIN", "bitloops")).strip() or "bitloops"
     timeout = timeout_seconds or int(os.environ.get("BITLOOPS_SETUP_TIMEOUT_SECONDS", "1500"))
@@ -2396,57 +2389,104 @@ def setup_bitloops_for_workspace(
     else:
         effective_summary_mode = "off"
     effective_no_summaries = effective_summary_mode == "off"
+    effective_embedding_mode = "off" if effective_no_embeddings else embedding_mode
     sandbox_mode = str((sandbox or {}).get("mode", "")).strip().lower()
     bind_cloud_semantic_profiles = (
         sandbox_mode == "per_task_daemon"
         and requested_embeddings_runtime == "platform"
         and not effective_no_embeddings
     )
-    repo_config_path = _apply_bitloops_repo_semantic_modes(
-        summary_mode=effective_summary_mode,
-        embedding_mode=embedding_mode,
-        embedding_profile="platform_code" if bind_cloud_semantic_profiles else None,
-        summary_generation_profile=(
-            "summary_llm"
-            if bind_cloud_semantic_profiles and not effective_no_summaries
-            else None
-        ),
-        summary_embedding_profile=(
-            "platform_code"
-            if bind_cloud_semantic_profiles and not effective_no_summaries
-            else None
-        ),
-        cwd=cwd,
-    )
+    repo_config_path = None
+    if isinstance(cwd, str) and cwd.strip():
+        repo_config_path = _apply_bitloops_repo_semantic_modes(
+            summary_mode=effective_summary_mode,
+            embedding_mode=effective_embedding_mode,
+            embedding_profile="platform_code" if bind_cloud_semantic_profiles else None,
+            summary_generation_profile=(
+                "summary_llm"
+                if bind_cloud_semantic_profiles and not effective_no_summaries
+                else None
+            ),
+            summary_embedding_profile=(
+                "platform_code"
+                if bind_cloud_semantic_profiles and not effective_no_summaries
+                else None
+            ),
+            cwd=cwd,
+        )
 
     daemon_metadata: dict[str, Any]
     init_metadata: dict[str, Any]
     runtime_ready_metadata: dict[str, Any]
     authorization_metadata: dict[str, Any] = {}
     init_platform_token_metadata: dict[str, Any] = {}
+    configure_metadata: dict[str, Any] = {
+        "bitloops_configure_applied": False,
+        "bitloops_configure_command": None,
+        "bitloops_configure_file_path": None,
+        "bitloops_configure_elapsed_ms": 0,
+    }
     if sandbox_mode == "per_task_daemon":
         sandbox_env = env or build_bitloops_task_environment(sandbox)
         if sandbox_env is None:
             raise RuntimeError("per-task Bitloops sandbox requested without a valid environment")
-        sandbox_config_path = _seed_bitloops_cloud_inference_profiles(
-            sandbox,
-            summary_mode=effective_summary_mode,
-            bind_semantic_inference=bind_cloud_semantic_profiles,
-        )
-        init_env, init_platform_token_metadata = (
-            _bitloops_init_environment_with_fresh_platform_token(
+        handle: BitloopsTaskDaemonHandle | None = None
+        created_task_daemon_handle = False
+        try:
+            sandbox_config_path = _seed_bitloops_cloud_inference_profiles(
+                sandbox,
+                summary_mode=effective_summary_mode,
+                bind_semantic_inference=bind_cloud_semantic_profiles,
+            )
+            configure_metadata = _run_bitloops_configure(
                 binary=binary,
+                timeout=timeout,
+                config_path=sandbox_config_path,
                 env=sandbox_env,
                 cwd=cwd,
             )
-        )
-        handle = task_daemon_handle or start_bitloops_task_daemon(
-            binary=binary,
-            timeout=timeout,
-            env=sandbox_env,
-            sandbox=sandbox,
-            cwd=cwd,
-        )
+            init_env, init_platform_token_metadata = (
+                _bitloops_init_environment_with_fresh_platform_token(
+                    binary=binary,
+                    env=sandbox_env,
+                    cwd=cwd,
+                )
+            )
+            handle = task_daemon_handle or start_bitloops_task_daemon(
+                binary=binary,
+                timeout=timeout,
+                env=sandbox_env,
+                sandbox=sandbox,
+                cwd=cwd,
+            )
+            created_task_daemon_handle = task_daemon_handle is None
+            init_metadata = _run_bitloops_init(
+                binary=binary,
+                timeout=timeout,
+                agent_name=agent_name,
+                sync=sync,
+                ingest=ingest,
+                disable_devql_guidance=disable_devql_guidance,
+                env=init_env,
+                cwd=cwd,
+            )
+            runtime_ready_metadata = _wait_for_bitloops_runtime_ready(
+                timeout_seconds=timeout,
+                env=sandbox_env,
+                cwd=cwd,
+                required=sync,
+            )
+            authorization_metadata = _bitloops_authorization_metadata(
+                _resolve_bitloops_runtime_db_path(sandbox_env),
+                env=sandbox_env,
+                binary=binary,
+                cwd=cwd,
+            )
+        except Exception:
+            if created_task_daemon_handle:
+                stop_bitloops_task_daemon(handle)
+            raise
+        assert handle is not None
         daemon_metadata = {
             "bitloops_daemon_was_running": False,
             "bitloops_daemon_start_attempted": True,
@@ -2458,7 +2498,6 @@ def setup_bitloops_for_workspace(
                 binary,
                 "daemon",
                 "start",
-                "--create-default-config",
                 "--no-telemetry",
                 "--http",
                 "--host",
@@ -2488,33 +2527,11 @@ def setup_bitloops_for_workspace(
                 str(sandbox_config_path) if sandbox_config_path is not None else None
             ),
         }
-        init_metadata = _run_bitloops_init(
-            binary=binary,
-            timeout=timeout,
-            agent_name=agent_name,
-            sync=sync,
-            ingest=ingest,
-            install_default_daemon=install_default_daemon,
-            embeddings_runtime=requested_embeddings_runtime,
-            no_embeddings=effective_no_embeddings,
-            no_summaries=effective_no_summaries,
-            disable_devql_guidance=disable_devql_guidance,
-            env=init_env,
-            cwd=cwd,
-        )
-        runtime_ready_metadata = _wait_for_bitloops_runtime_ready(
-            timeout_seconds=timeout,
-            env=sandbox_env,
-            cwd=cwd,
-            required=sync,
-        )
-        authorization_metadata = _bitloops_authorization_metadata(
-            _resolve_bitloops_runtime_db_path(sandbox_env),
-            env=sandbox_env,
-            binary=binary,
-            cwd=cwd,
-        )
+        if return_task_daemon_handle and created_task_daemon_handle:
+            daemon_metadata["_bitloops_task_daemon_handle"] = handle
         if not authorization_metadata["bitloops_cloud_authorized"]:
+            if created_task_daemon_handle:
+                stop_bitloops_task_daemon(handle)
             raise RuntimeError(
                 "Bitloops Cloud authorisation was not recorded in the per-task "
                 "runtime after `bitloops init`. Complete the Bitloops login prompt "
@@ -2544,10 +2561,6 @@ def setup_bitloops_for_workspace(
                     agent_name=agent_name,
                     sync=sync,
                     ingest=ingest,
-                    install_default_daemon=False,
-                    embeddings_runtime=requested_embeddings_runtime,
-                    no_embeddings=effective_no_embeddings,
-                    no_summaries=effective_no_summaries,
                     disable_devql_guidance=disable_devql_guidance,
                     env=env,
                     cwd=cwd,
@@ -2571,10 +2584,6 @@ def setup_bitloops_for_workspace(
                 agent_name=agent_name,
                 sync=sync,
                 ingest=ingest,
-                install_default_daemon=install_default_daemon,
-                embeddings_runtime=requested_embeddings_runtime,
-                no_embeddings=effective_no_embeddings,
-                no_summaries=effective_no_summaries,
                 disable_devql_guidance=disable_devql_guidance,
                 env=env,
                 cwd=cwd,
@@ -2613,13 +2622,12 @@ def setup_bitloops_for_workspace(
         "bitloops_agent": agent_name,
         "bitloops_sync": sync,
         "bitloops_ingest": ingest,
-        "bitloops_install_default_daemon_requested": install_default_daemon,
         "bitloops_embeddings_runtime": requested_embeddings_runtime,
         "bitloops_no_embeddings": effective_no_embeddings,
         "bitloops_no_summaries": effective_no_summaries,
         "bitloops_summary_mode": effective_summary_mode,
         "bitloops_disable_devql_guidance": disable_devql_guidance,
-        "bitloops_embedding_mode": embedding_mode,
+        "bitloops_embedding_mode": effective_embedding_mode,
         "bitloops_git_detached_head": git_detached_head,
         "bitloops_git_checkout_attempted": git_checkout_attempted,
         "bitloops_git_checkout_command": git_branch_checkout_command,
@@ -2627,6 +2635,7 @@ def setup_bitloops_for_workspace(
         "bitloops_git_checkout_elapsed_ms": git_checkout_elapsed_ms,
         "bitloops_repo_config_path": str(repo_config_path) if repo_config_path else None,
         "bitloops_setup_elapsed_ms": int((time.time() - setup_started) * 1000),
+        **configure_metadata,
         **daemon_metadata,
         **init_metadata,
         **init_platform_token_metadata,
@@ -2728,19 +2737,6 @@ def _bitloops_daemon_needs_bootstrap(stdout: str, stderr: str) -> bool:
 def _bitloops_init_rejects_ingest_flag(stdout: str, stderr: str) -> bool:
     text = "\n".join((stdout, stderr)).strip().lower()
     return "unexpected argument '--ingest'" in text
-
-
-def _bitloops_init_rejects_install_default_daemon_flag(
-    stdout: str,
-    stderr: str,
-) -> bool:
-    text = "\n".join((stdout, stderr)).strip().lower()
-    return "unexpected argument '--install-default-daemon'" in text
-
-
-def _bitloops_init_rejects_no_summaries_flag(stdout: str, stderr: str) -> bool:
-    text = "\n".join((stdout, stderr)).strip().lower()
-    return "unexpected argument '--no-summaries'" in text
 
 
 def _bitloops_init_hit_database_lock(stdout: str, stderr: str) -> bool:

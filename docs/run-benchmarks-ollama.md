@@ -16,7 +16,7 @@ This matches the official integration direction documented by Ollama and OpenCod
 Modes match the other agents:
 
 - **`baseline`**: normal run
-- **`with_bitloops`**: same wrapper with Bitloops init flags (see main doc and `docs/bitloops-init-status-guide.md` if needed)
+- **`with_bitloops`**: same wrapper with Bitloops setup enabled (see main doc and `docs/bitloops-init-status-guide.md` if needed)
 
 ## 1. Install
 
