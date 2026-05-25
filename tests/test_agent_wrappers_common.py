@@ -3028,6 +3028,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                                 "type": "sync",
                                 "value": {"success": True},
                             },
+                        },
+                        {
+                            "task_id": "bootstrap-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "embeddings_bootstrap",
+                            "status": "running",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
                         }
                     ],
                 }
@@ -3153,6 +3162,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                                 "type": "sync",
                                 "value": {"success": True},
                             },
+                        },
+                        {
+                            "task_id": "bootstrap-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "embeddings_bootstrap",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
                         }
                     ],
                 }
@@ -3442,6 +3460,215 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertTrue(metadata["summary_embeddings_ready"])
         self.assertEqual(metadata["summary_rows"], 2)
         self.assertEqual(metadata["summary_embedding_rows"], 2)
+
+    def test_bitloops_runtime_ready_accepts_materialized_code_embeddings_without_bootstrap_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                relational_connection.executemany(
+                    "INSERT INTO symbol_embeddings_current(artefact_id, representation_kind) VALUES (?, ?)",
+                    [
+                        ("symbol-1", "code"),
+                        ("symbol-2", "code"),
+                        ("symbol-1", "identity"),
+                        ("symbol-2", "identity"),
+                    ],
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                        {
+                            "task_id": "ingest-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "ingest",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_ingest": True,
+                                "run_code_embeddings": True,
+                                "embeddings_bootstrap": None,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertTrue(ready)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["init_queue_missing_kinds"], [])
+        self.assertTrue(metadata["code_embeddings_required"])
+        self.assertTrue(metadata["code_embeddings_ready"])
+        self.assertEqual(metadata["code_embedding_rows"], 2)
+        self.assertEqual(metadata["identity_embedding_rows"], 2)
+
+    def test_bitloops_runtime_ready_requires_materialized_code_embeddings_without_bootstrap_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                        {
+                            "task_id": "ingest-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "ingest",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_ingest": True,
+                                "run_code_embeddings": True,
+                                "embeddings_bootstrap": None,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertFalse(ready)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["init_queue_missing_kinds"], [])
+        self.assertTrue(metadata["code_embeddings_required"])
+        self.assertFalse(metadata["code_embeddings_ready"])
+        self.assertEqual(metadata["code_embedding_rows"], 0)
+        self.assertEqual(metadata["identity_embedding_rows"], 0)
 
     def test_summary_materialization_requires_embedding_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

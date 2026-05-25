@@ -1352,24 +1352,64 @@ def _bitloops_embeddings_ready_for_session(
     repo_root: str,
 ) -> tuple[bool, dict[str, Any]]:
     selections = latest_session.get("selections", {})
+    run_code_embeddings = (
+        isinstance(selections, dict) and bool(selections.get("run_code_embeddings"))
+    )
     embeddings_requested = False
     if isinstance(selections, dict):
-        embeddings_requested = bool(selections.get("embeddings_bootstrap"))
+        embeddings_requested = selections.get("embeddings_bootstrap") is not None
 
     completion_seq = latest_session.get("embeddings_bootstrap_completion_seq")
     active_task_id = latest_session.get("embeddings_bootstrap_task_id")
     if not embeddings_requested:
         embeddings_requested = completion_seq is not None or bool(active_task_id)
 
+    relational_db_path = _bitloops_relational_db_path_for_session(latest_session)
+    code_embedding_rows = _count_relational_rows(
+        relational_db_path,
+        (
+            "SELECT COUNT(*) FROM symbol_embeddings_current "
+            "WHERE representation_kind = 'code'"
+        ),
+    )
+    identity_embedding_rows = _count_relational_rows(
+        relational_db_path,
+        (
+            "SELECT COUNT(*) FROM symbol_embeddings_current "
+            "WHERE representation_kind = 'identity'"
+        ),
+    )
+    code_embedding_counts_match = (
+        code_embedding_rows is not None
+        and identity_embedding_rows is not None
+        and code_embedding_rows == identity_embedding_rows
+    )
+    code_embeddings_ready = (
+        not run_code_embeddings
+        or embeddings_requested
+        or (
+            code_embedding_rows is not None
+            and identity_embedding_rows is not None
+            and code_embedding_rows > 0
+            and identity_embedding_rows > 0
+            and code_embedding_counts_match
+        )
+    )
+
     metadata: dict[str, Any] = {
         "embeddings_bootstrap_requested": embeddings_requested,
         "embeddings_bootstrap_completion_seq": completion_seq,
         "embeddings_bootstrap_task_id": active_task_id,
+        "code_embeddings_required": run_code_embeddings,
+        "code_embedding_rows": code_embedding_rows,
+        "identity_embedding_rows": identity_embedding_rows,
+        "code_embedding_counts_match": code_embedding_counts_match,
+        "code_embeddings_ready": code_embeddings_ready,
     }
     if not embeddings_requested:
         metadata["embeddings_gate_readiness"] = "not_requested"
         metadata["embeddings_gate_blocked"] = False
-        return True, metadata
+        return code_embeddings_ready, metadata
 
     gate_entry = _resolve_embeddings_gate_entry(
         embeddings_state,
@@ -1515,8 +1555,10 @@ def _init_devql_tasks_ready(
     if isinstance(selections, dict):
         if bool(selections.get("run_ingest")):
             required_kinds.add("ingest")
-        if bool(selections.get("run_code_embeddings")):
+        if selections.get("embeddings_bootstrap") is not None:
             required_kinds.add("embeddings_bootstrap")
+    if latest_session.get("embeddings_bootstrap_task_id"):
+        required_kinds.add("embeddings_bootstrap")
 
     missing_kinds = sorted(kind for kind in required_kinds if kind not in completed_kinds)
     failed_tasks = [
