@@ -8,12 +8,39 @@ import unittest
 
 from benchkit.common.io import write_json, write_jsonl
 from benchkit.swebench.appendix import (
+    _extract_bitloops_commands,
     _render_tool_invocation_markdown,
     generate_appendix_files,
 )
 
 
 class AppendixTests(unittest.TestCase):
+    def test_extract_bitloops_commands_includes_configure(self) -> None:
+        commands = _extract_bitloops_commands(
+            {
+                "bitloops_status_command": ["bitloops", "status"],
+                "bitloops_configure_command": [
+                    "bitloops",
+                    "configure",
+                    "--file",
+                    "/tmp/bitloops/config.toml",
+                    "--no-start",
+                ],
+                "bitloops_start_command": ["bitloops", "daemon", "start"],
+                "bitloops_init_command": ["bitloops", "init", "--agent", "codex"],
+            }
+        )
+
+        self.assertEqual(
+            commands,
+            [
+                "bitloops status",
+                "bitloops configure --file /tmp/bitloops/config.toml --no-start",
+                "bitloops daemon start",
+                "bitloops init --agent codex",
+            ],
+        )
+
     def test_generate_appendix_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

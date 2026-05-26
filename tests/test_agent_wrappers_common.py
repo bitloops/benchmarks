@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import contextlib
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -24,8 +25,9 @@ def _load_common_module():
     return module
 
 
-common = _load_common_module()
 common_impl = importlib.import_module("benchkit.swebench.agents.common")
+_load_common_module()
+common = common_impl
 
 
 class AgentWrapperCommonTests(unittest.TestCase):
@@ -1114,7 +1116,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
             "1",
         )
 
-    def test_setup_bitloops_uses_non_interactive_init_flags(self) -> None:
+    def test_setup_bitloops_uses_new_cli_init_flags(self) -> None:
         responses = [
             ("Bitloops daemon: running\n", "", 0, 5),
             ("Bitloops init completed", "", 0, 16),
@@ -1139,16 +1141,13 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertEqual(init_env["BITLOOPS_TELEMETRY_OPTOUT"], "1")
-        self.assertFalse(metadata["bitloops_install_default_daemon"])
-        self.assertTrue(metadata["bitloops_install_default_daemon_requested"])
+        self.assertFalse(metadata["bitloops_configure_applied"])
+        self.assertIsNone(metadata["bitloops_configure_command"])
 
     def test_setup_bitloops_emits_timing_metadata(self) -> None:
         responses = [
@@ -1205,10 +1204,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertEqual(metadata["bitloops_init_elapsed_ms"], 22)
@@ -1219,11 +1215,8 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertEqual(
@@ -1233,10 +1226,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
 
@@ -1295,7 +1285,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 if command[:2] == ["bitloops", "init"]:
                     rendered = config_path.read_text(encoding="utf-8")
                     self.assertIn('embedding_mode = "deterministic"', rendered)
-                    self.assertIn('summary_mode = "auto"', rendered)
+                    self.assertIn('summary_mode = "off"', rendered)
                     self.assertEqual(cwd, str(workspace))
                     return "Bitloops init completed", "", 0, 16
                 raise AssertionError(f"Unexpected command: {command}")
@@ -1324,18 +1314,14 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--embeddings-runtime",
-                "local",
-                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "off")
         self.assertEqual(metadata["bitloops_embedding_mode"], "deterministic")
-        self.assertIn('summary_mode = "auto"', rendered)
+        self.assertIn('summary_mode = "off"', rendered)
         self.assertIn('embedding_mode = "deterministic"', rendered)
 
     def test_setup_bitloops_defaults_to_no_embeddings_and_no_summaries(self) -> None:
@@ -1345,6 +1331,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            config_path = workspace / "config.toml"
             with patch.object(
                 common,
                 "_ensure_git_branch_for_bitloops_sync",
@@ -1356,6 +1343,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     timeout_seconds=30,
                     cwd=str(workspace),
                 )
+                rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1364,16 +1352,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_embeddings"])
         self.assertTrue(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "off")
+        self.assertIn('summary_mode = "off"', rendered)
+        self.assertIn('embedding_mode = "off"', rendered)
 
     def test_setup_bitloops_supports_no_summaries_flag(self) -> None:
         responses = [
@@ -1382,6 +1369,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            config_path = workspace / "config.toml"
             with patch.object(
                 common,
                 "_ensure_git_branch_for_bitloops_sync",
@@ -1394,6 +1382,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     no_summaries=True,
                     cwd=str(workspace),
                 )
+                rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1402,25 +1391,17 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "off")
+        self.assertIn('summary_mode = "off"', rendered)
 
-    def test_setup_bitloops_falls_back_when_no_summaries_flag_is_unsupported(self) -> None:
+    def test_setup_bitloops_writes_no_summaries_config_without_init_fallback(self) -> None:
         responses = [
             ("Bitloops daemon: running\n", "", 0, 5),
-            (
-                "",
-                "error: unexpected argument '--no-summaries' found\nUsage: bitloops init ...",
-                1,
-                9,
-            ),
             ("Bitloops init completed", "", 0, 16),
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1447,27 +1428,11 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
-        self.assertEqual(
-            mock_call.call_args_list[2].args[0],
-            [
-                "bitloops",
-                "init",
-                "--agent",
-                "claude-code",
-                "--telemetry=false",
-                "--sync=true",
-                "--ingest=true",
-                "--no-embeddings",
-            ],
-        )
-        self.assertTrue(metadata["bitloops_init_fallback_used"])
+        self.assertFalse(metadata["bitloops_init_fallback_used"])
         self.assertTrue(metadata["bitloops_no_summaries"])
         self.assertIn('summary_mode = "off"', rendered)
 
@@ -1491,6 +1456,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     no_embeddings=True,
                     cwd=str(workspace),
                 )
+                rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1499,15 +1465,12 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_embeddings"])
-        self.assertFalse(config_path.exists())
+        self.assertIn('embedding_mode = "off"', rendered)
 
     def test_setup_bitloops_omits_embeddings_runtime_when_no_embeddings_is_true(self) -> None:
         responses = [
@@ -1516,6 +1479,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            config_path = workspace / "config.toml"
             with patch.object(
                 common,
                 "_ensure_git_branch_for_bitloops_sync",
@@ -1531,6 +1495,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     summary_mode="auto",
                     cwd=str(workspace),
                 )
+                rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1539,16 +1504,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--no-embeddings",
-                "--no-summaries",
             ],
         )
         self.assertTrue(metadata["bitloops_no_embeddings"])
         self.assertTrue(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_embeddings_runtime"], "platform")
+        self.assertIn('summary_mode = "off"', rendered)
+        self.assertIn('embedding_mode = "off"', rendered)
 
     def test_setup_bitloops_auto_summary_mode_keeps_summaries_enabled(self) -> None:
         responses = [
@@ -1557,6 +1521,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            config_path = workspace / "config.toml"
             with patch.object(
                 common,
                 "_ensure_git_branch_for_bitloops_sync",
@@ -1570,6 +1535,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     summary_mode="auto",
                     cwd=str(workspace),
                 )
+                rendered = config_path.read_text(encoding="utf-8")
 
         self.assertEqual(
             mock_call.call_args_list[1].args[0],
@@ -1578,15 +1544,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=true",
                 "--ingest=true",
-                "--embeddings-runtime",
-                "platform",
             ],
         )
         self.assertFalse(metadata["bitloops_no_summaries"])
         self.assertEqual(metadata["bitloops_summary_mode"], "auto")
+        self.assertEqual(metadata["bitloops_embedding_mode"], "semantic_aware_once")
+        self.assertIn('summary_mode = "auto"', rendered)
+        self.assertIn('embedding_mode = "semantic_aware_once"', rendered)
 
     def test_setup_bitloops_records_global_lock_wait_metadata(self) -> None:
         responses = [
@@ -2238,13 +2204,24 @@ class AgentWrapperCommonTests(unittest.TestCase):
             process=SimpleNamespace(pid=9981),
             stderr_log_path=Path("/tmp/benchkit/daemon.stderr.log"),
         )
+        config_path = Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml")
         init_metadata = {
             "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
-            "bitloops_install_default_daemon": False,
             "bitloops_init_fallback_used": False,
             "bitloops_init_elapsed_ms": 11,
         }
         call_order: list[str] = []
+
+        def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
+            del timeout_seconds, env, cwd
+            if command == ["bitloops", "configure", "--file", str(config_path), "--no-start"]:
+                call_order.append("configure")
+                return "configured", "", 0, 7
+            raise AssertionError(f"unexpected command: {command}")
+
+        def fake_start_bitloops_task_daemon(**_kwargs):
+            call_order.append("daemon_start")
+            return handle
 
         def fake_run_bitloops_init(**_kwargs):
             call_order.append("init")
@@ -2271,8 +2248,16 @@ class AgentWrapperCommonTests(unittest.TestCase):
             side_effect=fake_run_bitloops_init,
         ) as mock_init, patch.object(
             common_impl,
+            "call_command",
+            side_effect=fake_call_command,
+        ), patch.object(
+            common_impl,
+            "start_bitloops_task_daemon",
+            side_effect=fake_start_bitloops_task_daemon,
+        ) as mock_start, patch.object(
+            common_impl,
             "_seed_bitloops_cloud_inference_profiles",
-            return_value=Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml"),
+            return_value=config_path,
         ), patch.object(
             common_impl,
             "_bitloops_authorization_metadata",
@@ -2294,13 +2279,23 @@ class AgentWrapperCommonTests(unittest.TestCase):
                     sandbox=sandbox,
                     env={"HOME": sandbox["home_root"]},
                     cwd="/tmp/workspace",
-                    task_daemon_handle=handle,
                 )
 
         mock_lock.assert_not_called()
+        mock_start.assert_called_once()
         mock_init.assert_called_once()
         mock_wait.assert_called_once()
-        self.assertEqual(call_order, ["init", "runtime_ready"])
+        self.assertEqual(
+            call_order,
+            ["configure", "daemon_start", "init", "runtime_ready"],
+        )
+        self.assertTrue(metadata["bitloops_configure_applied"])
+        self.assertEqual(
+            metadata["bitloops_configure_command"],
+            ["bitloops", "configure", "--file", str(config_path), "--no-start"],
+        )
+        self.assertEqual(metadata["bitloops_configure_file_path"], str(config_path))
+        self.assertEqual(metadata["bitloops_configure_elapsed_ms"], 7)
         self.assertFalse(metadata["bitloops_global_lock_enabled"])
         self.assertFalse(metadata["bitloops_setup_serialized"])
         self.assertTrue(metadata["bitloops_runtime_ready"])
@@ -2319,7 +2314,215 @@ class AgentWrapperCommonTests(unittest.TestCase):
             sandbox["xdg_config_home"],
         )
 
-    def test_setup_bitloops_per_task_sandbox_honors_install_default_daemon_request(self) -> None:
+    def test_setup_bitloops_per_task_configure_failure_is_fatal(self) -> None:
+        sandbox = {
+            "mode": "per_task_daemon",
+            "sandbox_root": "/tmp/benchkit/sandbox",
+            "home_root": "/tmp/benchkit/home",
+            "xdg_config_home": "/tmp/benchkit/home/xdg",
+            "xdg_state_home": "/tmp/benchkit/home/xdg-state",
+            "xdg_cache_home": "/tmp/benchkit/home/xdg-cache",
+            "xdg_data_home": "/tmp/benchkit/home/xdg-data",
+        }
+        config_path = Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml")
+
+        with patch.object(
+            common_impl,
+            "_ensure_git_branch_for_bitloops_sync",
+            return_value=(False, False, None, None, 0),
+        ), patch.object(
+            common_impl,
+            "_seed_bitloops_cloud_inference_profiles",
+            return_value=config_path,
+        ), patch.object(
+            common_impl,
+            "call_command",
+            return_value=("", "bad config", 2, 7),
+        ), patch.object(
+            common_impl,
+            "start_bitloops_task_daemon",
+            side_effect=AssertionError("daemon should not start after configure failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "bitloops configure failed"):
+                common_impl.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    embeddings_runtime="platform",
+                    sandbox=sandbox,
+                    env={"HOME": sandbox["home_root"]},
+                    cwd="/tmp/workspace",
+                )
+
+    def test_setup_bitloops_per_task_skips_configure_when_config_was_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home_root = root / "home"
+            config_path = (
+                home_root
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "config.toml"
+            )
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("[runtime]\nlocal_dev = false\n", encoding="utf-8")
+            config_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            state_path = config_path.parent / ".benchkit-bitloops-configure.json"
+            state_path.write_text(
+                json.dumps({"config_hash": config_hash, "config_path": str(config_path)}),
+                encoding="utf-8",
+            )
+            sandbox = {
+                "mode": "per_task_daemon",
+                "sandbox_root": str(root / "sandbox"),
+                "home_root": str(home_root),
+                "xdg_config_home": str(home_root / "xdg"),
+                "xdg_state_home": str(home_root / "xdg-state"),
+                "xdg_cache_home": str(home_root / "xdg-cache"),
+                "xdg_data_home": str(home_root / "xdg-data"),
+            }
+            handle = SimpleNamespace(
+                port=43123,
+                process=SimpleNamespace(pid=9981),
+                stderr_log_path=root / "daemon.stderr.log",
+            )
+            call_order: list[str] = []
+
+            def fake_call_command(command, timeout_seconds, *, env=None, cwd=None):
+                del timeout_seconds, env, cwd
+                if command == ["bitloops", "configure", "--file", str(config_path), "--no-start"]:
+                    raise AssertionError("configure should be skipped for matching daemon config")
+                raise AssertionError(f"unexpected command: {command}")
+
+            def fake_start_bitloops_task_daemon(**_kwargs):
+                call_order.append("daemon_start")
+                return handle
+
+            def fake_run_bitloops_init(**_kwargs):
+                call_order.append("init")
+                return {
+                    "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
+                    "bitloops_init_fallback_used": False,
+                    "bitloops_init_elapsed_ms": 11,
+                }
+
+            def fake_wait_for_runtime_ready(**_kwargs):
+                call_order.append("runtime_ready")
+                return {
+                    "bitloops_runtime_ready_wait_attempted": True,
+                    "bitloops_runtime_ready": True,
+                    "bitloops_runtime_ready_wait_elapsed_ms": 1,
+                    "bitloops_runtime_ready_stable_polls": 3,
+                    "bitloops_runtime_ready_metadata": {},
+                }
+
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(
+                common_impl,
+                "_run_bitloops_init",
+                side_effect=fake_run_bitloops_init,
+            ), patch.object(
+                common_impl,
+                "call_command",
+                side_effect=fake_call_command,
+            ), patch.object(
+                common_impl,
+                "start_bitloops_task_daemon",
+                side_effect=fake_start_bitloops_task_daemon,
+            ), patch.object(
+                common_impl,
+                "_seed_bitloops_cloud_inference_profiles",
+                return_value=config_path,
+            ), patch.object(
+                common_impl,
+                "_bitloops_authorization_metadata",
+                return_value={"bitloops_cloud_authorized": True},
+            ), patch.object(
+                common_impl,
+                "_bitloops_init_environment_with_fresh_platform_token",
+                return_value=({"HOME": str(home_root), "BITLOOPS_PLATFORM_GATEWAY_TOKEN": "token"}, {}),
+            ), patch.object(
+                common_impl,
+                "_wait_for_bitloops_runtime_ready",
+                side_effect=fake_wait_for_runtime_ready,
+            ):
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="claude-code",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    sandbox=sandbox,
+                    env={"HOME": str(home_root)},
+                    cwd="/tmp/workspace",
+                )
+
+        self.assertEqual(call_order, ["daemon_start", "init", "runtime_ready"])
+        self.assertFalse(metadata["bitloops_configure_applied"])
+        self.assertIsNone(metadata["bitloops_configure_command"])
+        self.assertEqual(metadata["bitloops_configure_skipped_reason"], "already_configured")
+        self.assertEqual(metadata["bitloops_configure_config_hash"], config_hash)
+        self.assertEqual(metadata["bitloops_configure_state_path"], str(state_path))
+
+    def test_setup_bitloops_per_task_rejects_changed_daemon_config_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home_root = root / "home"
+            config_path = (
+                home_root
+                / "Library"
+                / "Application Support"
+                / "bitloops"
+                / "config.toml"
+            )
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("[runtime]\nlocal_dev = false\n", encoding="utf-8")
+            state_path = config_path.parent / ".benchkit-bitloops-configure.json"
+            state_path.write_text(
+                json.dumps({"config_hash": "old-hash", "config_path": str(config_path)}),
+                encoding="utf-8",
+            )
+            sandbox = {
+                "mode": "per_task_daemon",
+                "sandbox_root": str(root / "sandbox"),
+                "home_root": str(home_root),
+                "xdg_config_home": str(home_root / "xdg"),
+                "xdg_state_home": str(home_root / "xdg-state"),
+                "xdg_cache_home": str(home_root / "xdg-cache"),
+                "xdg_data_home": str(home_root / "xdg-data"),
+            }
+
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(
+                common_impl,
+                "_seed_bitloops_cloud_inference_profiles",
+                return_value=config_path,
+            ), patch.object(
+                common_impl,
+                "call_command",
+                return_value=("configured", "", 0, 7),
+            ), patch.object(
+                common_impl,
+                "start_bitloops_task_daemon",
+                side_effect=AssertionError("daemon should not start after config mismatch"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "generated daemon config changed"):
+                    common_impl.setup_bitloops_for_workspace(
+                        agent_name="claude-code",
+                        bitloops_bin="bitloops",
+                        timeout_seconds=30,
+                        embeddings_runtime="platform",
+                        sandbox=sandbox,
+                        env={"HOME": str(home_root)},
+                        cwd="/tmp/workspace",
+                    )
+
+    def test_setup_bitloops_per_task_sandbox_passes_embeddings_to_config_generation(self) -> None:
         sandbox = {
             "mode": "per_task_daemon",
             "sandbox_root": "/tmp/benchkit/sandbox",
@@ -2344,7 +2547,6 @@ class AgentWrapperCommonTests(unittest.TestCase):
             "_run_bitloops_init",
             return_value={
                 "bitloops_init_command": ["bitloops", "init", "--agent", "claude-code"],
-                "bitloops_install_default_daemon": True,
                 "bitloops_init_fallback_used": False,
                 "bitloops_init_elapsed_ms": 11,
             },
@@ -2362,6 +2564,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
             common_impl,
             "_seed_bitloops_cloud_inference_profiles",
             return_value=Path("/tmp/benchkit/home/Library/Application Support/bitloops/config.toml"),
+        ) as mock_seed, patch.object(
+            common_impl,
+            "call_command",
+            return_value=("configured", "", 0, 7),
         ), patch.object(
             common_impl,
             "_bitloops_authorization_metadata",
@@ -2375,7 +2581,6 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 agent_name="claude-code",
                 bitloops_bin="bitloops",
                 timeout_seconds=30,
-                install_default_daemon=True,
                 embeddings_runtime="platform",
                 sandbox=sandbox,
                 env={"HOME": sandbox["home_root"]},
@@ -2383,8 +2588,13 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 task_daemon_handle=handle,
             )
 
-        self.assertTrue(mock_init.call_args.kwargs["install_default_daemon"])
-        self.assertEqual(mock_init.call_args.kwargs["embeddings_runtime"], "platform")
+        self.assertNotIn("install_default_daemon", mock_init.call_args.kwargs)
+        self.assertNotIn("embeddings_runtime", mock_init.call_args.kwargs)
+        mock_seed.assert_called_with(
+            sandbox,
+            summary_mode="off",
+            bind_semantic_inference=True,
+        )
 
     def test_stop_bitloops_task_daemon_stops_sandbox_daemon_via_cli_when_handle_exited(self) -> None:
         handle = SimpleNamespace(
@@ -2484,9 +2694,6 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 agent_name="claude-code",
                 sync=True,
                 ingest=False,
-                install_default_daemon=False,
-                embeddings_runtime=None,
-                no_embeddings=False,
                 disable_devql_guidance=True,
                 env={
                     "BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon",
@@ -2747,9 +2954,6 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 agent_name="claude-code",
                 sync=False,
                 ingest=False,
-                install_default_daemon=False,
-                embeddings_runtime=None,
-                no_embeddings=False,
                 env={"BITLOOPS_BENCHKIT_SANDBOX_MODE": "per_task_daemon"},
                 cwd="/tmp/workspace",
             )
@@ -2764,7 +2968,6 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "init",
                 "--agent",
                 "claude-code",
-                "--telemetry=false",
                 "--sync=false",
                 "--ingest=false",
             ],
@@ -2825,6 +3028,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                                 "type": "sync",
                                 "value": {"success": True},
                             },
+                        },
+                        {
+                            "task_id": "bootstrap-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "embeddings_bootstrap",
+                            "status": "running",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
                         }
                     ],
                 }
@@ -2907,6 +3119,18 @@ class AgentWrapperCommonTests(unittest.TestCase):
             daemon_config_root = workspace / ".bitloops"
             daemon_config_root.mkdir()
             config_path = (daemon_config_root / "config.toml").resolve()
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "[semantic_clones]",
+                        'summary_mode = "auto"',
+                        "[semantic_clones.inference]",
+                        'summary_generation = "summary_llm"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             connection = sqlite3.connect(runtime_db)
             try:
@@ -2938,6 +3162,15 @@ class AgentWrapperCommonTests(unittest.TestCase):
                                 "type": "sync",
                                 "value": {"success": True},
                             },
+                        },
+                        {
+                            "task_id": "bootstrap-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "embeddings_bootstrap",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
                         }
                     ],
                 }
@@ -3228,6 +3461,215 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metadata["summary_rows"], 2)
         self.assertEqual(metadata["summary_embedding_rows"], 2)
 
+    def test_bitloops_runtime_ready_accepts_materialized_code_embeddings_without_bootstrap_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                relational_connection.executemany(
+                    "INSERT INTO symbol_embeddings_current(artefact_id, representation_kind) VALUES (?, ?)",
+                    [
+                        ("symbol-1", "code"),
+                        ("symbol-2", "code"),
+                        ("symbol-1", "identity"),
+                        ("symbol-2", "identity"),
+                    ],
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                        {
+                            "task_id": "ingest-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "ingest",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_ingest": True,
+                                "run_code_embeddings": True,
+                                "embeddings_bootstrap": None,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertTrue(ready)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["init_queue_missing_kinds"], [])
+        self.assertTrue(metadata["code_embeddings_required"])
+        self.assertTrue(metadata["code_embeddings_ready"])
+        self.assertEqual(metadata["code_embedding_rows"], 2)
+        self.assertEqual(metadata["identity_embedding_rows"], 2)
+
+    def test_bitloops_runtime_ready_requires_materialized_code_embeddings_without_bootstrap_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_db = root / "runtime.sqlite"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            daemon_config_root = workspace / ".bitloops"
+            relational_root = daemon_config_root / "stores" / "relational"
+            relational_root.mkdir(parents=True)
+            relational_db = relational_root / "relational.db"
+            relational_connection = sqlite3.connect(relational_db)
+            try:
+                relational_connection.execute(
+                    "CREATE TABLE symbol_embeddings_current (artefact_id TEXT, representation_kind TEXT)"
+                )
+                relational_connection.commit()
+            finally:
+                relational_connection.close()
+
+            connection = sqlite3.connect(runtime_db)
+            try:
+                connection.execute(
+                    "CREATE TABLE runtime_documents (document_kind TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                queue_payload = {
+                    "version": 1,
+                    "tasks": [
+                        {
+                            "task_id": "sync-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "sync",
+                            "status": "completed",
+                            "submitted_at_unix": 100,
+                            "init_session_id": "init-session-1",
+                            "progress": {
+                                "type": "sync",
+                                "value": {"phase": "complete"},
+                            },
+                            "result": {
+                                "type": "sync",
+                                "value": {"success": True},
+                            },
+                        },
+                        {
+                            "task_id": "ingest-task-1",
+                            "repo_root": str(workspace),
+                            "source": "init",
+                            "kind": "ingest",
+                            "status": "completed",
+                            "submitted_at_unix": 101,
+                            "init_session_id": "init-session-1",
+                        },
+                    ],
+                }
+                init_payload = {
+                    "version": 1,
+                    "sessions": [
+                        {
+                            "init_session_id": "init-session-1",
+                            "repo_root": str(workspace),
+                            "daemon_config_root": str(daemon_config_root),
+                            "follow_up_sync_required": False,
+                            "initial_sync_completion_seq": 1,
+                            "submitted_at_unix": 100,
+                            "selections": {
+                                "run_sync": True,
+                                "run_ingest": True,
+                                "run_code_embeddings": True,
+                                "embeddings_bootstrap": None,
+                            },
+                        }
+                    ],
+                }
+                for kind, payload in (
+                    ("devql_task_queue_state", queue_payload),
+                    ("init_session_state", init_payload),
+                    ("enrichment_queue_state", {"version": 1, "jobs": []}),
+                ):
+                    connection.execute(
+                        "INSERT INTO runtime_documents(document_kind, payload) VALUES (?, ?)",
+                        (kind, json.dumps(payload)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            ready, metadata = common_impl._bitloops_init_ready_via_runtime_state(
+                runtime_db_path=runtime_db,
+                repo_root=str(workspace),
+            )
+
+        self.assertFalse(ready)
+        assert isinstance(metadata, dict)
+        self.assertEqual(metadata["init_queue_missing_kinds"], [])
+        self.assertTrue(metadata["code_embeddings_required"])
+        self.assertFalse(metadata["code_embeddings_ready"])
+        self.assertEqual(metadata["code_embedding_rows"], 0)
+        self.assertEqual(metadata["identity_embedding_rows"], 0)
+
     def test_summary_materialization_requires_embedding_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3476,8 +3918,14 @@ class AgentWrapperCommonTests(unittest.TestCase):
             patch.object(common, "resolve_bitloops_sandbox", return_value={"mode": "per_task_daemon"}),
             patch.object(common, "build_bitloops_task_environment", return_value={"BITLOOPS": "1"}),
             patch.object(common, "reset_workspace"),
-            patch.object(common, "start_bitloops_task_daemon", return_value=daemon_handle),
-            patch.object(common, "setup_bitloops_for_workspace", return_value={"bitloops_ready": True}),
+            patch.object(
+                common,
+                "setup_bitloops_for_workspace",
+                return_value={
+                    "bitloops_ready": True,
+                    "_bitloops_task_daemon_handle": daemon_handle,
+                },
+            ),
             patch.object(common, "capture_workspace_patch", return_value="diff --git a/x b/x"),
             patch.object(common, "stop_bitloops_task_daemon") as mock_stop,
         ):
@@ -3597,8 +4045,11 @@ class AgentWrapperCommonTests(unittest.TestCase):
             patch.object(common, "resolve_bitloops_sandbox", return_value={"mode": "per_task_daemon"}),
             patch.object(common, "build_bitloops_task_environment", return_value={"BITLOOPS": "1"}),
             patch.object(common, "reset_workspace"),
-            patch.object(common, "start_bitloops_task_daemon", return_value=daemon_handle),
-            patch.object(common, "setup_bitloops_for_workspace", return_value={}),
+            patch.object(
+                common,
+                "setup_bitloops_for_workspace",
+                return_value={"_bitloops_task_daemon_handle": daemon_handle},
+            ),
             patch.object(common, "stop_bitloops_task_daemon") as mock_stop,
         ):
             with self.assertRaises(ValueError):
