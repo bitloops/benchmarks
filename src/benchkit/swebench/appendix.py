@@ -1473,6 +1473,7 @@ def _extract_bitloops_commands(metadata: Any) -> list[str]:
     commands: list[str] = []
     for key in (
         "bitloops_status_command",
+        "bitloops_configure_command",
         "bitloops_start_command",
         "bitloops_bootstrap_command",
         "bitloops_init_command",

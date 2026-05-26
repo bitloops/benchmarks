@@ -93,20 +93,22 @@ Optional wrapper argument:
 - `--bitloops-init`: runs non-interactive Bitloops setup in the task workspace
   before invoking the agent CLI:
   - resolves the task-local Bitloops sandbox/runtime
+  - for isolated per-task daemons, writes the benchmark-generated daemon config and installs it once per daemon config root with `bitloops configure --file <config.toml> --no-start`
   - starts an isolated per-task daemon when sandboxing is enabled
   - if the workspace is on detached `HEAD`, switches to a temporary local branch for sync
-  - by default runs `bitloops init --agent <agent> --telemetry=false --sync=true --ingest=true --no-embeddings --no-summaries`
-  - sets `BITLOOPS_TELEMETRY_OPTOUT=1` for Bitloops setup and the agent command environment
-- `--bitloops-embeddings-runtime <local|platform>`: opts back into embeddings during `bitloops init`
-- `--bitloops-summaries-runtime <local|platform>`: opts back into summaries during `bitloops init`
-- `--bitloops-no-embeddings`: disables embeddings during `bitloops init` by routing to `bitloops init --no-embeddings`
-- `--bitloops-no-summaries`: disables summaries during `bitloops init` by routing to `bitloops init --no-summaries`
+- by default runs `bitloops init --agent <agent> --sync=true --ingest=true`
+- sets `BITLOOPS_TELEMETRY_OPTOUT=1` for Bitloops setup and the agent command environment
+- `--bitloops-embeddings-runtime <local|platform>`: selects the embeddings runtime in benchmark-generated Bitloops config
+- `--bitloops-summaries-runtime <local|platform>`: selects the summaries runtime during `bitloops init`
+- `--bitloops-summary-embeddings-mode <on|off>`: forwards `--summary-embeddings-mode` during `bitloops init`
+- `--bitloops-no-embeddings`: disables embeddings through benchmark-generated repo config
+- `--bitloops-no-summaries`: disables summaries through benchmark-generated repo config
 - `--bitloops-summary-mode <auto|off|on>`: deprecated benchmark-wrapper control retained for compatibility; prefer `--bitloops-summaries-runtime` and/or `--bitloops-no-summaries`
 
 With no extra args, benchmark wrappers issue:
 
 ```bash
-bitloops init --no-embeddings --no-summaries
+bitloops init --agent <agent> --sync=true --ingest=true
 ```
 
 To opt back into both embeddings and summaries, use:
@@ -122,6 +124,7 @@ extra_args = [
   "--bitloops-init",
   "--bitloops-embeddings-runtime", "platform",
   "--bitloops-summaries-runtime", "platform",
+  "--bitloops-summary-embeddings-mode", "on",
 ]
 ```
 
