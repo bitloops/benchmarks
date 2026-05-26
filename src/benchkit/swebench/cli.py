@@ -39,7 +39,7 @@ ARTIFACT_RETENTION_POLICIES = (
     "appendix_only",
     "keep_all",
 )
-DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_summary"
+DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_transcripts"
 
 
 def _parse_dotenv_assignment(line: str) -> tuple[str, str] | None:
@@ -166,7 +166,7 @@ def main() -> None:
         default=None,
         help=(
             "Post-run artifact retention policy override. "
-            "Default comes from run.artifact_retention_policy (or appendix_summary)."
+            "Default comes from run.artifact_retention_policy (or appendix_transcripts)."
         ),
     )
     export_parser = subparsers.add_parser(
@@ -328,7 +328,10 @@ def main() -> None:
         "--artifact-retention-policy",
         choices=ARTIFACT_RETENTION_POLICIES,
         default=DEFAULT_ARTIFACT_RETENTION_POLICY,
-        help="Retention policy to enforce while pruning historical artifacts",
+        help=(
+            "Retention policy to enforce while pruning historical artifacts "
+            "(default: appendix_transcripts)."
+        ),
     )
     prune_parser.add_argument(
         "--apply",

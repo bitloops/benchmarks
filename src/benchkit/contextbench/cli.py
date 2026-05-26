@@ -44,7 +44,10 @@ def main() -> None:
         "--artifact-retention-policy",
         choices=("appendix_summary", "appendix_transcripts", "appendix_only", "keep_all"),
         default=None,
-        help="Post-run artifact retention policy override",
+        help=(
+            "Post-run artifact retention policy override "
+            "(default from config is appendix_transcripts)."
+        ),
     )
 
     export_parser = subparsers.add_parser(
@@ -142,8 +145,11 @@ def main() -> None:
     prune_parser.add_argument(
         "--artifact-retention-policy",
         choices=("appendix_summary", "appendix_transcripts", "appendix_only", "keep_all"),
-        default="appendix_summary",
-        help="Retention policy to enforce while pruning historical artifacts",
+        default="appendix_transcripts",
+        help=(
+            "Retention policy to enforce while pruning historical artifacts "
+            "(default: appendix_transcripts)."
+        ),
     )
     prune_parser.add_argument(
         "--apply",

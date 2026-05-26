@@ -17,7 +17,7 @@ DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_SWEBENCH_PRO_DATASET_NAME = "ScaleAI/SWE-bench_Pro"
 DEFAULT_CONTEXTBENCH_DATASET_NAME = "Contextbench/ContextBench"
 DEFAULT_PROMPT_PROTOCOL = "minimal"
-DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_summary"
+DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_transcripts"
 
 
 def _default_agent_python_bin() -> str:

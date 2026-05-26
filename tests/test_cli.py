@@ -74,8 +74,14 @@ class CliRunTests(unittest.TestCase):
                 evaluation_reports=[],
             )
 
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=False,
+                artifact_retention_policy="appendix_summary",
+            )
+
             with (
-                patch("benchkit.swebench.cli.load_run_config", return_value=object()),
+                patch("benchkit.swebench.cli.load_run_config", return_value=config),
                 patch("benchkit.swebench.cli.execute_run", return_value=result),
                 patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
                 patch("benchkit.swebench.cli.default_transcripts_output_dir", return_value=root / "reports" / "transcripts"),
@@ -111,8 +117,14 @@ class CliRunTests(unittest.TestCase):
                 evaluation_reports=[],
             )
 
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=False,
+                artifact_retention_policy="appendix_summary",
+            )
+
             with (
-                patch("benchkit.swebench.cli.load_run_config", return_value=object()),
+                patch("benchkit.swebench.cli.load_run_config", return_value=config),
                 patch("benchkit.swebench.cli.execute_run", return_value=result),
                 patch("benchkit.swebench.cli.run_appendix") as run_appendix_mock,
                 patch("benchkit.swebench.cli.default_transcripts_output_dir", return_value=root / "reports" / "transcripts"),
@@ -318,8 +330,13 @@ class CliRunTests(unittest.TestCase):
                 evaluation_reports=[],
             )
 
+            config = SimpleNamespace(
+                agent=SimpleNamespace(id="opencode"),
+                bitloops_enabled=False,
+                artifact_retention_policy="appendix_summary",
+            )
             with (
-                patch("benchkit.swebench.cli.load_run_config", return_value=object()) as load_config_mock,
+                patch("benchkit.swebench.cli.load_run_config", return_value=config) as load_config_mock,
                 patch("benchkit.swebench.cli.execute_run", return_value=result),
             ):
                 run_execute(

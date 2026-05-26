@@ -66,7 +66,7 @@ timeout_seconds = 3600
             self.assertEqual(cfg.workspace_isolation_mode, "shared_repo_commit")
             self.assertFalse(cfg.bitloops_enabled)
             self.assertEqual(cfg.bitloops_sandbox_mode, "disabled")
-            self.assertEqual(cfg.artifact_retention_policy, "appendix_summary")
+            self.assertEqual(cfg.artifact_retention_policy, "appendix_transcripts")
             self.assertEqual(cfg.prompt_protocol, "minimal")
             self.assertEqual(
                 cfg.model_map["claude_code"]["opus-4-6"],
