@@ -319,6 +319,7 @@ def execute_run(
         "condition": config.condition,
         "bitloops_enabled": config.bitloops_enabled,
         "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
+        "artifact_retention_policy": config.artifact_retention_policy,
         "workspace_isolation_mode": workspace_isolation_mode,
         "dataset_path": str(config.dataset_path),
         "split": config.split,
@@ -389,6 +390,7 @@ def _build_manifest(
         "condition": config.condition,
         "bitloops_enabled": config.bitloops_enabled,
         "bitloops_sandbox_mode": config.bitloops_sandbox_mode,
+        "artifact_retention_policy": config.artifact_retention_policy,
         "prompt_context": config.prompt_context,
         "prompt_protocol": config.prompt_protocol,
         "prompt_template_version": _prompt_template_version(config.prompt_protocol),
@@ -514,6 +516,12 @@ def _run_instance(
     bitloops_sandbox = _build_bitloops_task_sandbox(
         config=config,
         workspace_path=workspace_result.workspace_path,
+        workspace_status=workspace_result.status,
+        instance=instance,
+        attempt=attempt,
+        run_id=run_id,
+        isolation_mode=workspace_isolation_mode,
+        layout_run_root=layout_run_root,
     )
     if bitloops_sandbox is not None:
         workspace_metadata["bitloops_sandbox"] = bitloops_sandbox
@@ -957,13 +965,29 @@ def _build_bitloops_task_sandbox(
     *,
     config: RunConfig,
     workspace_path: Path | None,
+    workspace_status: str,
+    instance: BenchmarkInstance,
+    attempt: int,
+    run_id: str,
+    isolation_mode: str,
+    layout_run_root: Path,
 ) -> dict[str, Any] | None:
     if not config.bitloops_enabled or config.bitloops_sandbox_mode != "per_task_daemon":
         return None
     if workspace_path is None:
         return None
 
-    sandbox_root = workspace_path.parent / f"{workspace_path.name}__bitloops"
+    workspace_status = str(workspace_status).strip().lower()
+    if workspace_status in {"prepared", "reused"}:
+        sandbox_root = workspace_path.parent / f"{workspace_path.name}__bitloops"
+    else:
+        sandbox_root = _fallback_bitloops_sandbox_root(
+            layout_run_root=layout_run_root,
+            instance=instance,
+            attempt=attempt,
+            run_id=run_id,
+            isolation_mode=isolation_mode,
+        )
     home_root = sandbox_root / "home"
     return {
         "mode": config.bitloops_sandbox_mode,
@@ -977,6 +1001,27 @@ def _build_bitloops_task_sandbox(
         "xdg_data_home": str(home_root / "xdg-data"),
         "daemon_stderr_log_path": str(sandbox_root / "daemon.stderr.log"),
     }
+
+
+def _fallback_bitloops_sandbox_root(
+    *,
+    layout_run_root: Path,
+    instance: BenchmarkInstance,
+    attempt: int,
+    run_id: str,
+    isolation_mode: str,
+) -> Path:
+    repo_slug = _sanitize_path_segment(instance.repo, fallback="repo")
+    commit_slug = _sanitize_path_segment(instance.base_commit, fallback="commit")
+    instance_slug = _sanitize_path_segment(instance.instance_id, fallback="instance")
+    run_slug = _sanitize_path_segment(run_id, fallback="run")
+    base = layout_run_root / "bitloops_sandboxes" / run_slug
+    if isolation_mode == "attempt_scoped":
+        attempt_slug = f"attempt-{attempt:02d}" if attempt > 0 else "attempt-unknown"
+        return base / repo_slug / commit_slug / instance_slug / attempt_slug
+    if isolation_mode == "task_scoped":
+        return base / repo_slug / commit_slug / instance_slug
+    return base / repo_slug / commit_slug
 
 
 def _log_progress(message: str) -> None:

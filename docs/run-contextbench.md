@@ -66,6 +66,10 @@ The committed OpenCode ContextBench config routes through Ollama and currently r
   --appendix
 ```
 
+By default, runs now use `artifact_retention_policy = "appendix_transcripts"`. This keeps
+appendix exports plus copied transcripts under `reports/transcripts/...`, and prunes heavy
+workspace/Bitloops artifacts from `runs/...` after appendix generation.
+
 ContextBench evaluation is executed per attempt using:
 
 ```text
@@ -74,9 +78,13 @@ python -m contextbench.evaluate --gold <dataset> --pred <converted_pred_jsonl> -
 
 ## 5. Results
 
-Harness artifacts:
+Run metadata (retained for traceability):
 
 - `runs/contextbench_verified/...`
+
+Transcript copies (retained by default):
+
+- `reports/transcripts/...`
 
 Appendix + report exports:
 

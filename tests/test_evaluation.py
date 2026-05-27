@@ -195,6 +195,81 @@ class EvaluationTests(unittest.TestCase):
             self.assertGreaterEqual(len(calls), 2)
             self.assertIn("tree_sitter_language_pack", calls[0][2])
 
+    def test_contextbench_retries_checkout_failed_with_fresh_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            contextbench_repo = root / "third_party" / "ContextBench"
+            contextbench_repo.mkdir(parents=True, exist_ok=True)
+            attempt_dir = root / "attempt-01"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            predictions = attempt_dir / "predictions.jsonl"
+            predictions.write_text(
+                '{"instance_id":"repo__task-1","model_patch":""}\n',
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.jsonl"
+            dataset.write_text(
+                (
+                    '{"instance_id":"repo__task-1","repo":"owner/repo","base_commit":"abc",'
+                    '"problem_statement":"x","metadata":{"repo_url":"https://github.com/owner/repo.git"}}\n'
+                ),
+                encoding="utf-8",
+            )
+            (attempt_dir / "trace.jsonl").write_text(
+                '{"instance_id":"repo__task-1","metadata":{}}\n',
+                encoding="utf-8",
+            )
+
+            cfg = EvaluationConfig(
+                enabled=True,
+                contextbench_repo=contextbench_repo,
+                python_bin="python3",
+                timeout_seconds=30,
+            )
+
+            calls: list[list[str]] = []
+
+            def _run(*args, **kwargs):  # type: ignore[no-untyped-def]
+                cmd = args[0]
+                calls.append(cmd)
+                if len(cmd) >= 3 and cmd[1] == "-c":
+                    return Mock(returncode=0, stdout="\n", stderr="")
+                out_path = Path(cmd[cmd.index("--out") + 1])
+                cache_path = Path(cmd[cmd.index("--cache") + 1])
+                if cache_path.name == "contextbench_repos_retry":
+                    out_path.write_text('{"instance_id":"repo__task-1"}\n', encoding="utf-8")
+                else:
+                    out_path.write_text(
+                        '{"instance_id":"repo__task-1","error":"checkout_failed"}\n',
+                        encoding="utf-8",
+                    )
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("benchkit.swebench.evaluation.subprocess.run", side_effect=_run):
+                result = evaluate_predictions_with_harness(
+                    config=cfg,
+                    run_id="run-checkout-retry",
+                    attempt=1,
+                    benchmark="contextbench_verified",
+                    dataset_path=dataset,
+                    prediction_path=predictions,
+                    attempt_dir=attempt_dir,
+                )
+
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(result.task_count, 1)
+            self.assertEqual(result.solved_count, 1)
+            eval_calls = [
+                call
+                for call in calls
+                if len(call) >= 3 and call[1] == "-m" and call[2] == "contextbench.evaluate"
+            ]
+            self.assertEqual(len(eval_calls), 2)
+            self.assertNotEqual(
+                eval_calls[0][eval_calls[0].index("--cache") + 1],
+                eval_calls[1][eval_calls[1].index("--cache") + 1],
+            )
+
     def test_build_evaluation_env_adds_swebench_repo_to_pythonpath(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cwd = Path(temp_dir) / "repo"

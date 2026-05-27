@@ -14,7 +14,7 @@ workspace_timeout_seconds = 900
 bitloops_sandbox_mode = "per_task_daemon"
 
 [agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "auto"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summaries-runtime", "platform", "--bitloops-summary-embeddings-mode", "on"]
 
 [model]
 # Runtime Codex settings come from configs/codex/codex.json.

@@ -28,4 +28,4 @@ pro_dockerhub_username = "jefzda"
 extra_args = []
 
 [modes.with_bitloops.agent]
-extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summary-mode", "off"]
+extra_args = ["--bitloops-init", "--bitloops-embeddings-runtime", "platform", "--bitloops-summaries-runtime", "platform", "--bitloops-summary-embeddings-mode", "on"]

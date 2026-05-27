@@ -4,7 +4,6 @@ from pathlib import Path
 import contextlib
 import hashlib
 import importlib
-import importlib.util
 import json
 import os
 import re
@@ -16,13 +15,7 @@ from unittest.mock import patch
 
 
 def _load_common_module():
-    module_path = Path(__file__).resolve().parents[1] / "scripts" / "agents" / "common.py"
-    spec = importlib.util.spec_from_file_location("agent_common", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load scripts/agents/common.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("benchkit.swebench.agents.common")
 
 
 common_impl = importlib.import_module("benchkit.swebench.agents.common")
@@ -1546,6 +1539,10 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 "claude-code",
                 "--sync=true",
                 "--ingest=true",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
             ],
         )
         self.assertFalse(metadata["bitloops_no_summaries"])
@@ -1553,6 +1550,108 @@ class AgentWrapperCommonTests(unittest.TestCase):
         self.assertEqual(metadata["bitloops_embedding_mode"], "semantic_aware_once")
         self.assertIn('summary_mode = "auto"', rendered)
         self.assertIn('embedding_mode = "semantic_aware_once"', rendered)
+
+    def test_setup_bitloops_summary_mode_on_forces_summaries_enabled(self) -> None:
+        responses = [
+            ("Bitloops daemon: running\n", "", 0, 5),
+            ("Bitloops init completed", "", 0, 16),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(common_impl, "call_command", side_effect=responses) as mock_call:
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="codex",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    embeddings_runtime="platform",
+                    summary_mode="on",
+                    cwd=str(workspace),
+                )
+
+        self.assertEqual(
+            mock_call.call_args_list[1].args[0],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "codex",
+                "--sync=true",
+                "--ingest=true",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
+            ],
+        )
+        self.assertFalse(metadata["bitloops_no_summaries"])
+        self.assertEqual(metadata["bitloops_summary_mode"], "on")
+
+    def test_setup_bitloops_summary_embeddings_mode_on_enables_summary_flags(self) -> None:
+        responses = [
+            ("Bitloops daemon: running\n", "", 0, 5),
+            ("Bitloops init completed", "", 0, 16),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            with patch.object(
+                common_impl,
+                "_ensure_git_branch_for_bitloops_sync",
+                return_value=(False, False, None, None, 0),
+            ), patch.object(common_impl, "call_command", side_effect=responses) as mock_call:
+                metadata = common_impl.setup_bitloops_for_workspace(
+                    agent_name="codex",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    embeddings_runtime="platform",
+                    summaries_runtime="platform",
+                    summary_embeddings_mode="on",
+                    cwd=str(workspace),
+                )
+
+        self.assertEqual(
+            mock_call.call_args_list[1].args[0],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "codex",
+                "--sync=true",
+                "--ingest=true",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
+                "--summary-embeddings-mode",
+                "on",
+            ],
+        )
+        self.assertFalse(metadata["bitloops_no_summaries"])
+        self.assertEqual(metadata["bitloops_summary_mode"], "auto")
+        self.assertEqual(metadata["bitloops_summary_embeddings_mode"], "on")
+
+    def test_setup_bitloops_rejects_conflicting_summary_controls(self) -> None:
+        with patch.object(
+            common_impl,
+            "_ensure_git_branch_for_bitloops_sync",
+        ) as mock_git_sync, patch.object(common_impl, "call_command") as mock_call:
+            with self.assertRaisesRegex(
+                ValueError,
+                "cannot be combined with --bitloops-summary-mode on",
+            ):
+                common_impl.setup_bitloops_for_workspace(
+                    agent_name="codex",
+                    bitloops_bin="bitloops",
+                    timeout_seconds=30,
+                    no_summaries=True,
+                    summary_mode="on",
+                )
+
+        mock_git_sync.assert_not_called()
+        mock_call.assert_not_called()
 
     def test_setup_bitloops_records_global_lock_wait_metadata(self) -> None:
         responses = [
@@ -1656,6 +1755,7 @@ class AgentWrapperCommonTests(unittest.TestCase):
                 sandbox,
                 summary_mode="auto",
                 bind_semantic_inference=True,
+                summaries_runtime="platform",
             )
 
             assert config_path is not None
@@ -2974,6 +3074,60 @@ class AgentWrapperCommonTests(unittest.TestCase):
         )
         session = metadata["bitloops_init_status_shortcut"]["session"]
         self.assertEqual(session["status"], "completed")
+
+    def test_run_bitloops_init_passes_summary_embeddings_mode_flag(self) -> None:
+        with patch.object(
+            common_impl,
+            "call_command",
+            return_value=("Bitloops init completed", "", 0, 11),
+        ) as mock_call:
+            metadata = common_impl._run_bitloops_init(
+                binary="bitloops",
+                timeout=30,
+                agent_name="claude-code",
+                sync=True,
+                ingest=False,
+                embeddings_runtime="platform",
+                summaries_runtime="platform",
+                summary_embeddings_mode="on",
+                env={},
+                cwd="/tmp/workspace",
+            )
+
+        self.assertEqual(
+            mock_call.call_args.args[0],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "claude-code",
+                "--sync=true",
+                "--ingest=false",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
+                "--summary-embeddings-mode",
+                "on",
+            ],
+        )
+        self.assertEqual(
+            metadata["bitloops_init_command"],
+            [
+                "bitloops",
+                "init",
+                "--agent",
+                "claude-code",
+                "--sync=true",
+                "--ingest=false",
+                "--embeddings-runtime",
+                "platform",
+                "--summaries-runtime",
+                "platform",
+                "--summary-embeddings-mode",
+                "on",
+            ],
+        )
 
     def test_debug_log_does_not_post_without_opt_in(self) -> None:
         with patch.object(common, "DEBUG_LOG_PATH", Path("/dev/null/debug.log")), patch.object(

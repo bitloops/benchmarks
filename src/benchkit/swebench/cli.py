@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import os
 import shutil
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from benchkit.common.config import RunConfig, load_run_config
@@ -29,6 +32,14 @@ from benchkit.swebench.agents.opencode.config import (
     format_opencode_plan_lines,
 )
 from benchkit.swebench.runner import execute_run
+
+ARTIFACT_RETENTION_POLICIES = (
+    "appendix_summary",
+    "appendix_transcripts",
+    "appendix_only",
+    "keep_all",
+)
+DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_transcripts"
 
 
 def _parse_dotenv_assignment(line: str) -> tuple[str, str] | None:
@@ -148,6 +159,15 @@ def main() -> None:
         type=Path,
         default=None,
         help="If set, write appendix to this path (--appendix-output-dir overrides --appendix)",
+    )
+    run_parser.add_argument(
+        "--artifact-retention-policy",
+        choices=ARTIFACT_RETENTION_POLICIES,
+        default=None,
+        help=(
+            "Post-run artifact retention policy override. "
+            "Default comes from run.artifact_retention_policy (or appendix_transcripts)."
+        ),
     )
     export_parser = subparsers.add_parser(
         "export-hf",
@@ -276,6 +296,48 @@ def main() -> None:
         default=Path("reports/benchmarks.sqlite"),
         help="SQLite database file path",
     )
+    prune_parser = subparsers.add_parser(
+        "prune-artifacts",
+        help="Prune heavy benchmark artifacts from existing run roots (dry-run by default)",
+    )
+    prune_parser.add_argument(
+        "--run-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="Optional repeatable run root path(s). If omitted, auto-discovers under --runs-root.",
+    )
+    prune_parser.add_argument(
+        "--runs-root",
+        type=Path,
+        default=Path("runs"),
+        help="Base directory used for run auto-discovery when --run-root is omitted",
+    )
+    prune_parser.add_argument(
+        "--benchmark",
+        default=None,
+        help="Optional benchmark filter for auto-discovery (e.g. swebench_multilingual)",
+    )
+    prune_parser.add_argument(
+        "--older-than-days",
+        type=int,
+        default=None,
+        help="Only prune run roots last modified before N days ago",
+    )
+    prune_parser.add_argument(
+        "--artifact-retention-policy",
+        choices=ARTIFACT_RETENTION_POLICIES,
+        default=DEFAULT_ARTIFACT_RETENTION_POLICY,
+        help=(
+            "Retention policy to enforce while pruning historical artifacts "
+            "(default: appendix_transcripts)."
+        ),
+    )
+    prune_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply deletions. Without this flag, prune-artifacts is preview-only.",
+    )
 
     args = parser.parse_args()
 
@@ -292,6 +354,7 @@ def main() -> None:
             args.max_workers,
             appendix_output_dir=args.appendix_output_dir,
             appendix=args.appendix,
+            artifact_retention_policy_override=args.artifact_retention_policy,
         )
         return
 
@@ -321,6 +384,17 @@ def main() -> None:
 
     if args.command == "db-import":
         run_db_import(args.appendix_csv, args.run_root, args.db_path)
+        return
+
+    if args.command == "prune-artifacts":
+        run_prune_artifacts(
+            run_roots=args.run_root,
+            runs_root=args.runs_root,
+            benchmark=args.benchmark,
+            older_than_days=args.older_than_days,
+            artifact_retention_policy=args.artifact_retention_policy,
+            apply=args.apply,
+        )
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")
@@ -478,6 +552,192 @@ def _appendix_timestamp_segment(run_id: str) -> str:
     return _filesystem_slug(run_id)
 
 
+def _resolve_artifact_retention_policy(
+    *,
+    config: object,
+    override: str | None,
+) -> str:
+    if isinstance(override, str) and override.strip():
+        policy = override.strip().lower()
+    else:
+        policy = str(
+            getattr(config, "artifact_retention_policy", DEFAULT_ARTIFACT_RETENTION_POLICY)
+            or DEFAULT_ARTIFACT_RETENTION_POLICY
+        ).strip().lower()
+    if policy not in ARTIFACT_RETENTION_POLICIES:
+        raise SystemExit(
+            "run error: artifact retention policy must be one of "
+            f"{', '.join(ARTIFACT_RETENTION_POLICIES)}"
+        )
+    return policy
+
+
+def _transcript_run_dirs(run_root: Path, *, transcripts_root_hint: Path | None = None) -> list[Path]:
+    run_root = run_root.resolve()
+    run_id = run_root.name
+    candidates: list[Path] = []
+
+    if transcripts_root_hint is not None:
+        hinted = transcripts_root_hint.resolve() / run_id
+        if hinted.exists():
+            candidates.append(hinted)
+
+    default_base = Path("reports/transcripts").resolve()
+    if default_base.exists():
+        for group_dir in sorted(default_base.glob("*"), key=str):
+            if not group_dir.is_dir():
+                continue
+            candidate = group_dir / run_id
+            if candidate.exists():
+                candidates.append(candidate)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path.resolve())
+    return deduped
+
+
+def _path_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        with contextlib.suppress(OSError):
+            return int(path.stat().st_size)
+        return 0
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        root_path = Path(root)
+        for name in files:
+            file_path = root_path / name
+            with contextlib.suppress(OSError):
+                total += int(file_path.stat().st_size)
+    return total
+
+
+def _delete_path(path: Path, *, apply: bool) -> tuple[bool, int]:
+    path = path.resolve()
+    if not path.exists():
+        return False, 0
+    bytes_estimate = _path_size_bytes(path)
+    if not apply:
+        return True, bytes_estimate
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return True, bytes_estimate
+
+
+def _format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit = units[0]
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            break
+        size /= 1024
+    if unit == "B":
+        return f"{int(size)} {unit}"
+    return f"{size:.2f} {unit}"
+
+
+def _enforce_retention_policy_for_run(
+    *,
+    run_root: Path,
+    policy: str,
+    apply: bool,
+    transcripts_root_hint: Path | None = None,
+) -> dict[str, int]:
+    run_root = run_root.resolve()
+    removed_paths = 0
+    reclaimed_bytes = 0
+
+    targets: list[Path] = []
+    if policy == "keep_all":
+        return {"removed_paths": 0, "reclaimed_bytes": 0}
+    if policy == "appendix_only":
+        targets.append(run_root)
+        targets.extend(_transcript_run_dirs(run_root, transcripts_root_hint=transcripts_root_hint))
+    else:
+        for child in ("attempts", "workspaces", "bitloops_sandboxes"):
+            targets.append(run_root / child)
+        if policy == "appendix_summary":
+            targets.extend(_transcript_run_dirs(run_root, transcripts_root_hint=transcripts_root_hint))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for target in targets:
+        key = str(target.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(target)
+
+    for target in deduped:
+        deleted, bytes_estimate = _delete_path(target, apply=apply)
+        if deleted:
+            removed_paths += 1
+            reclaimed_bytes += bytes_estimate
+
+    return {"removed_paths": removed_paths, "reclaimed_bytes": reclaimed_bytes}
+
+
+def _discover_run_roots_for_prune(
+    *,
+    run_roots: list[Path],
+    runs_root: Path,
+    benchmark: str | None,
+    older_than_days: int | None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    if run_roots:
+        for run_root in run_roots:
+            path = run_root.resolve()
+            if (path / "run_manifest.json").exists():
+                candidates.append(path)
+        deduped = sorted({path.resolve() for path in candidates}, key=str)
+        return deduped
+
+    base = runs_root.resolve()
+    if benchmark:
+        search_roots = [base / benchmark]
+    else:
+        search_roots = [path for path in sorted(base.glob("*"), key=str) if path.is_dir()]
+
+    for search_root in search_roots:
+        if not search_root.exists():
+            continue
+        for manifest in search_root.rglob("run_manifest.json"):
+            candidates.append(manifest.parent.resolve())
+
+    if older_than_days is not None:
+        if older_than_days < 0:
+            raise SystemExit("prune-artifacts error: --older-than-days must be >= 0")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        cutoff_ts = cutoff.timestamp()
+        filtered: list[Path] = []
+        for candidate in candidates:
+            with contextlib.suppress(OSError):
+                if candidate.stat().st_mtime < cutoff_ts:
+                    filtered.append(candidate)
+        candidates = filtered
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in sorted(candidates, key=str):
+        key = str(candidate.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate.resolve())
+    return deduped
+
+
 def run_execute(
     config_path: Path,
     mode: str | None,
@@ -486,6 +746,7 @@ def run_execute(
     max_workers: int | None,
     appendix_output_dir: Path | None = None,
     appendix: bool = False,
+    artifact_retention_policy_override: str | None = None,
 ) -> None:
     _load_cli_dotenv(config_path=config_path)
     try:
@@ -531,11 +792,85 @@ def run_execute(
         print(f"Appendix output: {effective_appendix_dir}")
         run_appendix(run_roots=[result.run_root], output_dir=effective_appendix_dir)
 
-    copied_to = copy_run_transcripts_to_reports(
-        result.run_root,
-        default_transcripts_output_dir(config, result.run_id),
+    retention_policy = _resolve_artifact_retention_policy(
+        config=config,
+        override=artifact_retention_policy_override,
     )
-    print(f"Transcripts copied to: {copied_to}")
+    print(f"Artifact retention policy: {retention_policy}")
+
+    transcripts_root = default_transcripts_output_dir(config, result.run_id)
+    transcripts_destination: Path | None = None
+    if retention_policy in {"appendix_transcripts", "keep_all"}:
+        transcripts_destination = copy_run_transcripts_to_reports(result.run_root, transcripts_root)
+        print(f"Transcripts copied to: {transcripts_destination}")
+    else:
+        print("Transcripts copied to: skipped (policy does not retain transcripts)")
+
+    cleanup = _enforce_retention_policy_for_run(
+        run_root=result.run_root,
+        policy=retention_policy,
+        apply=True,
+        transcripts_root_hint=transcripts_root,
+    )
+    print(
+        "Cleanup summary: "
+        f"{cleanup['removed_paths']} path(s), { _format_bytes(cleanup['reclaimed_bytes']) } reclaimed"
+    )
+
+
+def run_prune_artifacts(
+    *,
+    run_roots: list[Path],
+    runs_root: Path,
+    benchmark: str | None,
+    older_than_days: int | None,
+    artifact_retention_policy: str,
+    apply: bool,
+) -> None:
+    _load_cli_dotenv()
+    policy = artifact_retention_policy.strip().lower()
+    if policy not in ARTIFACT_RETENTION_POLICIES:
+        raise SystemExit(
+            "prune-artifacts error: --artifact-retention-policy must be one of "
+            f"{', '.join(ARTIFACT_RETENTION_POLICIES)}"
+        )
+
+    resolved_run_roots = _discover_run_roots_for_prune(
+        run_roots=run_roots,
+        runs_root=runs_root,
+        benchmark=benchmark,
+        older_than_days=older_than_days,
+    )
+    if not resolved_run_roots:
+        print("No run roots matched the prune-artifacts filters.")
+        return
+
+    print(f"Prune policy: {policy}")
+    print(f"Mode: {'apply' if apply else 'preview'}")
+    print(f"Run roots: {len(resolved_run_roots)}")
+
+    total_paths = 0
+    total_bytes = 0
+    start = time.time()
+    for run_root in resolved_run_roots:
+        result = _enforce_retention_policy_for_run(
+            run_root=run_root,
+            policy=policy,
+            apply=apply,
+            transcripts_root_hint=None,
+        )
+        total_paths += int(result["removed_paths"])
+        total_bytes += int(result["reclaimed_bytes"])
+        print(
+            f"- {run_root}: {result['removed_paths']} path(s), "
+            f"{_format_bytes(result['reclaimed_bytes'])}"
+        )
+
+    elapsed_ms = int((time.time() - start) * 1000)
+    print(
+        f"Prune summary: {total_paths} path(s), { _format_bytes(total_bytes) }, "
+        f"elapsed_ms={elapsed_ms}"
+    )
 
 
 def run_export_hf(

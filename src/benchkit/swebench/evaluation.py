@@ -11,7 +11,7 @@ import time
 from collections.abc import Iterable
 
 from benchkit.common.config import EvaluationConfig
-from benchkit.common.io import write_json, write_jsonl
+from benchkit.common.io import read_jsonl, write_json, write_jsonl
 from benchkit.contextbench.evaluation import (
     build_contextbench_gold_jsonl,
     build_contextbench_prediction_jsonl,
@@ -189,10 +189,11 @@ def evaluate_predictions_with_harness(
         cwd = config.swebench_repo.resolve() if config.swebench_repo else None
     env = _build_evaluation_env(cwd)
 
+    effective_command = command
     try:
         start = time.time()
         completed = subprocess.run(
-            command,
+            effective_command,
             text=True,
             capture_output=True,
             timeout=config.timeout_seconds,
@@ -200,12 +201,33 @@ def evaluate_predictions_with_harness(
             env=env,
             check=False,
         )
+        if (
+            benchmark == BENCHMARK_CONTEXTBENCH_VERIFIED
+            and completed.returncode == 0
+            and contextbench_results_path is not None
+            and _contextbench_contains_checkout_failed(contextbench_results_path)
+        ):
+            retry_command = _contextbench_command_with_fresh_cache(
+                command=effective_command,
+                artifact_dir=effective_artifact_dir,
+            )
+            if retry_command is not None:
+                effective_command = retry_command
+                completed = subprocess.run(
+                    effective_command,
+                    text=True,
+                    capture_output=True,
+                    timeout=config.timeout_seconds,
+                    cwd=str(cwd) if cwd else None,
+                    env=env,
+                    check=False,
+                )
         elapsed_ms = int((time.time() - start) * 1000)
     except Exception as exc:  # noqa: BLE001
         result = AttemptEvaluationResult(
             attempt=attempt,
             status="error",
-            command=command,
+            command=effective_command,
             return_code=None,
             elapsed_ms=None,
             stdout_path=stdout_path,
@@ -261,7 +283,7 @@ def evaluate_predictions_with_harness(
     result = AttemptEvaluationResult(
         attempt=attempt,
         status=status,
-        command=command,
+        command=effective_command,
         return_code=completed.returncode,
         elapsed_ms=elapsed_ms,
         stdout_path=stdout_path,
@@ -542,6 +564,38 @@ def _resolve_python_bin(python_bin: str) -> str:
         # venv shim like ./.venv/bin/python is preserved as-is.
         return str((Path.cwd() / candidate).absolute())
     return text
+
+
+def _contextbench_contains_checkout_failed(result_path: Path) -> bool:
+    if not result_path.exists():
+        return False
+    try:
+        rows = read_jsonl(result_path)
+    except Exception:  # noqa: BLE001
+        return False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        error_value = row.get("error")
+        if isinstance(error_value, str) and "checkout_failed" in error_value:
+            return True
+    return False
+
+
+def _contextbench_command_with_fresh_cache(
+    *,
+    command: list[str],
+    artifact_dir: Path,
+) -> list[str] | None:
+    if "--cache" not in command:
+        return None
+    cache_index = command.index("--cache") + 1
+    if cache_index >= len(command):
+        return None
+    retry_cache = artifact_dir / "contextbench_repos_retry"
+    updated = list(command)
+    updated[cache_index] = str(retry_cache.resolve())
+    return updated
 
 
 def _contextbench_dependency_preflight(

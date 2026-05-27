@@ -17,6 +17,7 @@ DEFAULT_SWEBENCH_MULTILINGUAL_DATASET_NAME = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_SWEBENCH_PRO_DATASET_NAME = "ScaleAI/SWE-bench_Pro"
 DEFAULT_CONTEXTBENCH_DATASET_NAME = "Contextbench/ContextBench"
 DEFAULT_PROMPT_PROTOCOL = "minimal"
+DEFAULT_ARTIFACT_RETENTION_POLICY = "appendix_transcripts"
 
 
 def _default_agent_python_bin() -> str:
@@ -61,6 +62,7 @@ class RunConfig:
     workspace_isolation_mode: str
     bitloops_enabled: bool
     bitloops_sandbox_mode: str
+    artifact_retention_policy: str
     repo_url_template: str
     git_bin: str
     workspace_root: Path | None
@@ -190,6 +192,9 @@ def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
         requested=bitloops_sandbox_mode_raw,
         bitloops_enabled=bitloops_enabled,
     )
+    artifact_retention_policy = _resolve_artifact_retention_policy(
+        requested=str(run.get("artifact_retention_policy", "")).strip().lower(),
+    )
 
     model_map = _parse_model_map(model_map_raw)
     evaluation_cfg = _parse_evaluation_config(evaluation, split=split, benchmark=benchmark)
@@ -212,6 +217,7 @@ def load_run_config(config_path: Path, mode: str | None = None) -> RunConfig:
         workspace_isolation_mode=workspace_isolation_mode,
         bitloops_enabled=bitloops_enabled,
         bitloops_sandbox_mode=bitloops_sandbox_mode,
+        artifact_retention_policy=artifact_retention_policy,
         repo_url_template=repo_url_template,
         git_bin=git_bin,
         workspace_root=workspace_root,
@@ -406,8 +412,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                             "--bitloops-init",
                             "--bitloops-embeddings-runtime",
                             "platform",
-                            "--bitloops-summary-mode",
-                            "off",
+                            "--bitloops-no-summaries",
                         ],
                     },
                 },
@@ -484,8 +489,7 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                             "--bitloops-init",
                             "--bitloops-embeddings-runtime",
                             "platform",
-                            "--bitloops-summary-mode",
-                            "off",
+                            "--bitloops-no-summaries",
                         ],
                     },
                 },
@@ -524,8 +528,8 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                             "--bitloops-init",
                             "--bitloops-embeddings-runtime",
                             "platform",
-                            "--bitloops-summary-mode",
-                            "auto",
+                            "--bitloops-summaries-runtime",
+                            "platform",
                         ],
                     },
                 },
@@ -576,8 +580,8 @@ def _config_presets() -> dict[str, dict[str, Any]]:
                             "--bitloops-init",
                             "--bitloops-embeddings-runtime",
                             "platform",
-                            "--bitloops-summary-mode",
-                            "auto",
+                            "--bitloops-summaries-runtime",
+                            "platform",
                         ],
                     },
                 },
@@ -676,6 +680,22 @@ def _resolve_bitloops_sandbox_mode(*, requested: str, bitloops_enabled: bool) ->
     if bitloops_enabled:
         return "per_task_daemon"
     return "disabled"
+
+
+def _resolve_artifact_retention_policy(*, requested: str) -> str:
+    if requested:
+        if requested not in {
+            "appendix_summary",
+            "appendix_transcripts",
+            "appendix_only",
+            "keep_all",
+        }:
+            raise ValueError(
+                "run.artifact_retention_policy must be one of: "
+                "'appendix_summary', 'appendix_transcripts', 'appendix_only', 'keep_all'"
+            )
+        return requested
+    return DEFAULT_ARTIFACT_RETENTION_POLICY
 
 
 def _parse_model_map(raw: Any) -> dict[str, dict[str, str]]:

@@ -334,7 +334,11 @@ class RunnerTests(unittest.TestCase):
             sandbox = trace_rows[0]["metadata"]["bitloops_sandbox"]
             self.assertEqual(sandbox["mode"], "per_task_daemon")
             self.assertTrue(sandbox["home_root"].endswith("/home"))
-            self.assertIn("__bitloops", sandbox["sandbox_root"])
+            self.assertTrue(
+                str(sandbox["sandbox_root"]).startswith(
+                    str(result.run_root / "bitloops_sandboxes")
+                )
+            )
 
     def test_execute_run_records_config_mode_in_manifest_and_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -396,6 +400,7 @@ def _make_config(
         workspace_isolation_mode="task_scoped" if condition == "with_bitloops" else "shared_repo_commit",
         bitloops_enabled=condition == "with_bitloops",
         bitloops_sandbox_mode="per_task_daemon" if condition == "with_bitloops" else "disabled",
+        artifact_retention_policy="appendix_summary",
         repo_url_template="https://github.com/{repo}.git",
         git_bin="git",
         workspace_root=None,

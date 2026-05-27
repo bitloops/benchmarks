@@ -238,11 +238,21 @@ Bitloops runs:
 | `--bitloops-ingest`             | `true`, `false`                                                     | Control whether init queues ingest           |
 | `--bitloops-embeddings-runtime` | `local`, `platform`                                                 | Select embeddings runtime for init           |
 | `--bitloops-no-embeddings`      | none                                                                | Disable embeddings setup during init         |
-| `--bitloops-summary-mode`       | `auto`, `off`                                                       | Override summary mode in task-local config   |
+| `--bitloops-summary-mode`       | `auto`, `off`, `on`                                                 | `auto` keeps init defaults, `off` disables summaries, `on` explicitly keeps summaries enabled |
 | `--bitloops-embedding-mode`     | `off`, `deterministic`, `refresh_on_upgrade`, `semantic_aware_once` | Override embedding mode in task-local config |
 
 Use benchmark TOML `extra_args` to request those overrides. You do not need to
 manually create the repo-local `config.toml` for benchmark runs.
+
+Example forcing summaries on:
+
+```toml
+extra_args = [
+  "--bitloops-init",
+  "--bitloops-embeddings-runtime", "platform",
+  "--bitloops-summary-mode", "on",
+]
+```
 
 ## 7) Narrow to one task (optional)
 
@@ -282,6 +292,10 @@ If you want five tasks, this command is the fastest way to verify that
 
 If you copied the config to a local file, use that path instead.
 
+By default, runs use `artifact_retention_policy = "appendix_transcripts"` unless overridden.
+That means heavy run folders (`attempts`, `workspaces`, `bitloops_sandboxes`) are pruned after
+appendix generation, while transcript copies are retained under `reports/transcripts/...`.
+
 ## 10) Where to find outputs
 
 ### Run artifacts
@@ -292,15 +306,17 @@ Latest run folder:
 ls -1t runs/swebench_multilingual/$(date +%Y%m%d) | head -n 1
 ```
 
-Inside the run folder:
+Inside the run folder (retained metadata):
 
 - `run_manifest.json` (for `agent.id = "opencode"`, includes an `opencode` object summarizing `configs/opencode/opencode.json`: path, SHA256, and sampling fields used by the OpenCode CLI)
 - `summary.json`
 - `instances.jsonl`
-- `attempts/attempt-01/predictions.jsonl`
-- `attempts/attempt-01/trace.jsonl`
-- `attempts/attempt-01/evaluation.json`
-- `attempts/attempt-01/evaluation.tasks.jsonl` when evaluator succeeds
+
+Transcript copies:
+
+- `reports/transcripts/<agent>_<variant>_<timestamp>/<run_id>/attempts/attempt-01/predictions.jsonl`
+- `reports/transcripts/<agent>_<variant>_<timestamp>/<run_id>/attempts/attempt-01/trace.jsonl`
+- `reports/transcripts/<agent>_<variant>_<timestamp>/<run_id>/attempts/attempt-01/evaluation.json`
 
 ### Appendix outputs
 
