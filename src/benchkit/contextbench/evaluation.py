@@ -48,7 +48,7 @@ def build_contextbench_prediction_jsonl(
         entry = {
             "instance_id": eval_instance_id,
             "benchkit_instance_id": instance_id,
-            "repo_url": _instance_repo_url(instance),
+            "repo_url": _prediction_repo_url(instance=instance, metadata=metadata),
             "commit": instance.base_commit,
             "model_patch": str(row.get("model_patch") or ""),
             "traj_data": build_contextbench_traj_data(
@@ -212,6 +212,30 @@ def _instance_repo_url(instance: BenchmarkInstance) -> str:
     if isinstance(repo_url, str) and repo_url.strip():
         return repo_url.strip()
     return f"https://github.com/{instance.repo}.git"
+
+
+def _prediction_repo_url(*, instance: BenchmarkInstance, metadata: dict[str, Any]) -> str:
+    workspace_repo = _workspace_repo_path_from_trace_metadata(metadata)
+    if workspace_repo is not None:
+        return workspace_repo
+    return _instance_repo_url(instance)
+
+
+def _workspace_repo_path_from_trace_metadata(metadata: dict[str, Any]) -> str | None:
+    workspace = metadata.get("workspace")
+    if not isinstance(workspace, dict):
+        return None
+    workspace_path = workspace.get("workspace_path")
+    if not isinstance(workspace_path, str):
+        return None
+    candidate = workspace_path.strip()
+    if not candidate:
+        return None
+    path = Path(candidate).expanduser()
+    git_marker = path / ".git"
+    if not path.exists() or not git_marker.exists():
+        return None
+    return str(path.resolve())
 
 
 def _contextbench_eval_instance_id(

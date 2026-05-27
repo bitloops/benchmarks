@@ -6,8 +6,8 @@ dataset_path = "datasets/contextbench_verified.train.jsonl"
 include_repos = []
 include_instance_ids = ["SWE-Bench-Verified__python__maintenance__bugfix__2e76c8cd"]
 max_instances = 1
-attempts = 1
-max_workers = 1
+attempts = 2
+max_workers = 2
 timeout_seconds = 1200
 workspace_timeout_seconds = 600
 

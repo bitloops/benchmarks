@@ -373,6 +373,67 @@ class ContextBenchEvaluationParseTests(unittest.TestCase):
                 row["benchkit_instance_id"],
                 "SWE-Bench-Verified__python__maintenance__bugfix__deb49033",
             )
+            self.assertEqual(row["repo_url"], "https://github.com/astropy/astropy.git")
+
+    def test_build_contextbench_prediction_prefers_workspace_repo_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_path = root / "dataset.jsonl"
+            prediction_path = root / "predictions.jsonl"
+            trace_path = root / "trace.jsonl"
+            output_path = root / "converted.jsonl"
+            workspace_path = root / "workspace-repo"
+            (workspace_path / ".git").mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "instance_id": "SWE-Bench-Verified__python__maintenance__bugfix__deb49033",
+                        "original_inst_id": "astropy__astropy-13398",
+                        "repo": "astropy/astropy",
+                        "base_commit": "abc",
+                        "problem_statement": "x",
+                        "gold_context": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            prediction_path.write_text(
+                json.dumps(
+                    {
+                        "instance_id": "SWE-Bench-Verified__python__maintenance__bugfix__deb49033",
+                        "model_patch": "",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            trace_path.write_text(
+                json.dumps(
+                    {
+                        "instance_id": "SWE-Bench-Verified__python__maintenance__bugfix__deb49033",
+                        "metadata": {
+                            "workspace": {
+                                "workspace_path": str(workspace_path),
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            count = build_contextbench_prediction_jsonl(
+                benchmark="contextbench_verified",
+                dataset_path=dataset_path,
+                prediction_path=prediction_path,
+                trace_path=trace_path,
+                output_path=output_path,
+            )
+
+            self.assertEqual(count, 1)
+            row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(row["repo_url"], str(workspace_path.resolve()))
 
     def test_parse_contextbench_results_jsonl_extracts_core_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
